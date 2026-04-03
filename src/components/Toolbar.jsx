@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { MousePointer2, Pentagon, Minus, Type, Route, RotateCcw, Trash2, Download, Sun, Moon, Search, Copy, ChevronDown } from 'lucide-react'
+import { MousePointer2, Pentagon, Minus, Type, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown } from 'lucide-react'
 
 const styles = {
   toolbar: {
@@ -141,10 +141,9 @@ export default function Toolbar({
   drawMode,
   onDrawMode,
   onUndo,
-  onDelete,
-  onDuplicate,
-  hasSelection,
-  canDuplicate,
+  onRedo,
+  canUndo,
+  canRedo,
   onExport,
   theme,
   onToggleTheme,
@@ -168,9 +167,9 @@ export default function Toolbar({
   }, [])
 
   const tools = [
-    { id: 'select', icon: <MousePointer2 size={14} />, label: 'Select' },
     { id: 'polygon', icon: <Pentagon size={14} />, label: 'Draw Zone' },
-    { id: 'route', icon: <Route size={14} />, label: 'Route' },
+    { id: 'square', icon: <Square size={14} />, label: 'Square' },
+    { id: 'circle', icon: <Circle size={14} />, label: 'Circle' },
     { id: 'line', icon: <Minus size={14} />, label: 'Line' },
     { id: 'text', icon: <Type size={14} />, label: 'Text' },
   ]
@@ -199,39 +198,36 @@ export default function Toolbar({
       <div style={styles.divider} />
 
       <button
-        style={{ ...styles.toolBtn, color: 'var(--text-dim)' }}
+        style={{ ...styles.toolBtn, color: canUndo ? 'var(--text-secondary)' : 'var(--text-dim)', opacity: canUndo ? 1 : 0.4 }}
         onClick={onUndo}
-        title="Undo"
-        onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+        disabled={!canUndo}
+        title="Undo (Ctrl+Z)"
+        onMouseEnter={e => { if (canUndo) e.currentTarget.style.background = 'var(--bg-hover)' }}
         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
       >
         <RotateCcw size={14} />
       </button>
 
-      {hasSelection && (
-        <>
-          {canDuplicate && (
-            <button
-              style={{ ...styles.toolBtn, color: 'var(--accent)' }}
-              onClick={onDuplicate}
-              title="Duplicate selected asset"
-              onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-dim)'}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >
-              <Copy size={14} /> Duplicate
-            </button>
-          )}
-        <button
-          style={{ ...styles.toolBtn, color: 'var(--danger)' }}
-          onClick={onDelete}
-          title="Delete selected"
-          onMouseEnter={e => e.currentTarget.style.background = '#f8717118'}
-          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-        >
-          <Trash2 size={14} /> Delete
-        </button>
-        </>
-      )}
+      <button
+        style={{ ...styles.toolBtn, color: canRedo ? 'var(--text-secondary)' : 'var(--text-dim)', opacity: canRedo ? 1 : 0.4 }}
+        onClick={onRedo}
+        disabled={!canRedo}
+        title="Redo (Ctrl+Y)"
+        onMouseEnter={e => { if (canRedo) e.currentTarget.style.background = 'var(--bg-hover)' }}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      >
+        <RotateCw size={14} />
+      </button>
+
+      <button
+        style={{ ...styles.toolBtn, color: drawMode === 'erase' ? 'var(--danger)' : 'var(--text-secondary)' }}
+        onClick={() => onDrawMode('erase')}
+        title="Erase asset"
+        onMouseEnter={e => e.currentTarget.style.background = drawMode === 'erase' ? '#fee2e2' : 'var(--bg-hover)'}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      >
+        <Eraser size={14} /> Erase
+      </button>
 
       <div style={styles.rightSection}>
         <div style={styles.searchWrap}>
@@ -244,15 +240,16 @@ export default function Toolbar({
               if (event.key === 'Enter') onLocationSearch?.()
             }}
           />
-          <button
+          {/* <button
             style={styles.themeBtn}
             onClick={onLocationSearch}
             title="Focus map to searched location"
           >
-            <Search size={13} /> Go
-          </button>
+            
+            <Search size={13} /> 
+          </button> */}
         </div>
-        <button
+        {/* <button
           style={{
             ...styles.themeBtn,
             background: mapViewMode === '3d' ? 'var(--accent-dim)' : 'var(--bg-secondary)',
@@ -263,7 +260,7 @@ export default function Toolbar({
           title={mapViewMode === '3d' ? 'Switch to 2D view' : 'Switch to 3D view'}
         >
           {mapViewMode === '3d' ? '3D' : '2D'}
-        </button>
+        </button> */}
         <button
           style={styles.themeBtn}
           onClick={onToggleTheme}
@@ -278,7 +275,7 @@ export default function Toolbar({
           title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
         >
           {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
-          {theme === 'dark' ? 'Light' : 'Dark'}
+          {/* {theme === 'dark' ? 'Light' : 'Dark'} */}
         </button>
         <div style={styles.exportWrap} ref={exportMenuRef}>
           <button

@@ -315,13 +315,41 @@ function computeContentBounds(google, { zones, assets, lines, annotations, floor
   return hasContent ? bounds : null
 }
 
+function buildCirclePath(center, radiusM, google, steps = 256) {
+  if (!google || !center) return []
+  const origin = new google.maps.LatLng(center.lat, center.lng)
+  return Array.from({ length: steps }, (_, idx) => {
+    const angle = (idx * 360) / steps
+    const point = google.maps.geometry.spherical.computeOffset(origin, radiusM, angle)
+    return { lat: point.lat(), lng: point.lng() }
+  })
+}
+
+function buildSquarePath(center, halfSideM, google) {
+  if (!google || !center) return []
+  const origin = new google.maps.LatLng(center.lat, center.lng)
+  // Create axis-aligned square corners at 45°, 135°, 225°, 315° (NE, NW, SW, SE)
+  // Distance to corner is halfSideM * sqrt(2)
+  const cornerDistance = halfSideM * Math.sqrt(2)
+  const ne = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 45)
+  const nw = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 135)
+  const sw = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 225)
+  const se = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 315)
+  return [
+    { lat: ne.lat(), lng: ne.lng() },
+    { lat: nw.lat(), lng: nw.lng() },
+    { lat: sw.lat(), lng: sw.lng() },
+    { lat: se.lat(), lng: se.lng() },
+  ]
+}
+
 function limitGridSlots(slots, maxPoints = 450) {
   if (!slots?.length || slots.length <= maxPoints) return slots || []
   const step = Math.ceil(slots.length / maxPoints)
   return slots.filter((_, index) => index % step === 0)
 }
 
-function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction }) {
+function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset }) {
   const { widthPx, lengthPx } = getAssetSize(asset, zoom)
   const rotationDeg = asset.rotationDeg || 0
   const color = asset.assetDef?.color || '#3d8ef8'
@@ -344,53 +372,59 @@ function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, on
       <div style={{ width: `${widthPx}px`, height: `${lengthPx}px`, position: 'relative', pointerEvents: 'auto', zIndex: 12 }}>
         <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotationDeg}deg)`, transformOrigin: 'center center' }}>
           <button
-            type="button"
-            onMouseDown={(event) => onStartInteraction(event, asset, 'move')}
-            onClick={(event) => {
-              if (!interactive) return
-              event.stopPropagation()
-              onSelect(asset)
-            }}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              width: '100%',
-              height: '100%',
-              borderRadius: '16px',
-              border: selected ? '2px solid #38bdf8' : `2px solid ${color}`,
-              background: selected ? `${color}33` : `${color}22`,
-              boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.8)' : 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: !interactive || locked ? 'default' : 'move',
-              pointerEvents: !interactive || locked ? 'none' : 'auto',
-              padding: 0,
-            }}
-          >
-            <div
+              type="button"
+              onMouseDown={(event) => {
+                if (drawMode === 'select') onStartInteraction(event, asset, 'move')
+              }}
+              onClick={(event) => {
+                if (!interactive) return
+                event.stopPropagation()
+                if (drawMode === 'erase') {
+                  onEraseAsset?.(asset)
+                  return
+                }
+                onSelect(asset)
+              }}
               style={{
-                width: `${Math.min(widthPx, lengthPx) * 0.56}px`,
-                height: `${Math.min(widthPx, lengthPx) * 0.56}px`,
-                minWidth: '26px',
-                minHeight: '26px',
-                borderRadius: '999px',
-                background: '#ffffff',
-                border: `2px solid ${color}`,
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                borderRadius: '16px',
+                border: selected ? '2px solid #38bdf8' : `2px solid ${color}`,
+                background: selected ? `${color}33` : `${color}22`,
+                boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.8)' : 'none',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: `${Math.max(16, Math.min(widthPx, lengthPx) * 0.28)}px`,
-                boxShadow: '0 8px 24px rgba(15, 23, 42, 0.18)',
+                cursor: !interactive || locked ? 'default' : 'move',
+                pointerEvents: !interactive || locked ? 'none' : 'auto',
+                padding: 0,
               }}
             >
-              <AssetGlyph
-                asset={asset.assetDef}
-                size={Math.max(16, Math.min(widthPx, lengthPx) * 0.28)}
-                color={asset.assetDef?.iconColor || color}
-              />
-            </div>
-          </button>
+              <div
+                style={{
+                  width: `${Math.min(widthPx, lengthPx) * 0.56}px`,
+                  height: `${Math.min(widthPx, lengthPx) * 0.56}px`,
+                  minWidth: '26px',
+                  minHeight: '26px',
+                  borderRadius: '999px',
+                  background: '#ffffff',
+                  border: `2px solid ${color}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: `${Math.max(16, Math.min(widthPx, lengthPx) * 0.28)}px`,
+                  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.18)',
+                }}
+              >
+                <AssetGlyph
+                  asset={asset.assetDef}
+                  size={Math.max(16, Math.min(widthPx, lengthPx) * 0.28)}
+                  color={asset.assetDef?.iconColor || color}
+                />
+              </div>
+            </button>
 
           {selected && interactive && !locked && (
             <>
@@ -667,6 +701,8 @@ function MeasurementOverlay({ screenPosition, text }) {
 
 export default function MapCanvas({
   drawMode,
+  onDrawMode,
+  onEraseAsset,
   selectedZoneType,
   layers,
   zones,
@@ -705,14 +741,21 @@ export default function MapCanvas({
   const interactionRef = useRef(null)
   const lineDraftRef = useRef(null)
   const polygonDraftRef = useRef(null)
+  const shapeDraftRef = useRef(null)
   const zoneOverlayRefs = useRef({})
   const lineOverlayRefs = useRef({})
+  const linePathChangeTimeoutRef = useRef({})
   const [mapZoom, setMapZoom] = useState(14)
   const [tempFloorPoints, setTempFloorPoints] = useState([])
   const [lineDraft, setLineDraft] = useState(null)
   const [polygonDraft, setPolygonDraft] = useState(null)
+  const [shapeDraft, setShapeDraft] = useState(null)
   const [lineMeasurement, setLineMeasurement] = useState(null)
+  const [segmentMeasurement, setSegmentMeasurement] = useState(null)
   const [cursorScreenPosition, setCursorScreenPosition] = useState(null)
+  const [cursorLatLng, setCursorLatLng] = useState(null)
+  const [hoveredLine, setHoveredLine] = useState(null)
+  const [hoverScreenPos, setHoverScreenPos] = useState(null)
 
   useEffect(() => {
     lineDraftRef.current = lineDraft
@@ -721,6 +764,17 @@ export default function MapCanvas({
   useEffect(() => {
     polygonDraftRef.current = polygonDraft
   }, [polygonDraft])
+
+  useEffect(() => {
+    shapeDraftRef.current = shapeDraft
+  }, [shapeDraft])
+
+  // Cleanup debounce timeouts
+  useEffect(() => {
+    return () => {
+      Object.values(linePathChangeTimeoutRef.current).forEach(timeout => clearTimeout(timeout))
+    }
+  }, [])
 
   const selectedAsset = useMemo(
     () => assets.find(asset => asset.id === selectedId) || null,
@@ -1034,24 +1088,46 @@ export default function MapCanvas({
       path,
       areaM2,
       perimeterM,
-      parentId: null,
+      parentId: zone.parentId || null,
       capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
     })
   }, [onAssetUpdate, zones])
 
   const handleLinePathChange = useCallback((line) => {
-    const overlay = lineOverlayRefs.current[line.id]
-    if (!window.google || !overlay) return
-    const path = extractPathFromOverlay(overlay)
-    if (path.length < 2) return
-    const parentZone = getDeepestParentZone(path[0], zones, window.google)
-    onAssetUpdate({
-      ...line,
-      path,
-      lengthM: computeLineLength(path, window.google),
-      parentId: parentZone?.id || null,
-    })
-  }, [onAssetUpdate, zones])
+    // Debounce to prevent duplicate updates from multiple event listeners
+    if (linePathChangeTimeoutRef.current[line.id]) {
+      clearTimeout(linePathChangeTimeoutRef.current[line.id])
+    }
+    
+    linePathChangeTimeoutRef.current[line.id] = setTimeout(() => {
+      const overlay = lineOverlayRefs.current[line.id]
+      if (!window.google || !overlay) return
+      const path = extractPathFromOverlay(overlay)
+      if (path.length < 2) return
+      
+      // Get current line from state to avoid stale closures
+      const currentLine = lines.find(l => l.id === line.id)
+      if (!currentLine) return
+      
+      // Check if path actually changed to avoid unnecessary updates
+      const pathChanged = !currentLine.path || 
+        path.length !== currentLine.path.length ||
+        path.some((p, i) => Math.abs(p.lat - currentLine.path[i]?.lat) > 1e-8 || Math.abs(p.lng - currentLine.path[i]?.lng) > 1e-8)
+      
+      if (!pathChanged) return
+      
+      const newLengthM = computeLineLength(path, window.google)
+      const parentZone = getDeepestParentZone(path[0], zones, window.google)
+      onAssetUpdate({
+        ...currentLine,
+        path,
+        lengthM: newLengthM,
+        parentId: parentZone?.id || null,
+      })
+      // keep hover tooltip in sync immediately
+      setHoveredLine(prev => prev?.id === line.id ? { ...prev, path, lengthM: newLengthM } : prev)
+    }, 100) // Wait 100ms to batch multiple calls
+  }, [onAssetUpdate, zones, lines])
 
   function buildAssetPlacement(assetBase) {
     if (!window.google) return assetBase
@@ -1123,6 +1199,16 @@ export default function MapCanvas({
       }
     }
 
+    setCursorLatLng({ lat: event.latLng.lat(), lng: event.latLng.lng() })
+
+    const activeShape = shapeDraftRef.current
+    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'square')) {
+      const centerLatLng = new window.google.maps.LatLng(activeShape.center.lat, activeShape.center.lng)
+      const currentDist = window.google.maps.geometry.spherical.computeDistanceBetween(centerLatLng, event.latLng)
+      setLineMeasurement(currentDist)
+    }
+
+
     const hoverPoint = { lat: event.latLng.lat(), lng: event.latLng.lng() }
     const activeLineDraft = lineDraftRef.current
     const activePolygonDraft = polygonDraftRef.current
@@ -1135,6 +1221,7 @@ export default function MapCanvas({
     if ((drawMode === 'line' || drawMode === 'route') && activeLineDraft?.points?.length) {
       const previewPath = [...activeLineDraft.points, hoverPoint]
       setLineDraft(prev => prev ? { ...prev, hoverPoint } : prev)
+      // lineMeasurement = total including rubber-band, used for live cursor tooltip
       setLineMeasurement(computeLineLength(previewPath, window.google))
       return
     }
@@ -1174,6 +1261,60 @@ export default function MapCanvas({
   const handleMapClick = useCallback((event) => {
     if (!event.latLng) return
     if (event?.domEvent?.detail > 1) return
+
+    if ((drawMode === 'square' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
+      const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
+      const currentDraft = shapeDraftRef.current
+
+      if (!currentDraft?.center) {
+        setShapeDraft({ type: drawMode, center: point, radiusM: 0 })
+        setLineMeasurement(0)
+        return
+      }
+
+      const originLatLng = new window.google.maps.LatLng(currentDraft.center.lat, currentDraft.center.lng)
+      const targetLatLng = new window.google.maps.LatLng(point.lat, point.lng)
+      const radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
+
+      let path = []
+      if (drawMode === 'square') {
+        path = buildSquarePath(currentDraft.center, radiusM, window.google)
+      } else {
+        path = buildCirclePath(currentDraft.center, radiusM, window.google, 256)
+      }
+
+      if (path.length >= 3) {
+        const zoneType = selectedZoneType || { id: 'generic', name: 'Zone', color: '#3d8ef8', fillOpacity: 0.2, layoutType: 'free' }
+        const defaultSubType = zoneType?.defaultSubTypeId
+          ? zoneType.subTypes?.find(subType => subType.id === zoneType.defaultSubTypeId) || null
+          : null
+        const metrics = computePolygonMetrics(path, window.google)
+
+        onZoneCreate({
+          id: `zone_${Date.now()}`,
+          type: 'zone',
+          zoneType,
+          layoutType: zoneType?.layoutType || 'free',
+          subType: defaultSubType,
+          parentId: null,
+          path,
+          areaM2: metrics.areaM2,
+          perimeterM: metrics.perimeterM,
+          capacity: null,
+          label: zoneType?.name || 'Zone',
+          allowedAssetTypes: zoneType?.allowedAssetTypes || [],
+          contentLocked: !!zoneType?.allowedAssetTypes?.length,
+          status: 'planned',
+          notes: '',
+        })
+      }
+
+      setShapeDraft(null)
+      setLineMeasurement(null)
+      onDrawMode?.('select')
+      return
+    }
+
     if (placingFloor && floorPlan?.imageUrl) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
 
@@ -1220,13 +1361,13 @@ export default function MapCanvas({
       const activeLineDraft = lineDraftRef.current
 
       if (!activeLineDraft?.points?.length) {
-        setLineDraft({ points: [point], hoverPoint: point })
+        setLineDraft({ points: [point], hoverPoint: null })
         setLineMeasurement(0)
         return
       }
 
       const nextPoints = [...activeLineDraft.points, point]
-      setLineDraft({ points: nextPoints, hoverPoint: point })
+      setLineDraft({ points: nextPoints, hoverPoint: null })
       setLineMeasurement(computeLineLength(nextPoints, window.google))
       return
     }
@@ -1236,13 +1377,13 @@ export default function MapCanvas({
       const activePolygonDraft = polygonDraftRef.current
 
       if (!activePolygonDraft?.points?.length) {
-        setPolygonDraft({ points: [point], hoverPoint: point })
+        setPolygonDraft({ points: [point], hoverPoint: null })
         setLineMeasurement(0)
         return
       }
 
       const nextPoints = [...activePolygonDraft.points, point]
-      setPolygonDraft({ points: nextPoints, hoverPoint: point })
+      setPolygonDraft({ points: nextPoints, hoverPoint: null })
       setLineMeasurement(computeLineLength(nextPoints, window.google))
       return
     }
@@ -1282,11 +1423,8 @@ export default function MapCanvas({
         return
       }
 
-      const dblPoint = event?.latLng ? { lat: event.latLng.lat(), lng: event.latLng.lng() } : null
-      const currentTail = activeLineDraft.points[activeLineDraft.points.length - 1]
-      const finalPath = dblPoint && (!currentTail || currentTail.lat !== dblPoint.lat || currentTail.lng !== dblPoint.lng)
-        ? [...activeLineDraft.points, dblPoint]
-        : activeLineDraft.points
+      // Use the already-committed points only (ignore the hover preview point)
+      const finalPath = activeLineDraft.points
 
       if (finalPath.length < 2) {
         setLineDraft(null)
@@ -1299,7 +1437,7 @@ export default function MapCanvas({
         type: 'line',
         path: finalPath,
         lengthM: computeLineLength(finalPath, window.google),
-        label: drawMode === 'route' ? 'Route Path' : 'Measured Line',
+        // label: drawMode === 'route' ? 'Route Path' : 'Measured Line',
         color: lineStyle?.color || '#f59e0b',
         strokeWeight: lineStyle?.weight || 4,
         pattern: lineStyle?.pattern || 'dashed',
@@ -1541,6 +1679,12 @@ export default function MapCanvas({
             onDragEnd={() => handleZonePathChange(zone)}
             onLoad={(polygon) => {
               zoneOverlayRefs.current[zone.id] = polygon
+              if (selectedId === zone.id && !layers.zones?.locked) {
+                const path = polygon.getPath()
+                path.addListener('set_at', () => handleZonePathChange(zone))
+                path.addListener('insert_at', () => handleZonePathChange(zone))
+                path.addListener('remove_at', () => handleZonePathChange(zone))
+              }
             }}
             onUnmount={() => {
               delete zoneOverlayRefs.current[zone.id]
@@ -1566,32 +1710,67 @@ export default function MapCanvas({
         ))}
 
         {lines.map(line => (
-          <Polyline
-            key={line.id}
-            path={line.path}
-            options={{
-              strokeColor: selectedId === line.id ? '#38bdf8' : (line.color || '#f59e0b'),
-              strokeWeight: selectedId === line.id ? Math.max((line.strokeWeight || 4) + 1, 5) : (line.strokeWeight || 4),
-              // Keep a faint base stroke for dashed/dotted lines so line remains easy to click/select.
-              strokeOpacity: line.pattern === 'solid' ? 0.95 : 0.28,
-              clickable: drawMode === 'select',
-              editable: selectedId === line.id && !layers.zones?.locked,
-              draggable: selectedId === line.id && !layers.zones?.locked,
-              icons: getLinePatternIcons(line.pattern || 'dashed', selectedId === line.id ? '#38bdf8' : (line.color || '#f59e0b')),
-            }}
-            onClick={() => {
-              if (drawMode !== 'select') return
-              onSelect(line)
-            }}
-            onMouseUp={() => handleLinePathChange(line)}
-            onDragEnd={() => handleLinePathChange(line)}
-            onLoad={(polyline) => {
-              lineOverlayRefs.current[line.id] = polyline
-            }}
-            onUnmount={() => {
-              delete lineOverlayRefs.current[line.id]
-            }}
-          />
+          <React.Fragment key={line.id}>
+            <Polyline
+              key={`${line.id}-${line.path?.length || 0}`}
+              path={line.path}
+              options={{
+                strokeColor: selectedId === line.id ? '#38bdf8' : (line.color || '#f59e0b'),
+                strokeWeight: selectedId === line.id ? Math.max((line.strokeWeight || 4) + 1, 5) : (line.strokeWeight || 4),
+                strokeOpacity: line.pattern === 'solid' ? 0.95 : 0.28,
+                clickable: drawMode === 'select',
+                editable: selectedId === line.id && !layers.zones?.locked,
+                draggable: selectedId === line.id && !layers.zones?.locked,
+                icons: getLinePatternIcons(line.pattern || 'dashed', selectedId === line.id ? '#38bdf8' : (line.color || '#f59e0b')),
+              }}
+              onClick={() => {
+                if (drawMode !== 'select') return
+                onSelect(line)
+              }}
+              onMouseOver={(e) => {
+                if (drawMode !== 'select') return
+                setHoveredLine(line)
+                const rect = mapRef.current?.getDiv?.().getBoundingClientRect?.()
+                if (rect && e.domEvent) setHoverScreenPos({ x: e.domEvent.clientX - rect.left, y: e.domEvent.clientY - rect.top })
+              }}
+              onMouseMove={(e) => {
+                if (!hoveredLine) return
+                const rect = mapRef.current?.getDiv?.().getBoundingClientRect?.()
+                if (rect && e.domEvent) setHoverScreenPos({ x: e.domEvent.clientX - rect.left, y: e.domEvent.clientY - rect.top })
+              }}
+              onMouseOut={() => setHoveredLine(null)}
+              onLoad={(polyline) => {
+                lineOverlayRefs.current[line.id] = polyline
+                // listen to vertex drag so lengthM updates live
+                const path = polyline.getPath()
+                path.addListener('set_at', () => handleLinePathChange(line))
+                path.addListener('insert_at', () => handleLinePathChange(line))
+                path.addListener('remove_at', () => handleLinePathChange(line))
+              }}
+              onUnmount={() => { delete lineOverlayRefs.current[line.id] }}
+            />
+            {line.label && line.path?.length >= 2 && (
+              <OverlayView
+                position={line.path[Math.floor(line.path.length / 2)]}
+                mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                getPixelPositionOffset={() => ({ x: 6, y: -22 })}
+              >
+                <div style={{
+                  background: 'rgba(0,0,0,0.72)',
+                  color: '#fff',
+                  padding: '2px 8px',
+                  borderRadius: '10px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  whiteSpace: 'nowrap',
+                  pointerEvents: 'none',
+                  border: `1px solid ${line.color || '#f59e0b'}`,
+                }}>
+                  {line.label} · {line.lengthM >= 1000 ? `${(line.lengthM / 1000).toFixed(2)} km` : `${line.lengthM?.toFixed(0)} m`}
+                </div>
+              </OverlayView>
+            )}
+          </React.Fragment>
         ))}
 
         {lineDraft?.points?.length > 0 && (
@@ -1606,21 +1785,50 @@ export default function MapCanvas({
                 icons: getLinePatternIcons(lineStyle?.pattern || 'dashed', lineStyle?.color || '#38bdf8'),
               }}
             />
-            {lineDraft.points.map((point, index) => (
-              <Marker
-                key={`line-draft-${index}`}
-                position={point}
-                icon={{
-                  path: window.google.maps.SymbolPath.CIRCLE,
-                  scale: 5,
-                  fillColor: '#ffffff',
-                  fillOpacity: 1,
-                  strokeColor: lineStyle?.color || '#38bdf8',
-                  strokeWeight: 2,
-                }}
-                clickable={false}
-              />
-            ))}
+            {lineDraft.points.map((point, index) => {
+              const segDist = index === 0 ? null : window.google.maps.geometry.spherical.computeDistanceBetween(
+                new window.google.maps.LatLng(lineDraft.points[index - 1].lat, lineDraft.points[index - 1].lng),
+                new window.google.maps.LatLng(point.lat, point.lng)
+              )
+              const showLabel = segDist !== null && (lineDraft.points.length <= 6 || index % 2 === 0)
+              return (
+                <React.Fragment key={`line-draft-${index}`}>
+                  <Marker
+                    position={point}
+                    icon={{
+                      path: window.google.maps.SymbolPath.CIRCLE,
+                      scale: index === 0 ? 6 : 4,
+                      fillColor: index === 0 ? (lineStyle?.color || '#38bdf8') : '#ffffff',
+                      fillOpacity: 1,
+                      strokeColor: lineStyle?.color || '#38bdf8',
+                      strokeWeight: 2,
+                    }}
+                    clickable={false}
+                  />
+                  {showLabel && (
+                    <OverlayView
+                      position={point}
+                      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                      getPixelPositionOffset={() => ({ x: 8, y: -26 })}
+                    >
+                      <div style={{
+                        background: 'rgba(0,0,0,0.72)',
+                        color: '#fff',
+                        padding: '2px 7px',
+                        borderRadius: '10px',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                        pointerEvents: 'none',
+                        border: `1px solid ${lineStyle?.color || '#38bdf8'}`,
+                      }}>
+                        {formatDistance(segDist)}
+                      </div>
+                    </OverlayView>
+                  )}
+                </React.Fragment>
+              )
+            })}
           </>
         )}
 
@@ -1661,6 +1869,72 @@ export default function MapCanvas({
                 clickable={false}
               />
             ))}
+            {lineMeasurement !== null && polygonDraft.points.length > 2 && (
+              <OverlayView
+                position={polygonDraft.points[polygonDraft.points.length - 1]}
+                mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+              >
+                <div style={{
+                  background: 'rgba(0,0,0,0.8)',
+                  color: 'white',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                  whiteSpace: 'nowrap',
+                  transform: 'translateY(-100%)',
+                }}>
+                  Perimeter: {formatDistance(lineMeasurement)}
+                </div>
+              </OverlayView>
+            )}
+          </>
+        )}
+
+        {shapeDraft?.center && lineMeasurement !== null && window.google && (
+          <>
+            <Polygon
+              key="shape-draft"
+              paths={shapeDraft.type === 'circle'
+                ? buildCirclePath(shapeDraft.center, lineMeasurement, window.google, 256)
+                : buildSquarePath(shapeDraft.center, lineMeasurement, window.google)}
+              options={{
+                fillColor: shapeDraft.type === 'circle' ? 'rgba(60, 130, 240, 0.2)' : 'rgba(120, 210, 120, 0.2)',
+                strokeColor: shapeDraft.type === 'circle' ? '#3d8ef8' : '#22c55e',
+                strokeOpacity: 0.7,
+                strokeWeight: 2,
+                clickable: false,
+              }}
+            />
+            <Marker
+              position={shapeDraft.center}
+              icon={{
+                path: window.google.maps.SymbolPath.CIRCLE,
+                scale: 6,
+                fillColor: '#ffffff',
+                fillOpacity: 1,
+                strokeColor: '#000',
+                strokeWeight: 2,
+              }}
+              clickable={false}
+            />
+            <OverlayView
+              position={shapeDraft.center}
+              mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+            >
+              <div style={{
+                background: 'rgba(0,0,0,0.75)',
+                color: '#fff',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                fontSize: '12px',
+                fontWeight: 'bold',
+                whiteSpace: 'nowrap',
+                transform: 'translateY(-120%)',
+              }}>
+                {shapeDraft.type === 'circle' ? 'Radius' : 'Half-side'}: {formatDistance(lineMeasurement)}
+              </div>
+            </OverlayView>
           </>
         )}
 
@@ -1701,7 +1975,9 @@ export default function MapCanvas({
             zoom={mapZoom}
             selected={selectedId === asset.id}
             locked={!!layers.assets?.locked}
-            interactive={drawMode === 'select'}
+            interactive={drawMode === 'select' || drawMode === 'erase'}
+            drawMode={drawMode}
+            onEraseAsset={onEraseAsset}
             onSelect={onSelect}
             onStartInteraction={handleStartInteraction}
           />
@@ -1738,12 +2014,42 @@ export default function MapCanvas({
         screenPosition={cursorScreenPosition}
         text={
           ((drawMode === 'line' || drawMode === 'route') && lineDraft?.points?.length)
-            ? `${formatDistance(lineMeasurement)} | dbl-click finish | right-click undo`
+            ? `Total: ${formatDistance(lineMeasurement)} | +${formatDistance(
+                lineDraft.hoverPoint && lineDraft.points.length
+                  ? window.google?.maps?.geometry?.spherical?.computeDistanceBetween(
+                      new window.google.maps.LatLng(lineDraft.points[lineDraft.points.length - 1].lat, lineDraft.points[lineDraft.points.length - 1].lng),
+                      new window.google.maps.LatLng(lineDraft.hoverPoint.lat, lineDraft.hoverPoint.lng)
+                    ) : 0
+              )} | dbl-click finish | right-click undo`
             : (drawMode === 'polygon' && polygonDraft?.points?.length)
-            ? `${formatDistance(lineMeasurement)} | dbl-click finish | right-click undo`
+            ? `Perimeter: ${formatDistance(lineMeasurement)} | dbl-click finish | right-click undo`
             : null
         }
       />
+
+      {hoveredLine && hoverScreenPos && drawMode === 'select' && (
+        <div style={{
+          position: 'absolute',
+          left: `${hoverScreenPos.x + 14}px`,
+          top: `${hoverScreenPos.y - 56}px`,
+          background: 'rgba(15,23,42,0.92)',
+          color: '#fff',
+          border: `1.5px solid ${hoveredLine.color || '#f59e0b'}`,
+          borderRadius: '10px',
+          padding: '7px 12px',
+          fontSize: '12px',
+          fontWeight: 700,
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          zIndex: 25,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+          lineHeight: 1.6,
+        }}>
+          <div style={{ color: hoveredLine.color || '#f59e0b', marginBottom: '2px' }}>{hoveredLine.label || 'Line'}</div>
+          <div>📏 {hoveredLine.lengthM >= 1000 ? `${(hoveredLine.lengthM / 1000).toFixed(2)} km` : `${hoveredLine.lengthM?.toFixed(1)} m`}</div>
+          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.55)', marginTop: '2px' }}>{hoveredLine.path?.length} pts · {hoveredLine.pattern || 'dashed'} · {hoveredLine.strokeWeight || 4}px · {hoveredLine.status || 'planned'}</div>
+        </div>
+      )}
 
       {pendingAssetDef && drawMode === 'select' && cursorScreenPosition && (
         <div

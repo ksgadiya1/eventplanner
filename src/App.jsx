@@ -82,7 +82,7 @@ function getPathCentroid(path) {
   }
 }
 
-function detectPathTranslation(previousPath, nextPath, tolerance = 1e-7) {
+function detectPathTranslation(previousPath, nextPath, tolerance = 1e-6) {
   if (!Array.isArray(previousPath) || !Array.isArray(nextPath) || previousPath.length !== nextPath.length || !previousPath.length) {
     return null
   }
@@ -104,6 +104,19 @@ function detectPathTranslation(previousPath, nextPath, tolerance = 1e-7) {
   })
 
   return isConsistent ? delta : null
+}
+
+function detectPathTranslationByCentroid(previousPath, nextPath) {
+  if (!Array.isArray(previousPath) || !Array.isArray(nextPath) || !previousPath.length || !nextPath.length) return null
+
+  const previousCentroid = getPathCentroid(previousPath)
+  const nextCentroid = getPathCentroid(nextPath)
+  if (!previousCentroid || !nextCentroid) return null
+
+  return {
+    lat: nextCentroid.lat - previousCentroid.lat,
+    lng: nextCentroid.lng - previousCentroid.lng,
+  }
 }
 
 function translatePoint(point, delta) {
@@ -202,9 +215,9 @@ export default function App() {
   const [annotationDraftText, setAnnotationDraftText] = useState('New annotation')
   const [selectedId, setSelectedId] = useState(null)
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
-  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false)
   const [layers, setLayers] = useState(DEFAULT_LAYERS)
-  const [history, setHistory] = useState([])
+  const [undoStack, setUndoStack] = useState([])
+  const [redoStack, setRedoStack] = useState([])
   const [eventDetails, setEventDetails] = useState({
     name: '',
     locationQuery: '',
@@ -244,7 +257,6 @@ export default function App() {
       setEventDetails(prev => ({ ...prev, ...(parsed.eventDetails || {}) }))
       if (typeof parsed.annotationDraftText === 'string') setAnnotationDraftText(parsed.annotationDraftText)
       if (typeof parsed.leftSidebarCollapsed === 'boolean') setLeftSidebarCollapsed(parsed.leftSidebarCollapsed)
-      if (typeof parsed.rightSidebarCollapsed === 'boolean') setRightSidebarCollapsed(parsed.rightSidebarCollapsed)
       if (parsed.mapViewMode === '2d' || parsed.mapViewMode === '3d') {
         setMapViewMode(parsed.mapViewMode)
       }
@@ -274,7 +286,6 @@ export default function App() {
       textStyle,
       annotationDraftText,
       leftSidebarCollapsed,
-      rightSidebarCollapsed,
       selectedZoneType,
       eventDetails,
       mapViewMode,
@@ -285,7 +296,7 @@ export default function App() {
     } catch {
       // ignore storage quota failures
     }
-  }, [annotationDraftText, annotations, assets, eventDetails, floorPlan, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, rightSidebarCollapsed, selectedZoneType, textStyle, zones])
+  }, [annotationDraftText, annotations, assets, eventDetails, floorPlan, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
 
   useEffect(() => {
     if (drawMode !== 'select' && pendingAssetDef) {
@@ -299,9 +310,12 @@ export default function App() {
       || null
   ), [annotations, assets, floorPlan, lines, selectedId, zones])
 
+  const snapshot = useCallback(() => ({ zones, assets, lines, annotations, floorPlan }), [zones, assets, lines, annotations, floorPlan])
+
   const pushHistory = useCallback(() => {
-    setHistory(h => [...h.slice(-20), { zones, assets, lines, annotations, floorPlan }])
-  }, [zones, assets, lines, annotations, floorPlan])
+    setUndoStack(s => [...s.slice(-50), snapshot()])
+    setRedoStack([])
+  }, [snapshot])
 
   // Zone created by drawing
   const handleZoneCreate = useCallback((zone) => {
@@ -359,8 +373,13 @@ export default function App() {
     setDrawMode('select')
   }, [])
 
+  const updateDebounceRef = useRef(null)
+
   // Update selected item properties
   const handleUpdate = useCallback((updated) => {
+    // Debounce history push for rapid text/number edits (300ms)
+    clearTimeout(updateDebounceRef.current)
+    updateDebounceRef.current = setTimeout(() => pushHistory(), 300)
     if (updated.type === 'zone') {
       const previousZone = zones.find(zone => zone.id === updated.id)
       const isZoneGeometryChange = !arePathsEqual(previousZone?.path, updated.path)
@@ -370,8 +389,8 @@ export default function App() {
       }
 
       if (isZoneGeometryChange) {
-        pushHistory()
         const translation = detectPathTranslation(previousZone?.path, updated.path)
+        || detectPathTranslationByCentroid(previousZone?.path, updated.path)
         const zoneIdsToMove = collectRelatedZoneIds(updated.id, zones)
         const nextZones = zones.map(zone => {
           if (zone.id === updated.id) return nextZoneRecord
@@ -505,24 +524,71 @@ export default function App() {
     setSelectedId(null)
   }, [annotations, assets, lines, pushHistory, selectedId, zones])
 
+  const handleUndo = useCallback(() => {
+    setUndoStack(stack => {
+      if (!stack.length) return stack
+      const prev = stack[stack.length - 1]
+      const current = { zones, assets, lines, annotations, floorPlan }
+      setRedoStack(r => [...r.slice(-50), current])
+      setZones(prev.zones)
+      setAssets(prev.assets)
+      setLines(prev.lines || [])
+      setAnnotations(prev.annotations || [])
+      setFloorPlan(prev.floorPlan || null)
+      setSelectedId(null)
+      return stack.slice(0, -1)
+    })
+  }, [zones, assets, lines, annotations, floorPlan])
+
+  const handleRedo = useCallback(() => {
+    setRedoStack(stack => {
+      if (!stack.length) return stack
+      const next = stack[stack.length - 1]
+      const current = { zones, assets, lines, annotations, floorPlan }
+      setUndoStack(u => [...u.slice(-50), current])
+      setZones(next.zones)
+      setAssets(next.assets)
+      setLines(next.lines || [])
+      setAnnotations(next.annotations || [])
+      setFloorPlan(next.floorPlan || null)
+      setSelectedId(null)
+      return stack.slice(0, -1)
+    })
+  }, [zones, assets, lines, annotations, floorPlan])
+
   useEffect(() => {
-    const handleKeyDelete = (event) => {
-      if (!selectedId) return
+    const handleKeyDown = (event) => {
       const target = event.target
       const tagName = target?.tagName?.toLowerCase?.()
       const isTypingField = tagName === 'input' || tagName === 'textarea' || target?.isContentEditable
       if (isTypingField) return
 
+      const isMac = navigator.platform.toUpperCase().includes('MAC')
+      const ctrl = isMac ? event.metaKey : event.ctrlKey
+
+      if (ctrl && event.key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        handleUndo()
+        return
+      }
+      if (ctrl && (event.key === 'y' || (event.key === 'z' && event.shiftKey))) {
+        event.preventDefault()
+        handleRedo()
+        return
+      }
+
+      if (!selectedId) return
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault()
         handleDelete()
       }
     }
 
-    window.addEventListener('keydown', handleKeyDelete)
-    return () => window.removeEventListener('keydown', handleKeyDelete)
-  }, [handleDelete, selectedId])
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleDelete, handleRedo, handleUndo, selectedId])
 
+  // Layer toggles
   const handleDuplicate = useCallback(() => {
     const selectedAsset = assets.find(asset => asset.id === selectedId)
     if (!selectedAsset) return
@@ -549,21 +615,53 @@ export default function App() {
     setDrawMode('select')
   }, [assets, pushHistory, selectedId])
 
-  // Undo
-  const handleUndo = useCallback(() => {
-    if (history.length === 0) return
-    const prev = history[history.length - 1]
-    setZones(prev.zones)
-    setAssets(prev.assets)
-    setLines(prev.lines || [])
-    setAnnotations(prev.annotations || [])
-    setFloorPlan(prev.floorPlan || null)
-    setHistory(h => h.slice(0, -1))
-    setSelectedId(null)
-  }, [history])
-
-  // Layer toggles
   const handleToggleLayer = useCallback((layerId) => {
+    setLayers(prev => ({
+      ...prev,
+      [layerId]: { ...prev[layerId], visible: !prev[layerId].visible }
+    }))
+  }, [])
+
+  const handleEraseAsset = useCallback((asset) => {
+    if (!asset?.id) return
+    pushHistory()
+    setAssets(prev => prev.filter(a => a.id !== asset.id))
+    if (selectedId === asset.id) setSelectedId(null)
+  }, [pushHistory, selectedId])
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      const target = event.target
+      const tagName = target?.tagName?.toLowerCase?.()
+      const isTypingField = tagName === 'input' || tagName === 'textarea' || target?.isContentEditable
+      if (isTypingField) return
+
+      const isMac = navigator.platform.toUpperCase().includes('MAC')
+      const ctrl = isMac ? event.metaKey : event.ctrlKey
+
+      if (ctrl && event.key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        handleUndo()
+        return
+      }
+      if (ctrl && (event.key === 'y' || (event.key === 'z' && event.shiftKey))) {
+        event.preventDefault()
+        handleRedo()
+        return
+      }
+
+      if (!selectedId) return
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        handleDelete()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleDelete, handleRedo, handleUndo, selectedId])
+
+  const handleToggleVisibility = useCallback((layerId) => {
     setLayers(prev => ({
       ...prev,
       [layerId]: { ...prev[layerId], visible: !prev[layerId].visible }
@@ -750,10 +848,9 @@ export default function App() {
         drawMode={drawMode}
         onDrawMode={handleDrawMode}
         onUndo={handleUndo}
-        onDelete={handleDelete}
-        onDuplicate={handleDuplicate}
-        hasSelection={!!selectedId}
-        canDuplicate={selectedItem?.type === 'asset'}
+        onRedo={handleRedo}
+        canUndo={undoStack.length > 0}
+        canRedo={redoStack.length > 0}
         onExport={handleExport}
         theme={theme}
         onToggleTheme={handleToggleTheme}
@@ -811,6 +908,7 @@ export default function App() {
 
         <MapCanvas
           drawMode={drawMode}
+          onDrawMode={setDrawMode}
           selectedZoneType={selectedZoneType}
           layers={layers}
           zones={zones}
@@ -821,6 +919,7 @@ export default function App() {
           placingFloor={placingFloor}
           selectedId={selectedId}
           onSelect={handleSelect}
+          onEraseAsset={handleEraseAsset}
           onZoneCreate={handleZoneCreate}
           onLineCreate={handleLineCreate}
           onAnnotationCreate={handleAnnotationCreate}
@@ -840,8 +939,7 @@ export default function App() {
         />
 
         <PropertiesPanel
-          collapsed={rightSidebarCollapsed}
-          onToggleCollapse={() => setRightSidebarCollapsed(prev => !prev)}
+          collapsed={!selectedId}
           selected={selectedItem}
           zones={zones}
           assets={assets}
@@ -849,6 +947,7 @@ export default function App() {
           annotations={annotations}
           onUpdate={handleUpdate}
           onDuplicate={handleDuplicate}
+          onDelete={handleDelete}
           onClose={() => setSelectedId(null)}
         />
 

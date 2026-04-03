@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react'
-import { X, Users, Ruler, ChevronLeft, ChevronRight } from 'lucide-react'
+import { X, Users, Ruler, ChevronLeft, Trash2 } from 'lucide-react'
 import { CROWD_DENSITY_OPTIONS, ZONE_TYPES, computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZoneAllowedAssetTypes } from '../data/assets'
 
 const styles = {
@@ -205,8 +205,7 @@ function formatDist(meters) {
   return `${m} m  /  ${ft} ft`
 }
 
-export default function PropertiesPanel({ collapsed = false, onToggleCollapse, selected, zones = [], assets = [], lines = [], annotations = [], onUpdate, onClose, onDuplicate }) {
-  const [density, setDensity] = useState(0.5)
+export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], onUpdate, onClose, onDuplicate, onDelete }) {
 
   const selectedId = selected?.id
   const selectedParentId = selected?.parentId
@@ -226,37 +225,14 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
   ), [selectedParentId, zones])
 
   if (collapsed) {
-    return (
-      <div style={styles.panelCollapsed}>
-        <div style={styles.collapsedStack}>
-          <button type="button" style={styles.collapseBtn} onClick={onToggleCollapse} title="Expand properties">
-            <ChevronLeft size={14} />
-          </button>
-          <button type="button" style={styles.collapseBtn} onClick={onToggleCollapse} title="Properties">
-            <Ruler size={14} />
-          </button>
-        </div>
-      </div>
-    )
+    return null
   }
 
   if (!selected) {
-    return (
-      <div style={styles.panel}>
-        <div style={{ ...styles.header, padding: '10px 8px', justifyContent: 'flex-end' }}>
-          <button type="button" style={styles.collapseBtn} onClick={onToggleCollapse} title="Collapse properties">
-            <ChevronRight size={14} />
-          </button>
-        </div>
-        <div style={styles.emptyState}>
-          <Ruler size={28} style={{ opacity: 0.3 }} />
-          <div style={{ fontSize: '12px' }}>Select a zone, asset, line or annotation<br />to view its properties</div>
-        </div>
-      </div>
-    )
+    return null
   }
 
-  const crowdCapacity = isZone ? computeZoneCapacity(selected, density) : null
+  const crowdCapacity = isZone ? computeZoneCapacity(selected, selected?.density || 0.5) : null
   const parkingCapacity = isCarPark ? computeParkingCapacity(selected) : null
   const parkingStandard = isCarPark ? getParkingStandard(selected) : null
   const totalRouteLengthM = isZone ? childLines.reduce((sum, line) => sum + (line.lengthM || 0), 0) : 0
@@ -272,8 +248,14 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
           {isZone ? 'Zone' : isAsset ? 'Asset' : isLine ? 'Line' : isFloor ? 'Floor Plan' : isAnnotation ? 'Annotation' : 'Item'} Properties
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <button type="button" style={styles.collapseBtn} onClick={onToggleCollapse} title="Collapse properties">
-            <ChevronRight size={14} />
+          <button
+            type="button"
+            style={{ ...styles.toolBtn, color: 'var(--danger)', padding: '5px' }}
+            onClick={() => { onDelete?.(); onClose?.(); }}
+            title="Delete selected"
+            aria-label="Delete selected"
+          >
+            <Trash2 size={16} />
           </button>
           <button style={styles.closeBtn} onClick={onClose}><X size={14} /></button>
         </div>
@@ -351,7 +333,7 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
                     }
                     onUpdate({
                       ...nextZone,
-                      capacity: computeZoneCapacity(nextZone, density),
+                      capacity: computeZoneCapacity(nextZone, selected.density || 0.5),
                     })
                   }}
                 >
@@ -381,7 +363,7 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
                       const nextZone = { ...selected, zoneType: nextZoneType }
                       onUpdate({
                         ...nextZone,
-                        capacity: computeZoneCapacity(nextZone, density),
+                        capacity: computeZoneCapacity(nextZone, selected.density || 0.5),
                       })
                     }}
                   />
@@ -401,7 +383,7 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
                       const nextZone = { ...selected, zoneType: nextZoneType }
                       onUpdate({
                         ...nextZone,
-                        capacity: computeZoneCapacity(nextZone, density),
+                        capacity: computeZoneCapacity(nextZone, selected.density || 0.5),
                       })
                     }}
                     placeholder="#3d8ef8"
@@ -435,7 +417,7 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
                     onUpdate({
                       ...selected,
                       subType,
-                      capacity: computeZoneCapacity({ ...selected, subType }, density),
+                      capacity: computeZoneCapacity({ ...selected, subType }, selected.density || 0.5),
                     })
                   }}
                 >
@@ -507,8 +489,8 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
                   <label style={styles.label}>Density Model</label>
                   <select
                     style={styles.select}
-                    value={density}
-                    onChange={e => setDensity(Number(e.target.value))}
+                    value={selected.density || 0.5}
+                    onChange={e => onUpdate({ ...selected, density: Number(e.target.value) })}
                   >
                     {CROWD_DENSITY_OPTIONS.map(opt => (
                       <option key={opt.value} value={opt.value}>
@@ -698,11 +680,11 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
               </div>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Lat</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lat?.toFixed(5)}</span>
+                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lat ? selected.lat.toFixed(5) : '—'}</span>
               </div>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Lng</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lng?.toFixed(5)}</span>
+                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lng ? selected.lng.toFixed(5) : '—'}</span>
               </div>
             </div>
           </>
@@ -711,6 +693,58 @@ export default function PropertiesPanel({ collapsed = false, onToggleCollapse, s
         {isLine && (
           <>
             <div style={styles.sectionDivider} />
+
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Line Style</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '94px 1fr', gap: '8px' }}>
+                <div style={styles.field}>
+                  <label style={styles.label}>Color</label>
+                  <input
+                    type="color"
+                    style={{ ...styles.input, padding: '4px', height: '36px' }}
+                    value={selected.color || '#f59e0b'}
+                    onChange={e => onUpdate({ ...selected, color: e.target.value })}
+                  />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Hex</label>
+                  <input
+                    style={styles.input}
+                    value={selected.color || '#f59e0b'}
+                    onChange={e => {
+                      const v = e.target.value.trim()
+                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) return
+                      onUpdate({ ...selected, color: v })
+                    }}
+                    placeholder="#f59e0b"
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={styles.field}>
+                  <label style={styles.label}>Weight (px)</label>
+                  <input
+                    type="number" min="1" max="12" step="1"
+                    style={styles.input}
+                    value={selected.strokeWeight || 4}
+                    onChange={e => onUpdate({ ...selected, strokeWeight: Math.max(1, Number(e.target.value) || 4) })}
+                  />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Pattern</label>
+                  <select
+                    style={styles.select}
+                    value={selected.pattern || 'dashed'}
+                    onChange={e => onUpdate({ ...selected, pattern: e.target.value })}
+                  >
+                    <option value="solid">Solid</option>
+                    <option value="dashed">Dashed</option>
+                    <option value="dotted">Dotted</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             <div style={styles.statCard}>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Length</span>

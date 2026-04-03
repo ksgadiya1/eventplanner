@@ -120,31 +120,32 @@ const styles = {
   },
   assetGrid: {
     display: 'grid',
-    gridTemplateColumns: '1fr',
-    gap: '8px',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '12px',
     marginBottom: '12px',
   },
   assetCard: {
     background: 'var(--bg-secondary)',
     border: '1px solid var(--border)',
     borderRadius: '12px',
-    padding: '10px 12px',
+    padding: '12px 10px',
     cursor: 'grab',
     transition: 'all 0.15s',
-    textAlign: 'left',
+    textAlign: 'center',
     display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
-    gap: '10px',
+    gap: '8px',
   },
   assetIcon: {
-    width: '34px',
-    height: '34px',
+    width: '44px',
+    height: '44px',
     borderRadius: '10px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     background: 'var(--bg-panel)',
-    fontSize: '20px',
+    fontSize: '24px',
     lineHeight: 1,
     flexShrink: 0,
   },
@@ -153,6 +154,7 @@ const styles = {
     fontWeight: 600,
     color: 'var(--text-secondary)',
     lineHeight: 1.3,
+    textAlign: 'center',
   },
   filterRow: {
     display: 'flex',
@@ -520,49 +522,46 @@ export default function Sidebar({
     onAssetDragStart(event, prepared)
   }
 
-  const renderAssetCard = (asset, compact = false) => (
-    <div
-      key={`${compact ? 'recent' : 'asset'}-${asset.id}`}
-      style={{
-        ...(compact ? styles.miniAssetCard : styles.assetCard),
-        borderColor: pendingAssetDef?.id === asset.id ? (pendingAssetDef.color || asset.color) : `${asset.color}44`,
-        background: pendingAssetDef?.id === asset.id ? `${pendingAssetDef.color || asset.color}18` : 'var(--bg-secondary)',
-      }}
-      draggable={!compact}
-      onDragStart={compact ? undefined : (event) => startAssetDrag(event, asset)}
-      onDragEnd={compact ? undefined : (event) => {
-        onAssetDragEnd?.(event)
-        window.setTimeout(() => {
-          isDraggingAssetRef.current = false
-        }, 0)
-      }}
-      onClick={() => {
-        if (isDraggingAssetRef.current) return
-        startAssetPlacement(asset)
-      }}
-      onMouseEnter={event => {
-        event.currentTarget.style.borderColor = assetColorOverride || asset.color
-        event.currentTarget.style.background = `${assetColorOverride || asset.color}18`
-      }}
-      onMouseLeave={event => {
-        event.currentTarget.style.borderColor = pendingAssetDef?.id === asset.id ? (pendingAssetDef.color || asset.color) : `${asset.color}44`
-        event.currentTarget.style.background = pendingAssetDef?.id === asset.id ? `${pendingAssetDef.color || asset.color}18` : 'var(--bg-secondary)'
-      }}
-      title={asset.name}
-    >
-      <div style={{ ...styles.assetIcon, border: `1px solid ${(assetColorOverride || asset.color)}33`, color: assetColorOverride || asset.color }}>
-        <AssetGlyph asset={{ ...asset, color: assetColorOverride || asset.color, iconColor: assetColorOverride || asset.color }} size={compact ? 18 : 20} />
+  const renderAssetCard = (asset, compact = false) => {
+    const assetColor = assetColorOverride || asset.color
+
+    return (
+      <div
+        key={`${compact ? 'recent' : 'asset'}-${asset.id}`}
+        style={{
+          ...(compact ? styles.miniAssetCard : styles.assetCard),
+          borderColor: pendingAssetDef?.id === asset.id ? (pendingAssetDef.color || asset.color) : `${asset.color}44`,
+          background: pendingAssetDef?.id === asset.id ? `${pendingAssetDef.color || asset.color}18` : 'var(--bg-secondary)',
+          cursor: compact ? 'pointer' : 'grab',
+          transition: 'all 0.15s',
+        }}
+        draggable={!compact}
+        onDragStart={compact ? undefined : (event) => startAssetDrag(event, asset)}
+        onDragEnd={compact ? undefined : (event) => {
+          onAssetDragEnd?.(event)
+          window.setTimeout(() => {
+            isDraggingAssetRef.current = false
+          }, 0)
+        }}
+        onClick={() => {
+          if (isDraggingAssetRef.current) return
+          startAssetPlacement(asset)
+        }}
+      >
+        <div style={{ ...styles.assetIcon, border: `1px solid ${assetColor}33`, color: assetColor }}>
+          <AssetGlyph asset={{ ...asset, color: assetColor, iconColor: assetColor }} size={compact ? 18 : 20} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ ...styles.assetName, color: 'var(--text-primary)' }}>{asset.name}</div>
+          {!compact && (
+            <div style={{ fontSize: '10px', color: assetColor, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              {/* {pendingAssetDef?.id === asset.id ? 'Click Map To Place' : 'Click / Drag To Place'} */}
+            </div>
+          )}
+        </div>
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ ...styles.assetName, color: 'var(--text-primary)' }}>{asset.name}</div>
-        {!compact && (
-          <div style={{ fontSize: '10px', color: assetColorOverride || asset.color, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            {pendingAssetDef?.id === asset.id ? 'Click Map To Place' : 'Click / Drag To Place'}
-          </div>
-        )}
-      </div>
-    </div>
-  )
+    )
+  }
 
   const renderZoneNode = (zone) => {
     const childAssets = assetsByParent[zone.id] || []
@@ -581,72 +580,79 @@ export default function Sidebar({
           }}
           onClick={() => onSelectItem?.(zone)}
         >
-          {hasChildren ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                toggleZone(zone.id)
-              }}
-              style={{ ...styles.iconBtn, width: '22px', height: '22px', border: 'none', background: 'transparent' }}
-            >
-              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            </button>
-          ) : (
-            <div style={{ width: '22px' }} />
-          )}
-          <div style={{ ...styles.colorDot, background: zone.zoneType?.color || '#3d8ef8' }} />
-          <span style={styles.treeLabel}>{zone.label || zone.zoneType?.name || 'Zone'}</span>
-          <span style={styles.treeMeta}>Zone</span>
-        </div>
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleZone(zone.id)
+                }}
+                style={{ ...styles.iconBtn, width: '22px', height: '22px', border: 'none', background: 'transparent' }}
+              >
+                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </button>
+            ) : (
+              <div style={{ width: '22px' }} />
+            )}
+            <div style={{ ...styles.colorDot, background: zone.zoneType?.color || '#3d8ef8' }} />
+            <span style={styles.treeLabel}>{zone.label || zone.zoneType?.name || 'Zone'}</span>
+            <span style={styles.treeMeta}>Zone</span>
+          </div>
 
         {hasChildren && expanded && (
           <div style={styles.treeChildren}>
-            {childAssets.map(asset => (
-              <div
-                key={asset.id}
-                style={{
-                  ...styles.treeNode,
-                  background: selectedId === asset.id ? 'var(--bg-hover)' : 'transparent',
-                }}
-                onClick={() => onSelectItem?.(asset)}
-              >
-                <div style={{ width: '22px' }} />
-                <AssetGlyph asset={asset.assetDef} size={14} color={asset.assetDef?.iconColor || asset.assetDef?.color} />
-                <span style={styles.treeLabel}>{asset.label || asset.assetDef?.name || 'Asset'}</span>
-                <span style={styles.treeMeta}>Asset</span>
-              </div>
-            ))}
-            {childLines.map(line => (
-              <div
-                key={line.id}
-                style={{
-                  ...styles.treeNode,
-                  background: selectedId === line.id ? 'var(--bg-hover)' : 'transparent',
-                }}
-                onClick={() => onSelectItem?.(line)}
-              >
-                <div style={{ width: '22px' }} />
-                <span style={{ fontSize: '14px', color: '#f59e0b' }}>-</span>
-                <span style={styles.treeLabel}>{line.label || 'Line'}</span>
-                <span style={styles.treeMeta}>Line</span>
-              </div>
-            ))}
-            {childAnnotations.map(annotation => (
-              <div
-                key={annotation.id}
-                style={{
-                  ...styles.treeNode,
-                  background: selectedId === annotation.id ? 'var(--bg-hover)' : 'transparent',
-                }}
-                onClick={() => onSelectItem?.(annotation)}
-              >
-                <div style={{ width: '22px' }} />
-                <span style={{ fontSize: '14px', color: '#2563eb' }}>T</span>
-                <span style={styles.treeLabel}>{annotation.label || annotation.text || 'Annotation'}</span>
-                <span style={styles.treeMeta}>Note</span>
-              </div>
-            ))}
+            {childAssets.map(asset => {
+              const assetDef = asset.assetDef
+              return (
+                <div
+                  key={asset.id}
+                  style={{
+                    ...styles.treeNode,
+                    background: selectedId === asset.id ? 'var(--bg-hover)' : 'transparent',
+                  }}
+                  onClick={() => onSelectItem?.(asset)}
+                >
+                  <div style={{ width: '22px' }} />
+                  <AssetGlyph asset={assetDef} size={14} color={assetDef?.iconColor || assetDef?.color} />
+                  <span style={styles.treeLabel}>{asset.label || assetDef?.name || 'Asset'}</span>
+                  <span style={styles.treeMeta}>Asset</span>
+                </div>
+              )
+            })}
+            {childLines.map(line => {
+              return (
+                <div
+                  key={line.id}
+                  style={{
+                    ...styles.treeNode,
+                    background: selectedId === line.id ? 'var(--bg-hover)' : 'transparent',
+                  }}
+                  onClick={() => onSelectItem?.(line)}
+                >
+                  <div style={{ width: '22px' }} />
+                  <span style={{ fontSize: '14px', color: '#f59e0b' }}>-</span>
+                  <span style={styles.treeLabel}>{line.label || 'Line'}</span>
+                  <span style={styles.treeMeta}>Line</span>
+                </div>
+              )
+            })}
+            {childAnnotations.map(annotation => {
+              return (
+                <div
+                  key={annotation.id}
+                  style={{
+                    ...styles.treeNode,
+                    background: selectedId === annotation.id ? 'var(--bg-hover)' : 'transparent',
+                  }}
+                  onClick={() => onSelectItem?.(annotation)}
+                >
+                  <div style={{ width: '22px' }} />
+                  <span style={{ fontSize: '14px', color: '#2563eb' }}>T</span>
+                  <span style={styles.treeLabel}>{annotation.label || annotation.text || 'Annotation'}</span>
+                  <span style={styles.treeMeta}>Note</span>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
@@ -723,9 +729,9 @@ export default function Sidebar({
           <>
             <div style={styles.floorCard}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Floor Plan Overlay</div>
-              <div style={{ ...styles.floorMeta, marginTop: '4px' }}>
+              {/* <div style={{ ...styles.floorMeta, marginTop: '4px' }}>
                 Upload a floor plan image and place it with two clicks on the map.
-              </div>
+              </div> */}
               <input
                 type="file"
                 accept="image/*"
@@ -742,14 +748,14 @@ export default function Sidebar({
                   e.target.value = ''
                 }}
               />
-              <button
+              {/* <button
                 style={{ ...styles.floorBtn, opacity: floorPlan?.imageUrl ? 1 : 0.5, cursor: floorPlan?.imageUrl ? 'pointer' : 'not-allowed' }}
                 onClick={onStartFloorPlacement}
                 disabled={!floorPlan?.imageUrl}
               >
                 {placingFloor ? 'Click Two Corners On Map' : 'Place Floor Plan'}
-              </button>
-              {floorPlan?.imageUrl && (
+              </button> */}
+              {/* {floorPlan?.imageUrl && (
                 <>
                   <div style={{ ...styles.floorMeta, marginTop: '8px' }}>
                     {floorPlan.bounds ? 'Floor plan overlay is placed on the map.' : 'Image loaded. Choose top-left and bottom-right points on the map.'}
@@ -767,11 +773,11 @@ export default function Sidebar({
                     />
                   </div>
                 </>
-              )}
+              )} */}
             </div>
-            <p style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '10px' }}>
+            {/* <p style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '10px' }}>
               Click or drag assets onto the map to place them
-            </p>
+            </p> */}
             {drawMode === 'text' && (
               <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
                 <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Annotation Text</div>
@@ -793,7 +799,7 @@ export default function Sidebar({
               placeholder="Search assets..."
               style={{ ...styles.floorInput, marginTop: 0, marginBottom: '10px' }}
             />
-            <div style={styles.filterRow}>
+            {/* <div style={styles.filterRow}>
               {ASSET_LIBRARY_FILTERS.map(filter => (
                 <button
                   key={filter.id}
@@ -809,8 +815,8 @@ export default function Sidebar({
                   {filter.label}
                 </button>
               ))}
-            </div>
-            <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
+            </div> */}
+            {/* <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>Asset Style</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px', alignItems: 'center' }}>
                 <input
@@ -830,15 +836,15 @@ export default function Sidebar({
               <div style={{ ...styles.floorMeta, marginTop: '8px' }}>
                 Pick a custom asset color before placing, or reset to each asset&apos;s default palette.
               </div>
-            </div>
-            {recentAssets.length > 0 && (
+            </div> */}
+            {/* {recentAssets.length > 0 && (
               <>
                 <div style={styles.sectionHeader}>Recent Icons</div>
                 <div style={styles.recentGrid}>
                   {recentAssets.map(asset => renderAssetCard(asset, true))}
                 </div>
               </>
-            )}
+            )} */}
             {filteredAssetCategories.map(([cat, filteredAssets]) => {
               return (
               <div key={cat}>
@@ -924,37 +930,47 @@ export default function Sidebar({
 
                     {expanded && folder.id === 'assets' && unassignedAssets.length > 0 && (
                       <div style={styles.treeChildren}>
-                        {unassignedAssets.map(asset => (
-                          <div key={asset.id} style={{ ...styles.treeNode, background: selectedId === asset.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(asset)}>
-                            <AssetGlyph asset={asset.assetDef} size={14} color={asset.assetDef?.iconColor || asset.assetDef?.color} />
-                            <span style={styles.treeLabel}>{asset.label || asset.assetDef?.name || 'Asset'}</span>
-                            <span style={styles.treeMeta}>Asset</span>
-                          </div>
-                        ))}
+                        {unassignedAssets.map(asset => {
+                          const assetDef = asset.assetDef
+                          return (
+                            <div key={asset.id} style={{ ...styles.treeNode, background: selectedId === asset.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(asset)}>
+                              <div style={{ width: '22px' }} />
+                              <AssetGlyph asset={assetDef} size={14} color={assetDef?.iconColor || assetDef?.color} />
+                              <span style={styles.treeLabel}>{asset.label || assetDef?.name || 'Asset'}</span>
+                              <span style={styles.treeMeta}>Asset</span>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
 
                     {expanded && folder.id === 'annotations' && unassignedAnnotations.length > 0 && (
                       <div style={styles.treeChildren}>
-                        {unassignedAnnotations.map(annotation => (
-                          <div key={annotation.id} style={{ ...styles.treeNode, background: selectedId === annotation.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(annotation)}>
-                            <span style={{ fontSize: '14px', color: '#2563eb' }}>T</span>
-                            <span style={styles.treeLabel}>{annotation.label || annotation.text || 'Annotation'}</span>
-                            <span style={styles.treeMeta}>Note</span>
-                          </div>
-                        ))}
+                        {unassignedAnnotations.map(annotation => {
+                          return (
+                            <div key={annotation.id} style={{ ...styles.treeNode, background: selectedId === annotation.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(annotation)}>
+                              <div style={{ width: '22px' }} />
+                              <span style={{ fontSize: '14px', color: '#2563eb' }}>T</span>
+                              <span style={styles.treeLabel}>{annotation.label || annotation.text || 'Annotation'}</span>
+                              <span style={styles.treeMeta}>Note</span>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
 
                     {expanded && folder.id === 'lines' && unassignedLines.length > 0 && (
                       <div style={styles.treeChildren}>
-                        {unassignedLines.map(line => (
-                          <div key={line.id} style={{ ...styles.treeNode, background: selectedId === line.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(line)}>
-                            <span style={{ fontSize: '14px', color: '#f59e0b' }}>-</span>
-                            <span style={styles.treeLabel}>{line.label || 'Line'}</span>
-                            <span style={styles.treeMeta}>Line</span>
-                          </div>
-                        ))}
+                        {unassignedLines.map(line => {
+                          return (
+                            <div key={line.id} style={{ ...styles.treeNode, background: selectedId === line.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(line)}>
+                              <div style={{ width: '22px' }} />
+                              <span style={{ fontSize: '14px', color: '#f59e0b' }}>-</span>
+                              <span style={styles.treeLabel}>{line.label || 'Line'}</span>
+                              <span style={styles.treeMeta}>Line</span>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
 
