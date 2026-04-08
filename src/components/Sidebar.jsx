@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder } from 'lucide-react'
+import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Download } from 'lucide-react'
 import AssetGlyph from './AssetGlyph'
-import { ALL_ASSETS, ASSET_CATEGORIES, ASSET_LIBRARY_FILTERS } from '../data/assets'
+
 
 const RECENT_ASSET_STORAGE_KEY = 'eventwiz-recent-assets-v1'
 
@@ -51,7 +51,12 @@ const styles = {
     width: '28px',
     height: '28px',
     borderRadius: '8px',
-    border: '1px solid var(--border)',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderTopColor: 'var(--border)',
+    borderRightColor: 'var(--border)',
+    borderBottomColor: 'var(--border)',
+    borderLeftColor: 'var(--border)',
     background: 'var(--bg-secondary)',
     color: 'var(--text-secondary)',
     display: 'inline-flex',
@@ -64,7 +69,12 @@ const styles = {
     width: '28px',
     height: '28px',
     borderRadius: '8px',
-    border: '1px solid var(--border)',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderTopColor: 'var(--border)',
+    borderRightColor: 'var(--border)',
+    borderBottomColor: 'var(--border)',
+    borderLeftColor: 'var(--border)',
     background: 'var(--bg-secondary)',
     color: 'var(--text-secondary)',
     display: 'inline-flex',
@@ -93,7 +103,10 @@ const styles = {
     transition: 'all 0.15s',
     cursor: 'pointer',
     borderStyle: 'solid',
-    borderColor: 'transparent',
+    borderTopColor: 'transparent',
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'transparent',
     borderWidth: '0px 0px 2px 0px',
   },
   activeTab: {
@@ -126,7 +139,12 @@ const styles = {
   },
   assetCard: {
     background: 'var(--bg-secondary)',
-    border: '1px solid var(--border)',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderTopColor: 'var(--border)',
+    borderRightColor: 'var(--border)',
+    borderBottomColor: 'var(--border)',
+    borderLeftColor: 'var(--border)',
     borderRadius: '12px',
     padding: '12px 10px',
     cursor: 'grab',
@@ -180,7 +198,12 @@ const styles = {
   },
   miniAssetCard: {
     background: 'var(--bg-secondary)',
-    border: '1px solid var(--border)',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderTopColor: 'var(--border)',
+    borderRightColor: 'var(--border)',
+    borderBottomColor: 'var(--border)',
+    borderLeftColor: 'var(--border)',
     borderRadius: '12px',
     padding: '8px',
     cursor: 'pointer',
@@ -376,17 +399,18 @@ export default function Sidebar({
   onAssetDragEnd,
   pendingAssetDef,
   onAssetClickPlace,
+  onImportAssets,
+  onImportProject,
+  onDownloadAssetList,
   zones = [],
   assets = [],
   lines = [],
   annotations = [],
   selectedId,
   onSelectItem,
+  onUpdateAsset,
   floorPlan,
-  placingFloor,
   onFloorPlanUpload,
-  onStartFloorPlacement,
-  onFloorOpacityChange,
   layers,
   onToggleLayer,
   onToggleLock,
@@ -398,6 +422,8 @@ export default function Sidebar({
   onTextStyleChange,
   annotationDraftText,
   onAnnotationDraftTextChange,
+  assetCategories = {},
+  zoneTypes = [],
 }) {
   const [activeTab, setActiveTab] = useState('assets')
   const [expandedCats, setExpandedCats] = useState({ 'Performance': true, 'Access & Security': true })
@@ -415,6 +441,11 @@ export default function Sidebar({
   })
   const [expandedZones, setExpandedZones] = useState({})
   const isDraggingAssetRef = useRef(false)
+  const assetImportInputRef = useRef(null)
+  const mapImportInputRef = useRef(null)
+  const [customAssetName, setCustomAssetName] = useState('')
+  const [customAssetCategory, setCustomAssetCategory] = useState('Custom Assets')
+  const [customAssetType, setCustomAssetType] = useState('icon')
   const [expandedFolders, setExpandedFolders] = useState({
     zones: true,
     assets: true,
@@ -437,11 +468,11 @@ export default function Sidebar({
 
   const assetLookup = useMemo(() => {
     const lookup = new Map()
-    ALL_ASSETS.forEach(asset => {
+    Object.values(assetCategories).flat().forEach(asset => {
       lookup.set(asset.id, asset)
     })
     return lookup
-  }, [])
+  }, [assetCategories])
 
   const recentAssets = useMemo(() => (
     recentAssetIds
@@ -453,7 +484,12 @@ export default function Sidebar({
   const linesByParent = useMemo(() => groupItemsByParent(lines), [lines])
   const annotationsByParent = useMemo(() => groupItemsByParent(annotations), [annotations])
 
-  const rootZones = useMemo(() => zones.filter(zone => !zone.parentId), [zones])
+  const validZones = useMemo(() => zones.filter(zone => zone && zone.id), [zones])
+  const zoneIdSet = useMemo(() => new Set(validZones.map(zone => zone.id)), [validZones])
+  const rootZones = useMemo(() => (
+    validZones.filter(zone => !zone.parentId || zone.parentId === zone.id || !zoneIdSet.has(zone.parentId))
+  ), [validZones, zoneIdSet])
+  const zoneTreeRoots = useMemo(() => (rootZones.length ? rootZones : validZones), [rootZones, validZones])
   const unassignedAssets = assetsByParent.__root__ || []
   const unassignedAnnotations = annotationsByParent.__root__ || []
   const unassignedLines = linesByParent.__root__ || []
@@ -496,8 +532,9 @@ export default function Sidebar({
   }
 
   const filteredAssetCategories = useMemo(() => (
-    Object.entries(ASSET_CATEGORIES).reduce((entries, [categoryLabel, categoryAssets]) => {
-      const filteredAssets = categoryAssets.filter(asset => (
+    Object.entries(assetCategories || {}).reduce((entries, [categoryLabel, categoryAssets]) => {
+      const safeAssets = Array.isArray(categoryAssets) ? categoryAssets : []
+      const filteredAssets = safeAssets.filter(asset => (
         matchesAssetFilter(asset) && matchesAssetSearch(asset, categoryLabel)
       ))
 
@@ -507,7 +544,11 @@ export default function Sidebar({
 
       return entries
     }, [])
-  ), [assetFilter, assetSearch])
+  ), [assetCategories, assetFilter, assetSearch])
+
+  const hasAssetLibrary = useMemo(() => (
+    Object.values(assetCategories || {}).some(categoryAssets => Array.isArray(categoryAssets) && categoryAssets.length > 0)
+  ), [assetCategories])
 
   const startAssetPlacement = (asset) => {
     const prepared = buildAssetVariant(asset)
@@ -555,7 +596,7 @@ export default function Sidebar({
           <div style={{ ...styles.assetName, color: 'var(--text-primary)' }}>{asset.name}</div>
           {!compact && (
             <div style={{ fontSize: '10px', color: assetColor, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              {/* {pendingAssetDef?.id === asset.id ? 'Click Map To Place' : 'Click / Drag To Place'} */}
+              {asset.assetType || asset.category || ''}
             </div>
           )}
         </div>
@@ -563,11 +604,15 @@ export default function Sidebar({
     )
   }
 
-  const renderZoneNode = (zone) => {
+  const renderZoneNode = (zone, visitedZoneIds = new Set()) => {
+    const nextVisitedZoneIds = new Set(visitedZoneIds)
+    nextVisitedZoneIds.add(zone.id)
+
+    const childZones = validZones.filter(z => z.parentId === zone.id && z.id !== zone.id && !nextVisitedZoneIds.has(z.id))
     const childAssets = assetsByParent[zone.id] || []
     const childLines = linesByParent[zone.id] || []
     const childAnnotations = annotationsByParent[zone.id] || []
-    const hasChildren = childAssets.length || childLines.length || childAnnotations.length
+    const hasChildren = childZones.length || childAssets.length || childLines.length || childAnnotations.length
     const expanded = expandedZones[zone.id] ?? true
 
     return (
@@ -577,9 +622,12 @@ export default function Sidebar({
             ...styles.treeNode,
             background: selectedId === zone.id ? `${zone.zoneType?.color || '#3d8ef8'}18` : 'transparent',
             border: selectedId === zone.id ? `1px solid ${zone.zoneType?.color || '#3d8ef8'}` : '1px solid transparent',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
           }}
-          onClick={() => onSelectItem?.(zone)}
         >
+          <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
             {hasChildren ? (
               <button
                 type="button"
@@ -595,12 +643,45 @@ export default function Sidebar({
               <div style={{ width: '22px' }} />
             )}
             <div style={{ ...styles.colorDot, background: zone.zoneType?.color || '#3d8ef8' }} />
-            <span style={styles.treeLabel}>{zone.label || zone.zoneType?.name || 'Zone'}</span>
+            <span
+              style={styles.treeLabel}
+              onClick={() => onSelectItem?.(zone)}
+            >
+              {zone.label || zone.zoneType?.name || 'Zone'}
+            </span>
             <span style={styles.treeMeta}>Zone</span>
           </div>
 
+          {/* Zone visibility toggle - hides all assets inside */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onUpdateAsset?.({ ...zone, type: 'zone', visible: zone.visible === false })
+            }}
+            style={{
+              width: '20px',
+              height: '20px',
+              borderRadius: '4px',
+              border: '1px solid var(--border)',
+              background: 'transparent',
+              color: zone.visible !== false ? 'var(--text-secondary)' : 'var(--text-dim)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              padding: 0,
+              marginRight: '4px',
+            }}
+            title={zone.visible !== false ? 'Hide zone & assets' : 'Show zone & assets'}
+          >
+            {zone.visible !== false ? <Eye size={12} /> : <EyeOff size={12} />}
+          </button>
+        </div>
+
         {hasChildren && expanded && (
           <div style={styles.treeChildren}>
+            {childZones.map(childZone => renderZoneNode(childZone, nextVisitedZoneIds))}
             {childAssets.map(asset => {
               const assetDef = asset.assetDef
               return (
@@ -729,9 +810,6 @@ export default function Sidebar({
           <>
             <div style={styles.floorCard}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Floor Plan Overlay</div>
-              {/* <div style={{ ...styles.floorMeta, marginTop: '4px' }}>
-                Upload a floor plan image and place it with two clicks on the map.
-              </div> */}
               <input
                 type="file"
                 accept="image/*"
@@ -748,50 +826,127 @@ export default function Sidebar({
                   e.target.value = ''
                 }}
               />
-              {/* <button
-                style={{ ...styles.floorBtn, opacity: floorPlan?.imageUrl ? 1 : 0.5, cursor: floorPlan?.imageUrl ? 'pointer' : 'not-allowed' }}
-                onClick={onStartFloorPlacement}
-                disabled={!floorPlan?.imageUrl}
-              >
-                {placingFloor ? 'Click Two Corners On Map' : 'Place Floor Plan'}
-              </button> */}
-              {/* {floorPlan?.imageUrl && (
-                <>
-                  <div style={{ ...styles.floorMeta, marginTop: '8px' }}>
-                    {floorPlan.bounds ? 'Floor plan overlay is placed on the map.' : 'Image loaded. Choose top-left and bottom-right points on the map.'}
-                  </div>
-                  <div style={{ marginTop: '8px' }}>
-                    <label style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Opacity</label>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="1"
-                      step="0.1"
-                      value={floorPlan.opacity ?? 0.7}
-                      onChange={(e) => onFloorOpacityChange(Number(e.target.value))}
-                      style={{ width: '100%' }}
-                    />
-                  </div>
-                </>
-              )} */}
+
             </div>
-            {/* <p style={{ fontSize: '11px', color: 'var(--text-dim)', marginBottom: '10px' }}>
-              Click or drag assets onto the map to place them
-            </p> */}
+
             {drawMode === 'text' && (
               <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
-                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Annotation Text</div>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Drop Pin Title</div>
                 <textarea
                   style={{ ...styles.floorInput, minHeight: '64px', resize: 'vertical' }}
                   value={annotationDraftText || ''}
                   onChange={(event) => onAnnotationDraftTextChange?.(event.target.value)}
-                  placeholder="Type annotation text, then click map..."
+                  placeholder="Type pin title, then click map..."
                 />
                 <div style={{ ...styles.floorMeta, marginTop: '6px' }}>
-                  Text tool selected: click map to place this annotation.
+                  Pin tool selected: click map to drop this point.
                 </div>
               </div>
             )}
+            <input
+              type="file"
+              ref={assetImportInputRef}
+              accept=".json,.png,.jpg,.jpeg,.svg,.webp,.gif,image/*"
+              style={{ display: 'none' }}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (!file) return
+
+                const isImageFile = file.type.startsWith('image/') || /\.(png|jpe?g|svg|webp|gif)$/i.test(file.name)
+                const reader = new FileReader()
+
+                if (isImageFile) {
+                  reader.onload = () => {
+                    const imageUrl = typeof reader.result === 'string' ? reader.result : ''
+                    if (!imageUrl) {
+                      window.alert('Could not import image asset.')
+                      event.target.value = ''
+                      return
+                    }
+
+                    onImportAssets?.({
+                      mode: 'library-image',
+                      fileName: file.name,
+                      imageUrl,
+                      name: customAssetName.trim() || file.name.replace(/\.[^.]+$/, ''),
+                      category: customAssetCategory.trim() || 'Custom Assets',
+                      assetType: customAssetType,
+                    })
+                    event.target.value = ''
+                  }
+                  reader.readAsDataURL(file)
+                  return
+                }
+
+                reader.onload = () => {
+                  try {
+                    const raw = typeof reader.result === 'string' ? reader.result : ''
+                    const parsed = JSON.parse(raw)
+                    onImportAssets?.(parsed)
+                  } catch (error) {
+                    window.alert('Could not import assets. Please use a valid JSON or image file.')
+                  } finally {
+                    event.target.value = ''
+                  }
+                }
+                reader.readAsText(file)
+              }}
+            />
+
+            <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>Custom Asset Import</div>
+              <div style={{ display: 'grid', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={customAssetName}
+                  onChange={(event) => setCustomAssetName(event.target.value)}
+                  placeholder="Asset name for PNG/Icon"
+                  style={{ ...styles.floorInput, marginTop: 0 }}
+                />
+                <input
+                  type="text"
+                  value={customAssetCategory}
+                  onChange={(event) => setCustomAssetCategory(event.target.value)}
+                  placeholder="Category e.g. Branding / Furniture"
+                  style={{ ...styles.floorInput, marginTop: 0 }}
+                />
+                <select
+                  value={customAssetType}
+                  onChange={(event) => setCustomAssetType(event.target.value)}
+                  style={{ ...styles.floorInput, marginTop: 0 }}
+                >
+                  <option value="icon">Icon</option>
+                  <option value="furniture">Furniture</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="structure">Structure</option>
+                  <option value="branding">Branding</option>
+                  <option value="utility">Utility</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div style={{ ...styles.floorMeta, marginTop: '6px' }}>
+                Supports JSON layout import plus PNG / JPG / SVG / WebP icon assets.
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
+              <button
+                type="button"
+                style={{ ...styles.floorInput, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer', fontWeight: 600 }}
+                onClick={() => assetImportInputRef.current?.click()}
+              >
+                <Upload size={13} /> Import Asset
+              </button>
+              <button
+                type="button"
+                style={{ ...styles.floorInput, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: assets.length ? 'pointer' : 'not-allowed', fontWeight: 600, opacity: assets.length ? 1 : 0.6 }}
+                onClick={() => onDownloadAssetList?.()}
+                disabled={!assets.length}
+              >
+                <Download size={13} /> Asset List
+              </button>
+            </div>
+
             <input
               type="text"
               value={assetSearch}
@@ -799,70 +954,31 @@ export default function Sidebar({
               placeholder="Search assets..."
               style={{ ...styles.floorInput, marginTop: 0, marginBottom: '10px' }}
             />
-            {/* <div style={styles.filterRow}>
-              {ASSET_LIBRARY_FILTERS.map(filter => (
-                <button
-                  key={filter.id}
-                  type="button"
-                  style={{
-                    ...styles.filterChip,
-                    background: assetFilter === filter.id ? 'var(--accent)' : 'var(--bg-secondary)',
-                    color: assetFilter === filter.id ? '#ffffff' : 'var(--text-secondary)',
-                    borderColor: assetFilter === filter.id ? 'var(--accent)' : 'var(--border)',
-                  }}
-                  onClick={() => setAssetFilter(filter.id)}
-                >
-                  {filter.label}
-                </button>
-              ))}
-            </div> */}
-            {/* <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>Asset Style</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px', alignItems: 'center' }}>
-                <input
-                  type="color"
-                  value={assetColorOverride || '#3b82f6'}
-                  onChange={(event) => setAssetColorOverride(event.target.value)}
-                  style={{ ...styles.styleInput, height: '38px', padding: '4px' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setAssetColorOverride('')}
-                  style={{ ...styles.filterChip, whiteSpace: 'nowrap' }}
-                >
-                  Use Default
-                </button>
+
+            {!hasAssetLibrary && (
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, marginBottom: '10px' }}>
+                Asset library is still loading or not available right now.
               </div>
-              <div style={{ ...styles.floorMeta, marginTop: '8px' }}>
-                Pick a custom asset color before placing, or reset to each asset&apos;s default palette.
-              </div>
-            </div> */}
-            {/* {recentAssets.length > 0 && (
-              <>
-                <div style={styles.sectionHeader}>Recent Icons</div>
-                <div style={styles.recentGrid}>
-                  {recentAssets.map(asset => renderAssetCard(asset, true))}
-                </div>
-              </>
-            )} */}
+            )}
+
             {filteredAssetCategories.map(([cat, filteredAssets]) => {
               return (
-              <div key={cat}>
-                <div style={styles.sectionHeader} onClick={() => toggleCat(cat)}>
-                  {expandedCats[cat] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  {cat}
-                </div>
-                {expandedCats[cat] && (
-                  <div style={styles.assetGrid}>
-                    {filteredAssets.map(asset => renderAssetCard(asset))}
+                <div key={cat}>
+                  <div style={styles.sectionHeader} onClick={() => toggleCat(cat)}>
+                    {expandedCats[cat] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    {cat}
                   </div>
-                )}
-              </div>
+                  {expandedCats[cat] && (
+                    <div style={styles.assetGrid}>
+                      {filteredAssets.map(asset => renderAssetCard(asset))}
+                    </div>
+                  )}
+                </div>
               )
             })}
             {(assetSearch.trim() || assetFilter !== 'all') && filteredAssetCategories.length === 0 && (
               <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
-                No assets found for "{assetSearch || ASSET_LIBRARY_FILTERS.find(filter => filter.id === assetFilter)?.label}".
+                No assets found for "{assetSearch || (assetFilter === 'all' ? 'All' : assetFilter)}".
               </div>
             )}
           </>
@@ -874,10 +990,10 @@ export default function Sidebar({
               <div style={styles.treeHeader}>Layers</div>
 
               {[
-                { id: 'zones', name: 'Zones', items: rootZones.length, visibleKey: 'zones' },
-                { id: 'assets', name: 'Unassigned Assets', items: unassignedAssets.length, visibleKey: 'assets' },
-                { id: 'annotations', name: 'Unassigned Annotations', items: unassignedAnnotations.length, visibleKey: 'annotations' },
-                { id: 'lines', name: 'Unassigned Lines', items: unassignedLines.length, visibleKey: 'zones' },
+                { id: 'zones', name: 'Zones', items: zones.length, visibleKey: 'zones' },
+                { id: 'assets', name: 'Assets', items: assets.length, visibleKey: 'assets' },
+                { id: 'annotations', name: 'Annotations', items: annotations.length, visibleKey: 'annotations' },
+                { id: 'lines', name: lines.some(line => line.routeType) ? 'Routes' : 'Lines', items: lines.length, visibleKey: 'lines' },
                 { id: 'floor', name: 'Floor Plan', items: floorPlan ? 1 : 0, visibleKey: 'floor' },
               ].filter(folder => folder.items > 0).map(folder => {
                 const lstate = layers[folder.visibleKey] || { visible: true, locked: false }
@@ -918,25 +1034,27 @@ export default function Sidebar({
 
                     {expanded && folder.id === 'zones' && (
                       <div style={styles.treeChildren}>
-                        {rootZones.length === 0 ? (
+                        {zoneTreeRoots.length === 0 ? (
                           <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
-                            Draw a zone first. Assets and annotations placed inside it will appear inside that zone folder.
+                            Draw zones to organize assets, annotations, and lines. Items placed inside zones will appear nested under them.
                           </div>
                         ) : (
-                          rootZones.map(renderZoneNode)
+                          zoneTreeRoots.map(zone => renderZoneNode(zone))
                         )}
                       </div>
                     )}
 
-                    {expanded && folder.id === 'assets' && unassignedAssets.length > 0 && (
+                    {expanded && folder.id === 'assets' && assets.length > 0 && (
                       <div style={styles.treeChildren}>
-                        {unassignedAssets.map(asset => {
+                        {assets.map(asset => {
                           const assetDef = asset.assetDef
+                          const parentZone = asset.parentId ? zones.find(z => z.id === asset.parentId) : null
+                          const zoneLabel = parentZone ? ` (${parentZone.label || parentZone.zoneType?.name || 'Zone'})` : ''
                           return (
                             <div key={asset.id} style={{ ...styles.treeNode, background: selectedId === asset.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(asset)}>
                               <div style={{ width: '22px' }} />
                               <AssetGlyph asset={assetDef} size={14} color={assetDef?.iconColor || assetDef?.color} />
-                              <span style={styles.treeLabel}>{asset.label || assetDef?.name || 'Asset'}</span>
+                              <span style={styles.treeLabel}>{asset.label || assetDef?.name || 'Asset'}{zoneLabel}</span>
                               <span style={styles.treeMeta}>Asset</span>
                             </div>
                           )
@@ -944,14 +1062,16 @@ export default function Sidebar({
                       </div>
                     )}
 
-                    {expanded && folder.id === 'annotations' && unassignedAnnotations.length > 0 && (
+                    {expanded && folder.id === 'annotations' && annotations.length > 0 && (
                       <div style={styles.treeChildren}>
-                        {unassignedAnnotations.map(annotation => {
+                        {annotations.map(annotation => {
+                          const parentZone = annotation.parentId ? zones.find(z => z.id === annotation.parentId) : null
+                          const zoneLabel = parentZone ? ` (${parentZone.label || parentZone.zoneType?.name || 'Zone'})` : ''
                           return (
                             <div key={annotation.id} style={{ ...styles.treeNode, background: selectedId === annotation.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(annotation)}>
                               <div style={{ width: '22px' }} />
                               <span style={{ fontSize: '14px', color: '#2563eb' }}>T</span>
-                              <span style={styles.treeLabel}>{annotation.label || annotation.text || 'Annotation'}</span>
+                              <span style={styles.treeLabel}>{annotation.label || annotation.text || 'Annotation'}{zoneLabel}</span>
                               <span style={styles.treeMeta}>Note</span>
                             </div>
                           )
@@ -959,15 +1079,17 @@ export default function Sidebar({
                       </div>
                     )}
 
-                    {expanded && folder.id === 'lines' && unassignedLines.length > 0 && (
+                    {expanded && folder.id === 'lines' && lines.length > 0 && (
                       <div style={styles.treeChildren}>
-                        {unassignedLines.map(line => {
+                        {lines.map(line => {
+                          const parentZone = line.parentId ? zones.find(z => z.id === line.parentId) : null
+                          const zoneLabel = parentZone ? ` (${parentZone.label || parentZone.zoneType?.name || 'Zone'})` : ''
                           return (
                             <div key={line.id} style={{ ...styles.treeNode, background: selectedId === line.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(line)}>
                               <div style={{ width: '22px' }} />
                               <span style={{ fontSize: '14px', color: '#f59e0b' }}>-</span>
-                              <span style={styles.treeLabel}>{line.label || 'Line'}</span>
-                              <span style={styles.treeMeta}>Line</span>
+                              <span style={styles.treeLabel}>{line.label || (line.routeType ? 'Route' : 'Line')}{zoneLabel}</span>
+                              <span style={styles.treeMeta}>{line.routeType ? 'Route' : 'Line'}</span>
                             </div>
                           )
                         })}
@@ -987,7 +1109,105 @@ export default function Sidebar({
                 )
               })}
 
-              {rootZones.length === 0 && !unassignedAssets.length && !unassignedAnnotations.length && !unassignedLines.length && !floorPlan && (
+              {/* Grid Control */}
+              <div style={styles.folderNode}>
+                <div style={styles.folderLabelWrap}>
+                  <div style={{ width: '22px' }} />
+                  <span style={{ fontSize: '14px' }}>⊞</span>
+                  <span style={styles.folderLabel}>Map Grid</span>
+                </div>
+                <div style={styles.folderActions}>
+                  <button
+                    style={{ ...styles.iconBtn, color: layers.grid?.visible ? 'var(--accent)' : 'var(--text-dim)' }}
+                    onClick={() => onToggleLayer('grid')}
+                    title={layers.grid?.visible ? 'Hide grid' : 'Show grid'}
+                  >
+                    {layers.grid?.visible ? <Eye size={14} /> : <EyeOff size={14} />}
+                  </button>
+                </div>
+              </div>
+              {layers.grid?.visible && (
+                <div style={{ ...styles.treeChildren, paddingTop: '6px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+                    <div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginBottom: '4px' }}>Size (meters)</div>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={layers.grid?.size || 3}
+                        onChange={e => {
+                          const v = Math.max(1, Number(e.target.value) || 3)
+                          onToggleLayer('grid', { visible: true, size: v })
+                        }}
+                        style={{ ...styles.floorInput, marginTop: 0, width: '100%' }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginBottom: '4px' }}>Color</div>
+                      <input
+                        type="color"
+                        value={layers.grid?.color || '#3d8ef8'}
+                        onChange={e => onToggleLayer('grid', { visible: true, color: e.target.value })}
+                        style={{ width: '100%', height: '34px', borderRadius: '6px', border: '1px solid var(--border)', padding: '2px', background: 'var(--bg-panel)', cursor: 'pointer', marginTop: '2px' }}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-dim)', marginBottom: '4px' }}>Opacity — {Math.round((layers.grid?.opacity ?? 0.15) * 100)}%</div>
+                    <input
+                      type="range"
+                      min="5"
+                      max="80"
+                      step="5"
+                      value={Math.round((layers.grid?.opacity ?? 0.15) * 100)}
+                      onChange={e => onToggleLayer('grid', { visible: true, opacity: Number(e.target.value) / 100 })}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <input
+                type="file"
+                ref={mapImportInputRef}
+                accept=".json,application/json"
+                style={{ display: 'none' }}
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (!file) return
+
+                  const reader = new FileReader()
+                  reader.onload = () => {
+                    try {
+                      const raw = typeof reader.result === 'string' ? reader.result : ''
+                      const parsed = JSON.parse(raw)
+                      onImportProject?.(parsed)
+                    } catch (error) {
+                      window.alert('Could not import map JSON. Please use a valid EventWiz export file.')
+                    } finally {
+                      event.target.value = ''
+                    }
+                  }
+                  reader.readAsText(file)
+                }}
+              />
+
+              <div style={{ ...styles.floorCard, marginTop: '12px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>Map JSON</div>
+                <div style={{ ...styles.floorMeta, marginTop: 0, marginBottom: '8px' }}>
+                  Load a full EventWiz map from an exported JSON file.
+                </div>
+                <button
+                  type="button"
+                  style={{ ...styles.floorInput, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer', fontWeight: 600, width: '100%', marginTop: 0 }}
+                  onClick={() => mapImportInputRef.current?.click()}
+                >
+                  <Upload size={13} /> Import Map JSON
+                </button>
+              </div>
+
+              {rootZones.length === 0 && !assets.length && !annotations.length && !lines.length && !floorPlan && (
                 <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, padding: '8px 2px' }}>
                   Layers will appear here after you place zones, assets, lines, annotations, or floor plan.
                 </div>

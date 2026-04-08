@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { MousePointer2, Pentagon, Minus, Type, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown } from 'lucide-react'
+import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces } from 'lucide-react'
 
 const styles = {
   toolbar: {
@@ -94,6 +94,31 @@ const styles = {
     border: '1px solid var(--border)',
     transition: 'all 0.15s',
   },
+  unitSelector: {
+    padding: '6px 10px',
+    borderRadius: 'var(--radius-sm)',
+    background: 'var(--bg-secondary)',
+    color: 'var(--text-secondary)',
+    fontSize: '12px',
+    fontWeight: '600',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    cursor: 'pointer',
+    border: '1px solid var(--border)',
+    transition: 'all 0.15s',
+  },
+  unitOption: {
+    padding: '6px 10px',
+    borderRadius: 'var(--radius-sm)',
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    fontSize: '12px',
+    fontWeight: '500',
+    cursor: 'pointer',
+    border: '1px solid transparent',
+    transition: 'all 0.15s',
+  },
   exportBtn: {
     padding: '6px 14px',
     borderRadius: 'var(--radius-sm)',
@@ -113,29 +138,91 @@ const styles = {
   },
   exportMenu: {
     position: 'absolute',
-    top: '40px',
+    top: 'calc(100% + 10px)',
     right: 0,
-    minWidth: '138px',
+    width: 'min(440px, calc(100vw - 32px))',
     background: 'var(--bg-panel)',
     border: '1px solid var(--border)',
-    borderRadius: '10px',
-    boxShadow: '0 14px 32px rgba(2, 6, 23, 0.24)',
-    padding: '6px',
-    zIndex: 30,
+    borderRadius: '16px',
+    boxShadow: '0 20px 48px rgba(2, 6, 23, 0.28)',
+    padding: '14px',
+    zIndex: 60,
+  },
+  exportMenuHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: '10px',
+    padding: '2px 2px 8px',
+  },
+  exportMenuTitle: {
+    fontSize: '14px',
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  exportCloseBtn: {
+    width: '30px',
+    height: '30px',
+    borderRadius: '999px',
+    border: '1px solid transparent',
+    background: 'transparent',
+    color: 'var(--text-dim)',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
   },
   exportMenuBtn: {
     width: '100%',
-    background: 'transparent',
-    border: '1px solid transparent',
-    borderRadius: '8px',
-    padding: '7px 8px',
-    color: 'var(--text-secondary)',
-    fontSize: '12px',
-    fontWeight: 600,
+    display: 'grid',
+    gridTemplateColumns: '42px 1fr',
+    gap: '12px',
+    alignItems: 'center',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: '12px',
+    padding: '12px 14px',
+    color: 'var(--text-primary)',
     textAlign: 'left',
     cursor: 'pointer',
+    marginTop: '8px',
+  },
+  exportMenuIcon: {
+    width: '32px',
+    height: '32px',
+    borderRadius: '10px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#fff',
+  },
+  exportMenuText: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  exportMenuLabel: {
+    fontSize: '14px',
+    fontWeight: 700,
+    color: 'var(--text-primary)',
+  },
+  exportMenuDesc: {
+    fontSize: '12px',
+    color: 'var(--text-dim)',
+    lineHeight: 1.35,
   },
 }
+
+const TOOLS = [
+  { id: 'polygon', icon: <Pentagon size={14} />, label: 'Draw Zone' },
+  { id: 'square', icon: <Square size={14} />, label: 'Square' },
+  { id: 'circle', icon: <Circle size={14} />, label: 'Circle' },
+  { id: 'text', icon: <MapPin size={14} />, label: 'Pin' },
+  { id: 'route', icon: <Route size={14} />, label: 'Route' },
+]
 
 export default function Toolbar({
   drawMode,
@@ -147,11 +234,17 @@ export default function Toolbar({
   onExport,
   theme,
   onToggleTheme,
-  mapViewMode,
-  onToggleMapViewMode,
   locationQuery,
   onLocationQueryChange,
   onLocationSearch,
+  measurementUnit,
+  onMeasurementUnitChange,
+  eventId,
+  eventName,
+  isArchived = false,
+  onSave,
+  onUnarchive,
+  onGoHome,
 }) {
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false)
   const exportMenuRef = useRef(null)
@@ -166,20 +259,18 @@ export default function Toolbar({
     return () => window.removeEventListener('mousedown', handleOutsideClick)
   }, [])
 
-  const tools = [
-    { id: 'polygon', icon: <Pentagon size={14} />, label: 'Draw Zone' },
-    { id: 'square', icon: <Square size={14} />, label: 'Square' },
-    { id: 'circle', icon: <Circle size={14} />, label: 'Circle' },
-    { id: 'line', icon: <Minus size={14} />, label: 'Line' },
-    { id: 'text', icon: <Type size={14} />, label: 'Text' },
-  ]
+  const tools = TOOLS
 
   return (
     <div style={styles.toolbar}>
-      <div style={styles.logo}>
+      <div
+        style={{ ...styles.logo, cursor: onGoHome ? 'pointer' : 'default' }}
+        onClick={() => onGoHome?.()}
+        title={onGoHome ? 'Go to home' : undefined}
+      >
         <div>
           <div style={styles.logoText}>EventWiz</div>
-          <div style={styles.logoSub}>Mapping Tool</div>
+          <div style={styles.logoSub}>{eventName || (eventId ? `Event ID: ${eventId}` : 'Mapping Tool')}{isArchived ? ' • Archived' : ''}</div>
         </div>
       </div>
 
@@ -222,11 +313,29 @@ export default function Toolbar({
       <button
         style={{ ...styles.toolBtn, color: drawMode === 'erase' ? 'var(--danger)' : 'var(--text-secondary)' }}
         onClick={() => onDrawMode('erase')}
-        title="Erase asset"
+        title="Erase item"
         onMouseEnter={e => e.currentTarget.style.background = drawMode === 'erase' ? '#fee2e2' : 'var(--bg-hover)'}
         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
       >
         <Eraser size={14} /> Erase
+      </button>
+
+      <div style={styles.divider} />
+
+      <button
+        style={styles.unitSelector}
+        onClick={() => onMeasurementUnitChange?.(measurementUnit === 'meters' ? 'feet' : 'meters')}
+        onMouseEnter={e => {
+          e.currentTarget.style.background = 'var(--bg-hover)'
+          e.currentTarget.style.borderColor = 'var(--border-light)'
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.background = 'var(--bg-secondary)'
+          e.currentTarget.style.borderColor = 'var(--border)'
+        }}
+        title="Toggle between Meters and Feet"
+      >
+        {measurementUnit === 'meters' ? 'Meters' : 'Feet'}
       </button>
 
       <div style={styles.rightSection}>
@@ -235,32 +344,13 @@ export default function Toolbar({
             style={styles.searchInput}
             value={locationQuery || ''}
             onChange={(event) => onLocationQueryChange?.(event.target.value)}
-            placeholder="Search address or what3words (filled.count.soap)"
+            placeholder="Search address or what3words"
             onKeyDown={(event) => {
               if (event.key === 'Enter') onLocationSearch?.()
             }}
           />
-          {/* <button
-            style={styles.themeBtn}
-            onClick={onLocationSearch}
-            title="Focus map to searched location"
-          >
-            
-            <Search size={13} /> 
-          </button> */}
         </div>
-        {/* <button
-          style={{
-            ...styles.themeBtn,
-            background: mapViewMode === '3d' ? 'var(--accent-dim)' : 'var(--bg-secondary)',
-            color: mapViewMode === '3d' ? 'var(--accent)' : 'var(--text-secondary)',
-            borderColor: mapViewMode === '3d' ? 'var(--accent)' : 'var(--border)',
-          }}
-          onClick={onToggleMapViewMode}
-          title={mapViewMode === '3d' ? 'Switch to 2D view' : 'Switch to 3D view'}
-        >
-          {mapViewMode === '3d' ? '3D' : '2D'}
-        </button> */}
+
         <button
           style={styles.themeBtn}
           onClick={onToggleTheme}
@@ -275,39 +365,92 @@ export default function Toolbar({
           title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
         >
           {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
-          {/* {theme === 'dark' ? 'Light' : 'Dark'} */}
         </button>
+
+        {isArchived ? (
+          <button
+            style={{
+              ...styles.exportBtn,
+              background: '#f59e0b',
+              marginRight: '8px'
+            }}
+            onClick={onUnarchive}
+            onMouseEnter={e => e.currentTarget.style.background = '#d97706'}
+            onMouseLeave={e => e.currentTarget.style.background = '#f59e0b'}
+            title="Unarchive this event"
+          >
+            <ArchiveRestore size={13} /> Unarchive
+          </button>
+        ) : (
+          <button
+            style={{
+              ...styles.exportBtn,
+              background: 'var(--success, #10b981)',
+              marginRight: '8px'
+            }}
+            onClick={onSave}
+            onMouseEnter={e => e.currentTarget.style.background = '#059669'}
+            onMouseLeave={e => e.currentTarget.style.background = 'var(--success, #10b981)'}
+            title="Save changes to database"
+          >
+            <Save size={13} /> Save
+          </button>
+        )}
+
         <div style={styles.exportWrap} ref={exportMenuRef}>
           <button
             style={styles.exportBtn}
-            onClick={() => setIsExportMenuOpen(prev => !prev)}
+            onClick={() => setIsExportMenuOpen(open => !open)}
             onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-hover)'}
             onMouseLeave={e => e.currentTarget.style.background = 'var(--accent)'}
           >
             <Download size={13} /> Export <ChevronDown size={12} />
           </button>
           {isExportMenuOpen && (
-            <div style={styles.exportMenu}>
-              {[{ id: 'png', label: 'Export PNG' }, { id: 'pdf', label: 'Export PDF' }, { id: 'json', label: 'Export JSON' }].map(item => (
-                <button
-                  key={item.id}
-                  style={styles.exportMenuBtn}
-                  onClick={() => {
-                    onExport?.(item.id)
-                    setIsExportMenuOpen(false)
-                  }}
-                  onMouseEnter={(event) => {
-                    event.currentTarget.style.background = 'var(--bg-hover)'
-                    event.currentTarget.style.borderColor = 'var(--border-light)'
-                  }}
-                  onMouseLeave={(event) => {
-                    event.currentTarget.style.background = 'transparent'
-                    event.currentTarget.style.borderColor = 'transparent'
-                  }}
-                >
-                  {item.label}
-                </button>
-              ))}
+            <div style={styles.exportMenu} onClick={(event) => event.stopPropagation()}>
+              <div style={styles.exportMenuHeader}>
+                  <div style={styles.exportMenuTitle}>
+                    <Download size={16} /> Export Project
+                  </div>
+                  <button
+                    type="button"
+                    style={styles.exportCloseBtn}
+                    onClick={() => setIsExportMenuOpen(false)}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {[
+                  { id: 'pdf', label: 'Export as PDF', desc: 'Map + full event summary (zones, routes, assets)', icon: <FileText size={18} />, color: '#ef4444' },
+                  { id: 'png', label: 'Export as PNG', desc: 'High-resolution map image', icon: <ImageIcon size={18} />, color: '#f59e0b' },
+                  { id: 'json', label: 'Export as JSON', desc: 'Full project data', icon: <Braces size={18} />, color: '#3b82f6' },
+                ].map(item => (
+                  <button
+                    key={item.id}
+                    style={styles.exportMenuBtn}
+                    onClick={() => {
+                      onExport?.(item.id)
+                      setIsExportMenuOpen(false)
+                    }}
+                    onMouseEnter={(event) => {
+                      event.currentTarget.style.background = 'var(--bg-hover)'
+                      event.currentTarget.style.borderColor = 'var(--border-light)'
+                    }}
+                    onMouseLeave={(event) => {
+                      event.currentTarget.style.background = 'var(--bg-secondary)'
+                      event.currentTarget.style.borderColor = 'var(--border)'
+                    }}
+                  >
+                    <span style={{ ...styles.exportMenuIcon, background: item.color }}>
+                      {item.icon}
+                    </span>
+                    <span style={styles.exportMenuText}>
+                      <span style={styles.exportMenuLabel}>{item.label}</span>
+                      <span style={styles.exportMenuDesc}>{item.desc}</span>
+                    </span>
+                  </button>
+                ))}
             </div>
           )}
         </div>

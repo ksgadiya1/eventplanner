@@ -50,32 +50,35 @@ const Tooltip = ({ children, content, ...props }) => {
           style={{
             position: 'fixed',
             left: `${tooltipPos.x}px`,
-            top: `${tooltipPos.y}px`,
+            top: `${tooltipPos.y - 12}px`,
             transform: 'translate(-50%, -100%)',
-            background: 'var(--bg-panel)',
-            border: '1px solid var(--border)',
-            borderRadius: '8px',
-            padding: '10px 12px',
-            fontSize: '11px',
-            color: 'var(--text-primary)',
-            whiteSpace: 'nowrap',
+            background: '#ffffff',
+            border: 'none',
+            borderRadius: '12px',
+            padding: '12px 14px',
+            fontSize: '13px',
+            color: '#1a1a1a',
+            whiteSpace: 'normal',
+            maxWidth: '320px',
             zIndex: 50000,
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.25)',
             pointerEvents: 'none',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            lineHeight: 1.5,
           }}
         >
           {content}
           <div
             style={{
               position: 'absolute',
-              bottom: '-6px',
+              bottom: '-8px',
               left: '50%',
               transform: 'translateX(-50%)',
               width: 0,
               height: 0,
-              borderLeft: '6px solid transparent',
-              borderRight: '6px solid transparent',
-              borderTop: '6px solid var(--bg-panel)',
+              borderLeft: '8px solid transparent',
+              borderRight: '8px solid transparent',
+              borderTop: '8px solid #ffffff',
             }}
           />
         </div>

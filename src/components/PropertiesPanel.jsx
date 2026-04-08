@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react'
 import { X, Users, Ruler, ChevronLeft, Trash2 } from 'lucide-react'
-import { CROWD_DENSITY_OPTIONS, ZONE_TYPES, computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZoneAllowedAssetTypes } from '../data/assets'
+import { computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZoneAllowedAssetTypes, getZoneCapacityLabel } from '../data/assets'
+import { ROUTE_TYPE_OPTIONS, getRouteStylePreset } from '../data/routeTypes'
+import { formatArea, formatDistance, getUnitLabel, convertDistance, convertToMeters } from '../utils/units'
 
 const styles = {
   panel: {
@@ -191,27 +193,14 @@ const styles = {
   },
 }
 
-function formatArea(areaM2) {
-  if (!areaM2) return '—'
-  const m2 = areaM2.toFixed(0)
-  const ft2 = (areaM2 * 10.764).toFixed(0)
-  return `${Number(m2).toLocaleString()} m²  /  ${Number(ft2).toLocaleString()} ft²`
-}
-
-function formatDist(meters) {
-  if (!meters) return '—'
-  const m = meters.toFixed(1)
-  const ft = (meters * 3.281).toFixed(1)
-  return `${m} m  /  ${ft} ft`
-}
-
-export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], onUpdate, onClose, onDuplicate, onDelete }) {
+export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], zoneTypes = [], onUpdate, onClose, onDuplicate, onDelete, measurementUnit = 'meters', crowdDensityOptions = [] }) {
 
   const selectedId = selected?.id
   const selectedParentId = selected?.parentId
   const isZone = selected?.type === 'zone'
   const isAsset = selected?.type === 'asset'
   const isLine = selected?.type === 'line'
+  const routeTypePreset = isLine ? getRouteStylePreset(selected?.routeType || 'custom') : null
   const isFloor = selected?.type === 'floor'
   const isAnnotation = selected?.type === 'annotation'
   const isCarPark = isZone && (selected?.zoneType?.id === 'car_park' || selected?.zoneType?.name === 'Car Park')
@@ -240,12 +229,13 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const effectiveZoneCapacity = isCarPark ? parkingCapacity : crowdCapacity
   const usedZoneCapacity = isZone ? childAssets.length : 0
   const remainingZoneCapacity = effectiveZoneCapacity !== null ? Math.max(effectiveZoneCapacity - usedZoneCapacity, 0) : null
+  const capLabel = isZone ? getZoneCapacityLabel(selected) : { title: 'CAPACITY', unit: 'units' }
 
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
         <span style={styles.headerTitle}>
-          {isZone ? 'Zone' : isAsset ? 'Asset' : isLine ? 'Line' : isFloor ? 'Floor Plan' : isAnnotation ? 'Annotation' : 'Item'} Properties
+          {isZone ? 'Zone' : isAsset ? 'Asset' : isLine ? 'Route' : isFloor ? 'Floor Plan' : isAnnotation ? 'Annotation' : 'Item'} Properties
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <button
@@ -264,10 +254,10 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
       <div style={styles.content}>
         {/* Name */}
         <div style={styles.field}>
-          <label style={styles.label}>Name / Label</label>
+          <label style={styles.label}>{isAnnotation ? 'Pin Title' : 'Name / Label'}</label>
           <input
             style={styles.input}
-            value={selected.label || ''}
+            value={isAnnotation ? (selected.text ?? selected.label ?? '') : (selected.label || '')}
             onChange={e => {
               const nextLabel = e.target.value
               if (isAnnotation) {
@@ -276,7 +266,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               }
               onUpdate({ ...selected, label: nextLabel })
             }}
-            placeholder="Enter name..."
+            placeholder={isAnnotation ? 'Enter pin title...' : 'Enter name...'}
           />
         </div>
 
@@ -297,7 +287,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 
         {/* Notes */}
         <div style={styles.field}>
-          <label style={styles.label}>Notes</label>
+          <label style={styles.label}>{isAnnotation ? 'Tooltip Details' : 'Notes'}</label>
           <textarea
             style={{ ...styles.input, minHeight: '70px', resize: 'vertical' }}
             value={selected.notes || ''}
@@ -318,7 +308,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   style={styles.select}
                   value={selected.zoneType?.id || ''}
                   onChange={e => {
-                    const nextType = ZONE_TYPES.find(zoneType => zoneType.id === e.target.value)
+                    const nextType = zoneTypes.find(zoneType => zoneType.id === e.target.value)
                     if (!nextType) return
                     const defaultSubType = nextType.defaultSubTypeId
                       ? (nextType.subTypes || []).find(subType => subType.id === nextType.defaultSubTypeId) || null
@@ -327,7 +317,9 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                       ...selected,
                       zoneType: { ...nextType },
                       subType: defaultSubType,
-                      layoutType: selected.layoutType || nextType.layoutType || 'free',
+                      layoutType: (selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType)) ? 'grid' : 'free',
+                      showGrid: Boolean(selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType)),
+                      gridSize: selected.gridSize || selected.rowSpacing || 3,
                       allowedAssetTypes: nextType.allowedAssetTypes || [],
                       contentLocked: !!(nextType.allowedAssetTypes || []).length,
                     }
@@ -337,7 +329,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                     })
                   }}
                 >
-                  {ZONE_TYPES.map(zoneType => (
+                  {zoneTypes.map(zoneType => (
                     <option key={zoneType.id} value={zoneType.id}>
                       {zoneType.name}
                     </option>
@@ -347,63 +339,150 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             </div>
 
             <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Zone Status</div>
+              <div style={styles.field}>
+                <label style={styles.label}>Status</label>
+                <select
+                  style={styles.select}
+                  value={selected.status || 'planned'}
+                  onChange={e => onUpdate({ ...selected, status: e.target.value })}
+                >
+                  <option value="planned">Planned</option>
+                  <option value="confirmed">Confirmed</option>
+                  <option value="installed">Installed</option>
+                  <option value="removed">Removed</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={styles.statCard}>
               <div style={styles.blockTitle}>Zone Appearance</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '94px 1fr', gap: '8px' }}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Color</label>
+
+              {/* Fill Color & Opacity */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={styles.label}>Fill Color</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
                   <input
                     type="color"
                     style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.zoneType?.color || '#3d8ef8'}
-                    onChange={e => {
-                      const nextZoneType = {
-                        ...(selected.zoneType || {}),
-                        color: e.target.value,
-                      }
-                      const nextZone = { ...selected, zoneType: nextZoneType }
-                      onUpdate({
-                        ...nextZone,
-                        capacity: computeZoneCapacity(nextZone, selected.density || 0.5),
-                      })
-                    }}
+                    value={selected.fillColor || selected.zoneType?.color || '#3d8ef8'}
+                    onChange={e => onUpdate({ ...selected, fillColor: e.target.value })}
                   />
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Hex</label>
                   <input
                     style={styles.input}
-                    value={selected.zoneType?.color || '#3d8ef8'}
+                    value={selected.fillColor || selected.zoneType?.color || '#3d8ef8'}
                     onChange={e => {
                       const value = e.target.value.trim()
                       if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
-                      const nextZoneType = {
-                        ...(selected.zoneType || {}),
-                        color: value,
-                      }
-                      const nextZone = { ...selected, zoneType: nextZoneType }
-                      onUpdate({
-                        ...nextZone,
-                        capacity: computeZoneCapacity(nextZone, selected.density || 0.5),
-                      })
+                      onUpdate({ ...selected, fillColor: value })
                     }}
                     placeholder="#3d8ef8"
                   />
                 </div>
               </div>
+
+              {/* Fill Opacity */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={styles.label}>Fill Opacity</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={(selected.fillOpacity !== undefined ? selected.fillOpacity : (selected.zoneType?.fillOpacity || 0.2)) * 100}
+                    onChange={e => onUpdate({ ...selected, fillOpacity: Number(e.target.value) / 100 })}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
+                    {Math.round((selected.fillOpacity !== undefined ? selected.fillOpacity : (selected.zoneType?.fillOpacity || 0.2)) * 100)}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Border Color */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={styles.label}>Border Color</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
+                  <input
+                    type="color"
+                    style={{ ...styles.input, padding: '4px', height: '36px' }}
+                    value={selected.strokeColor || selected.zoneType?.color || '#3d8ef8'}
+                    onChange={e => onUpdate({ ...selected, strokeColor: e.target.value })}
+                  />
+                  <input
+                    style={styles.input}
+                    value={selected.strokeColor || selected.zoneType?.color || '#3d8ef8'}
+                    onChange={e => {
+                      const value = e.target.value.trim()
+                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
+                      onUpdate({ ...selected, strokeColor: value })
+                    }}
+                    placeholder="#3d8ef8"
+                  />
+                </div>
+              </div>
+
+              {/* Border Thickness */}
+              <div style={{ marginBottom: '0' }}>
+                <label style={styles.label}>Border Thickness</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="8"
+                    step="0.5"
+                    value={selected.strokeWeight || 2}
+                    onChange={e => onUpdate({ ...selected, strokeWeight: Number(e.target.value) })}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
+                    {(selected.strokeWeight || 2).toFixed(1)}px
+                  </span>
+                </div>
+              </div>
             </div>
 
-            <div style={styles.field}>
-              <label style={styles.label}>Layout Strategy</label>
-              <select
-                style={styles.select}
-                value={selected.layoutType || selected.zoneType?.layoutType || 'free'}
-                onChange={e => onUpdate({ ...selected, layoutType: e.target.value })}
-              >
-                <option value="grid">Grid</option>
-                <option value="rows">Rows</option>
-                <option value="free">Free</option>
-                <option value="custom">Custom</option>
-              </select>
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Zone Grid Overlay</div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-primary)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType))}
+                  onChange={e => {
+                    const enabled = e.target.checked
+                    onUpdate({
+                      ...selected,
+                      showGrid: enabled,
+                      layoutType: enabled ? 'grid' : 'free',
+                      gridSize: selected.gridSize || selected.rowSpacing || 3,
+                    })
+                  }}
+                />
+                Show grid inside this zone
+              </label>
+
+              {Boolean(selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType)) && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Grid Spacing (m)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="0.5"
+                      style={styles.input}
+                      value={selected.gridSize || selected.rowSpacing || 3}
+                      onChange={e => onUpdate({
+                        ...selected,
+                        showGrid: true,
+                        layoutType: 'grid',
+                        gridSize: Math.max(1, Number(e.target.value) || 3),
+                      })}
+                    />
+                  </div>
+                  
+                </div>
+              )}
             </div>
 
             {subTypes.length > 0 && (
@@ -424,7 +503,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   <option value="">Select subtype</option>
                   {subTypes.map(subType => (
                     <option key={subType.id} value={subType.id}>
-                      {subType.id}
+                      {subType.label || subType.id}
                     </option>
                   ))}
                 </select>
@@ -461,28 +540,22 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               </div>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Area</span>
-                <span style={styles.statValue} title={formatArea(selected.areaM2)}>
-                  {selected.areaM2 ? `${(selected.areaM2).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} m²` : '—'}
-                </span>
-              </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Area (ft²)</span>
-                <span style={styles.statValue}>
-                  {selected.areaM2 ? `${(selected.areaM2 * 10.764).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} ft²` : '—'}
+                <span style={styles.statValue} title={formatArea(selected.areaM2, measurementUnit)}>
+                  {formatArea(selected.areaM2, measurementUnit) || '—'}
                 </span>
               </div>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Perimeter</span>
                 <span style={styles.statValue}>
-                  {selected.perimeterM ? `${selected.perimeterM.toFixed(0)} m` : '—'}
+                  {formatDistance(selected.perimeterM, measurementUnit) || '—'}
                 </span>
               </div>
             </div>
 
-            {/* Crowd Capacity */}
+            {/* Zone Capacity */}
             <div style={styles.statCard}>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <Users size={12} /> {isCarPark ? 'PARKING CAPACITY' : 'CROWD CAPACITY'}
+                <Users size={12} /> {capLabel.title}
               </div>
               {!isCarPark && subTypes.length === 0 && (
                 <div style={styles.field}>
@@ -492,7 +565,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                     value={selected.density || 0.5}
                     onChange={e => onUpdate({ ...selected, density: Number(e.target.value) })}
                   >
-                    {CROWD_DENSITY_OPTIONS.map(opt => (
+                    {crowdDensityOptions.map(opt => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label} ({opt.description})
                       </option>
@@ -511,9 +584,9 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   <div style={styles.capacityLabel}>
                     {isCarPark
                       ? `${parkingStandard?.label || 'vehicle'} slots (approx.)`
-                      : selected.subType?.unitArea
-                        ? `${selected.subType.id} units`
-                        : 'estimated capacity'}
+                      : selected.subType?.label
+                        ? `${selected.subType.label}`
+                        : `estimated ${capLabel.unit}`}
                   </div>
                 </div>
               )}
@@ -523,8 +596,8 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   <span style={styles.statValue}>{usedZoneCapacity}</span>
                 </div>
                 <div style={styles.statRow}>
-                  <span style={styles.statLabel}>Remaining Capacity</span>
-                  <span style={styles.statValue}>{remainingZoneCapacity !== null ? remainingZoneCapacity : '-'}</span>
+                  <span style={styles.statLabel}>Remaining {capLabel.unit}</span>
+                  <span style={styles.statValue}>{remainingZoneCapacity !== null ? remainingZoneCapacity.toLocaleString() : '-'}</span>
                 </div>
               </div>
             </div>
@@ -540,7 +613,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 </div>
                 <div style={styles.statRow}>
                   <span style={styles.statLabel}>Total Route Length</span>
-                  <span style={styles.statValue}>{totalRouteLengthM > 0 ? `${totalRouteLengthM.toFixed(1)} m` : '-'}</span>
+                  <span style={styles.statValue}>{formatDistance(totalRouteLengthM, measurementUnit) || '-'}</span>
                 </div>
                 <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
                   Draw line tools inside this parking zone to define entry/exit movement paths.
@@ -557,7 +630,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   <div key={zone.id} style={{ ...styles.statRow, marginBottom: '8px' }}>
                     <span style={styles.statLabel}>{zone.zoneType?.name || 'Zone'}</span>
                     <span style={{ ...styles.statValue, fontSize: '11px' }}>
-                      {zone.subType?.id || '-'} / {zone.layoutType || 'free'}
+                      {zone.subType?.id || '-'} / {(zone.showGrid ?? ['grid', 'rows'].includes(zone.layoutType)) ? 'grid on' : 'grid off'}
                     </span>
                   </div>
                 ))}
@@ -604,25 +677,33 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             </button>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
               <div style={styles.field}>
-                <label style={styles.label}>Width (m)</label>
+                <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
                 <input
                   type="number"
                   min="0.5"
                   step="0.1"
                   style={styles.input}
-                  value={selected.widthM ?? ''}
-                  onChange={e => onUpdate({ ...selected, widthM: Number(e.target.value) || 0.5 })}
+                  value={selected.widthM ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : ''}
+                  onChange={e => {
+                    const displayValue = Number(e.target.value)
+                    const metersValue = convertToMeters(displayValue, measurementUnit)
+                    onUpdate({ ...selected, widthM: metersValue || 0.5 })
+                  }}
                 />
               </div>
               <div style={styles.field}>
-                <label style={styles.label}>Length (m)</label>
+                <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
                 <input
                   type="number"
                   min="0.5"
                   step="0.1"
                   style={styles.input}
-                  value={selected.lengthM ?? ''}
-                  onChange={e => onUpdate({ ...selected, lengthM: Number(e.target.value) || 0.5 })}
+                  value={selected.lengthM ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : ''}
+                  onChange={e => {
+                    const displayValue = Number(e.target.value)
+                    const metersValue = convertToMeters(displayValue, measurementUnit)
+                    onUpdate({ ...selected, lengthM: metersValue || 0.5 })
+                  }}
                 />
               </div>
             </div>
@@ -654,6 +735,95 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 })}
               />
             </div>
+
+            {/* Asset Visual Styling */}
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Asset Appearance</div>
+
+              {/* Fill Color & Opacity */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={styles.label}>Fill Color</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
+                  <input
+                    type="color"
+                    style={{ ...styles.input, padding: '4px', height: '36px' }}
+                    value={selected.fillColor || selected.assetDef?.color || '#3d8ef8'}
+                    onChange={e => onUpdate({ ...selected, fillColor: e.target.value })}
+                  />
+                  <input
+                    style={styles.input}
+                    value={selected.fillColor || selected.assetDef?.color || '#3d8ef8'}
+                    onChange={e => {
+                      const value = e.target.value.trim()
+                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
+                      onUpdate({ ...selected, fillColor: value })
+                    }}
+                    placeholder="#3d8ef8"
+                  />
+                </div>
+              </div>
+
+              {/* Fill Opacity */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={styles.label}>Fill Opacity</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={(selected.fillOpacity !== undefined ? selected.fillOpacity : 0.85) * 100}
+                    onChange={e => onUpdate({ ...selected, fillOpacity: Number(e.target.value) / 100 })}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
+                    {Math.round((selected.fillOpacity !== undefined ? selected.fillOpacity : 0.85) * 100)}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Border Color */}
+              <div style={{ marginBottom: '12px' }}>
+                <label style={styles.label}>Border Color</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
+                  <input
+                    type="color"
+                    style={{ ...styles.input, padding: '4px', height: '36px' }}
+                    value={selected.strokeColor || selected.assetDef?.color || '#3d8ef8'}
+                    onChange={e => onUpdate({ ...selected, strokeColor: e.target.value })}
+                  />
+                  <input
+                    style={styles.input}
+                    value={selected.strokeColor || selected.assetDef?.color || '#3d8ef8'}
+                    onChange={e => {
+                      const value = e.target.value.trim()
+                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
+                      onUpdate({ ...selected, strokeColor: value })
+                    }}
+                    placeholder="#3d8ef8"
+                  />
+                </div>
+              </div>
+
+              {/* Border Thickness */}
+              <div style={{ marginBottom: '0' }}>
+                <label style={styles.label}>Border Thickness</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="8"
+                    step="0.5"
+                    value={selected.strokeWeight || 2}
+                    onChange={e => onUpdate({ ...selected, strokeWeight: Number(e.target.value) })}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
+                    {(selected.strokeWeight || 2).toFixed(1)}px
+                  </span>
+                </div>
+              </div>
+            </div>
             <div style={styles.field}>
               <label style={styles.label}>Supplier</label>
               <input
@@ -663,15 +833,50 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 placeholder="Supplier name..."
               />
             </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Cost Code</label>
+              <input
+                style={styles.input}
+                value={selected.costCode || ''}
+                onChange={e => onUpdate({ ...selected, costCode: e.target.value })}
+                placeholder="e.g. INF-0042"
+              />
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+              <div style={styles.field}>
+                <label style={styles.label}>Power (kW)</label>
+                <input
+                  type="number" min="0" step="0.1"
+                  style={styles.input}
+                  value={selected.powerNeed ?? ''}
+                  onChange={e => onUpdate({ ...selected, powerNeed: e.target.value === '' ? null : Number(e.target.value) })}
+                  placeholder="0"
+                />
+              </div>
+              <div style={styles.field}>
+                <label style={styles.label}>Water (litres)</label>
+                <input
+                  type="number" min="0" step="1"
+                  style={styles.input}
+                  value={selected.waterNeed ?? ''}
+                  onChange={e => onUpdate({ ...selected, waterNeed: e.target.value === '' ? null : Number(e.target.value) })}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+              <div style={styles.field}>
+                <label style={styles.label}>Delivery Date</label>
+                <input type="date" style={styles.input} value={selected.deliveryDate || ''} onChange={e => onUpdate({ ...selected, deliveryDate: e.target.value })} />
+              </div>
               <div style={styles.field}>
                 <label style={styles.label}>Install Date</label>
                 <input type="date" style={styles.input} value={selected.installDate || ''} onChange={e => onUpdate({ ...selected, installDate: e.target.value })} />
               </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Remove Date</label>
-                <input type="date" style={styles.input} value={selected.removeDate || ''} onChange={e => onUpdate({ ...selected, removeDate: e.target.value })} />
-              </div>
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Removal Date</label>
+              <input type="date" style={styles.input} value={selected.removeDate || ''} onChange={e => onUpdate({ ...selected, removeDate: e.target.value })} />
             </div>
             <div style={styles.statCard}>
               <div style={styles.statRow}>
@@ -695,7 +900,40 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             <div style={styles.sectionDivider} />
 
             <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Line Style</div>
+              <div style={styles.blockTitle}>Route Details</div>
+              <div style={styles.field}>
+                <label style={styles.label}>Route Type</label>
+                <select
+                  style={styles.select}
+                  value={selected.routeType || 'custom'}
+                  onChange={e => {
+                    const preset = getRouteStylePreset(e.target.value)
+                    const autoLabels = new Set(['', 'Line', 'Route', 'Custom Route', ...ROUTE_TYPE_OPTIONS.map(option => option.label)])
+                    const currentLabel = String(selected.label || '').trim()
+                    onUpdate({
+                      ...selected,
+                      routeType: preset.routeType,
+                      label: autoLabels.has(currentLabel) ? preset.label : selected.label,
+                      color: preset.color,
+                      strokeWeight: preset.weight,
+                      pattern: preset.pattern,
+                    })
+                  }}
+                >
+                  {ROUTE_TYPE_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.45 }}>
+                  {ROUTE_TYPE_OPTIONS.find(option => option.id === (selected.routeType || 'custom'))?.description || routeTypePreset?.label}
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Route Style</div>
               <div style={{ display: 'grid', gridTemplateColumns: '94px 1fr', gap: '8px' }}>
                 <div style={styles.field}>
                   <label style={styles.label}>Color</label>
@@ -748,7 +986,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             <div style={styles.statCard}>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Length</span>
-                <span style={styles.statValue}>{formatDist(selected.lengthM)}</span>
+                <span style={styles.statValue}>{formatDistance(selected.lengthM, measurementUnit)}</span>
               </div>
               <div style={styles.statRow}>
                 <span style={styles.statLabel}>Parent Zone</span>
@@ -822,48 +1060,10 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
           <>
             <div style={styles.sectionDivider} />
             <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Content</div>
-              <div style={styles.field}>
-                <label style={styles.label}>Name</label>
-                <input
-                  style={styles.input}
-                  value={selected.label || ''}
-                  onChange={e => {
-                    const nextLabel = e.target.value
-                    onUpdate({
-                      ...selected,
-                      label: nextLabel,
-                      text: selected.text ? selected.text : nextLabel,
-                    })
-                  }}
-                  placeholder="Annotation name..."
-                />
+              <div style={styles.blockTitle}>Pin Style & Preview</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: '10px' }}>
+                Double-click the pin on the map to edit it directly. Hover it to see the tooltip details.
               </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Text</label>
-                <textarea
-                  style={{ ...styles.input, minHeight: '90px', resize: 'vertical' }}
-                  value={selected.text || ''}
-                  onChange={e => onUpdate({ ...selected, text: e.target.value, label: e.target.value })}
-                  placeholder="Enter annotation text..."
-                />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Font Size</label>
-                <input
-                  type="number"
-                  min="10"
-                  max="32"
-                  step="1"
-                  style={styles.input}
-                  value={selected.fontSize || 14}
-                  onChange={e => onUpdate({ ...selected, fontSize: Number(e.target.value) || 14 })}
-                />
-              </div>
-            </div>
-
-            <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Style & Preview</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                 <div style={styles.field}>
                   <label style={styles.label}>Text Color</label>
@@ -882,6 +1082,33 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                     value={selected.backgroundColor || '#fff7d6'}
                     onChange={e => onUpdate({ ...selected, backgroundColor: e.target.value })}
                   />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={styles.field}>
+                  <label style={styles.label}>Font Size</label>
+                  <input
+                    type="number"
+                    min="10"
+                    max="32"
+                    step="1"
+                    style={styles.input}
+                    value={selected.fontSize || 14}
+                    onChange={e => onUpdate({ ...selected, fontSize: Number(e.target.value) || 14 })}
+                  />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Font Weight</label>
+                  <select
+                    style={styles.select}
+                    value={selected.fontWeight || 700}
+                    onChange={e => onUpdate({ ...selected, fontWeight: Number(e.target.value) || 700 })}
+                  >
+                    <option value="500">Medium</option>
+                    <option value="600">Semi Bold</option>
+                    <option value="700">Bold</option>
+                    <option value="800">Extra Bold</option>
+                  </select>
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
@@ -928,7 +1155,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   background: selected.backgroundColor || '#fff7d6',
                   color: selected.color || '#111827',
                   fontSize: `${Math.max(10, Number(selected.fontSize || 14))}px`,
-                  fontWeight: 700,
+                  fontWeight: Math.max(500, Number(selected.fontWeight || 700)),
                   lineHeight: 1.4,
                   boxShadow: '0 8px 18px rgba(15,23,42,0.16)',
                 }}

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react'
 import { Map, Layers, Package, Users, Type } from 'lucide-react'
 import { computeZoneCapacity } from '../data/assets'
+import { formatArea } from '../utils/units'
 
 const styles = {
   bar: {
@@ -30,9 +31,24 @@ const styles = {
     height: '16px',
     background: 'var(--border)',
   },
+  selectedStat: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '5px',
+    fontSize: '11px',
+    color: 'var(--accent)',
+  },
+  versionStat: {
+    marginLeft: 'auto',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '5px',
+    fontSize: '11px',
+    color: 'var(--text-dim)',
+  },
 }
 
-export default function StatsBar({ zones, assets, annotations = [], selectedId }) {
+export default React.memo(function StatsBar({ zones, assets, annotations = [], selectedId, measurementUnit = 'meters' }) {
   const { totalArea, totalCapacity } = useMemo(() => ({
     totalArea: zones.reduce((sum, zone) => sum + (zone.areaM2 || 0), 0),
     totalCapacity: zones.reduce((sum, zone) => sum + (computeZoneCapacity(zone) || 0), 0),
@@ -62,7 +78,7 @@ export default function StatsBar({ zones, assets, annotations = [], selectedId }
         <Layers size={11} />
         <span>Total area:</span>
         <span style={styles.statValue}>
-          {totalArea > 0 ? `${totalArea.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} m²` : '-'}
+          {totalArea > 0 ? formatArea(totalArea, measurementUnit) : '-'}
         </span>
       </div>
       <div style={styles.divider} />
@@ -74,14 +90,14 @@ export default function StatsBar({ zones, assets, annotations = [], selectedId }
       {selectedId && (
         <>
           <div style={styles.divider} />
-          <div style={{ ...styles.stat, color: 'var(--accent)' }}>
+          <div style={styles.selectedStat}>
             • Item selected
           </div>
         </>
       )}
-      <div style={{ marginLeft: 'auto', ...styles.stat }}>
+      <div style={styles.versionStat}>
         EventWiz Mapping POC - v1.0
       </div>
     </div>
   )
-}
+})
