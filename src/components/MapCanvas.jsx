@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GoogleMap, useJsApiLoader, Polygon, Circle, OverlayView, Polyline } from '@react-google-maps/api'
+import { GoogleMap, useJsApiLoader, Polygon, Circle, OverlayView, Polyline, MarkerF } from '@react-google-maps/api'
 import { computeZoneCapacity, getAssetName, getZoneAllowedAssetTypes, isAssetAllowedInZone } from '../data/assets'
 import {
   metersPerPixel,
@@ -18,6 +18,7 @@ import {
   clientRectToBounds,
   localDeltaToScreen,
   buildViewportBounds,
+  normalizeFloorPlanState,
   computeContentBounds,
   buildCirclePath,
   buildSquarePath,
@@ -155,6 +156,7 @@ function buildZoneGridOverlay(zone, map, zoom) {
     cellPx: Math.max(12, Math.round(cellPx)),
     color: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
     opacity: zone.gridOpacity ?? 0.22,
+    rotationDeg: Number(zone.gridRotation || 0),
     clipPath: `polygon(${clipPoints})`,
   }
 }
@@ -190,6 +192,11 @@ export default function MapCanvas({
   textStyle,
   annotationDraftText,
   onMapRef,
+  onViewportChange,
+  initialView = null,
+  isViewOnly = false,
+  viewOnlyMinZoom,
+  viewOnlyMaxZoom,
   measurementUnit = 'meters',
 }) {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
@@ -210,7 +217,6 @@ export default function MapCanvas({
   const lineOverlayRefs = useRef({})
   const lastLineSnapshotRef = useRef({})
   const [mapZoom, setMapZoom] = useState(14)
-  const [mapBounds, setMapBounds] = useState(null)
   const [tempFloorPoints, setTempFloorPoints] = useState([])
   const [lineDraft, setLineDraft] = useState(null)
   const [polygonDraft, setPolygonDraft] = useState(null)
@@ -279,15 +285,18 @@ export default function MapCanvas({
     }
   }, [drawMode, layers.lines?.visible])
 
+  const zoneById = useMemo(() => new Map(zones.map(zone => [zone.id, zone])), [zones])
+
   // Check if zone or any of its parent zones are hidden
-  const isZoneOrParentHidden = (zone) => {
+  const isZoneOrParentHidden = useCallback(function checkZone(zone) {
+    if (!zone) return false
     if (zone.visible === false) return true
     if (zone.parentId) {
-      const parent = zones.find(z => z.id === zone.parentId)
-      if (parent) return isZoneOrParentHidden(parent)
+      const parent = zoneById.get(zone.parentId)
+      if (parent) return checkZone(parent)
     }
     return false
-  }
+  }, [zoneById])
 
   const selectedAsset = useMemo(
     () => assets.find(asset => asset.id === selectedId) || null,
@@ -311,6 +320,29 @@ export default function MapCanvas({
     })
   }, [isLoaded, layers.zones?.visible, mapZoom, zones])
   const floorSelected = selectedId === 'floor-plan'
+  const visibleAssets = useMemo(() => {
+    if (layers.assets?.visible === false) return []
+
+    return assets.filter((asset) => {
+      if (!asset.parentId) return true
+      const parentZone = zoneById.get(asset.parentId)
+      return !(parentZone && isZoneOrParentHidden(parentZone))
+    })
+  }, [assets, isZoneOrParentHidden, layers.assets?.visible, zoneById])
+
+  const visibleAnnotations = useMemo(() => {
+    if (layers.annotations?.visible === false) return []
+    return annotations.filter(annotation => annotation.id !== selectedAnnotation?.id)
+  }, [annotations, layers.annotations?.visible, selectedAnnotation?.id])
+
+  const defaultCenter = initialView?.center || eventDetails?.resolvedLocation?.center || MAP_CENTER
+  const defaultZoom = Number.isFinite(Number(initialView?.zoom)) ? Number(initialView.zoom) : 14
+  const viewOnlyRestrictionBounds = useMemo(() => {
+    if (!isViewOnly || !window.google) return null
+    return eventDetails?.resolvedLocation?.restrictionBounds
+      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+      || null
+  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlan, isViewOnly, lines, zones])
 
   const hoveredTooltipPosition = useMemo(() => {
     if (!hoveredItem || drawMode !== 'select') return null
@@ -349,7 +381,7 @@ export default function MapCanvas({
       const { lengthPx } = getAssetSize(data, mapZoom)
       verticalOffset = Math.max(20, Math.round(lengthPx / 2) + 12)
     } else if (hoveredItem.type === 'annotation') {
-      verticalOffset = 34
+      verticalOffset = mapZoom >= 15 ? 44 : 34
     }
 
     return {
@@ -373,7 +405,8 @@ export default function MapCanvas({
 
   const onLoad = useCallback((map) => {
     mapRef.current = map
-    setMapZoom(map.getZoom() || 14)
+    const initialZoom = map.getZoom() || 14
+    setMapZoom(initialZoom)
 
     const nextMapType = ['roadmap', 'terrain', 'hybrid', 'satellite'].includes(mapViewMode)
       ? mapViewMode
@@ -385,12 +418,28 @@ export default function MapCanvas({
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null
         const z = map.getZoom()
-        if (z != null) setMapZoom(z)
-        setMapBounds(map.getBounds())
+        const center = map.getCenter()
+        if (z != null) {
+          setMapZoom((prev) => (Math.abs((prev ?? 0) - z) > 0.001 ? z : prev))
+        }
+        if (isViewOnly && center && onViewportChange) {
+          onViewportChange({
+            center: { lat: center.lat(), lng: center.lng() },
+            zoom: z ?? 14,
+          })
+        }
       })
     })
+
     if (onMapRef) onMapRef(map)
-  }, [mapViewMode, onMapRef])
+    if (isViewOnly && onViewportChange) {
+      const center = map.getCenter()
+      onViewportChange({
+        center: center ? { lat: center.lat(), lng: center.lng() } : defaultCenter,
+        zoom: map.getZoom() || defaultZoom,
+      })
+    }
+  }, [defaultCenter, defaultZoom, isViewOnly, mapViewMode, onMapRef, onViewportChange])
 
   useEffect(() => {
     const map = mapRef.current
@@ -405,17 +454,22 @@ export default function MapCanvas({
     map.setHeading(0)
   }, [mapViewMode])
 
+
+
   useEffect(() => {
     if (!isLoaded || !window.google || !eventDetails?.locationQuery || eventDetails?.resolvedLocation?.query === eventDetails.locationQuery) return
 
     const query = eventDetails.locationQuery.trim()
     const w3wMatch = query.match(WHAT3WORDS_PATTERN)
     const applyResolvedLocation = (payload) => {
+      const center = payload?.center || null
       onEventDetailsChange(prev => ({
         ...prev,
         resolvedLocation: {
           query: prev.locationQuery,
           ...payload,
+          lat: payload?.lat ?? center?.lat ?? null,
+          lng: payload?.lng ?? center?.lng ?? null,
         },
       }))
     }
@@ -514,9 +568,19 @@ export default function MapCanvas({
 
       if (interaction.objectType === 'floor') {
         if (interaction.type === 'move') {
-          const nextBounds = clientRectToBounds(map, { x: event.clientX, y: event.clientY }, interaction.startWidthPx, interaction.startHeightPx)
-          if (!nextBounds) return
-          onFloorPlanChange(prev => prev ? { ...prev, bounds: nextBounds } : prev)
+          const nextCenter = clientPointToLatLng(map, event.clientX, event.clientY)
+          if (!nextCenter) return
+
+          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
+            ...prev,
+            center: {
+              lat: nextCenter.lat() - (interaction.latOffset || 0),
+              lng: nextCenter.lng() - (interaction.lngOffset || 0)
+            },
+            widthM: interaction.startWidthM,
+            heightM: interaction.startHeightM,
+            rotation: interaction.startRotation,
+          }) : prev)
           return
         }
 
@@ -536,22 +600,75 @@ export default function MapCanvas({
             y: (appliedHeightDelta / 2) * handle.ySign,
           }
           const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
-          const nextBounds = clientRectToBounds(
+          const nextCenter = clientPointToLatLng(
             map,
-            { x: interaction.center.x + screenShift.x, y: interaction.center.y + screenShift.y },
-            widthPx,
-            heightPx
+            interaction.center.x + screenShift.x,
+            interaction.center.y + screenShift.y
           )
-          if (!nextBounds) return
-          onFloorPlanChange(prev => prev ? { ...prev, bounds: nextBounds } : prev)
+          if (!nextCenter) return
+
+          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
+            ...prev,
+            center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
+            widthM: Number(Math.max(1, widthPx * interaction.metersPerPixel).toFixed(2)),
+            heightM: Number(Math.max(1, heightPx * interaction.metersPerPixel).toFixed(2)),
+            rotation: interaction.startRotation,
+          }) : prev)
           return
         }
 
         if (interaction.type === 'rotate') {
           const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
           const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
-          onFloorPlanChange(prev => prev ? { ...prev, rotation: Number(normalizeAngle(interaction.startRotation + delta).toFixed(1)) } : prev)
+          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
+            ...prev,
+            center: interaction.startCenter,
+            widthM: interaction.startWidthM,
+            heightM: interaction.startHeightM,
+            rotation: Number(normalizeAngle(interaction.startRotation + delta).toFixed(1)),
+          }) : prev)
         }
+      }
+
+      if (interaction.objectType === 'zone' && interaction.type === 'rotate') {
+        if (!Array.isArray(interaction.startPath) || interaction.startPath.length < 3) return
+
+        const center = interaction.startPath.reduce(
+          (acc, point) => ({
+            lat: acc.lat + Number(point.lat || 0),
+            lng: acc.lng + Number(point.lng || 0),
+          }),
+          { lat: 0, lng: 0 }
+        )
+        center.lat /= interaction.startPath.length
+        center.lng /= interaction.startPath.length
+
+        const rect = map.getDiv().getBoundingClientRect()
+        const centerPoint = latLngToContainerPoint(map, center)
+        if (!centerPoint) return
+
+        const centerClient = { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y }
+        const startAngle = Math.atan2(interaction.startY - centerClient.y, interaction.startX - centerClient.x)
+        const currentAngle = Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x)
+        const delta = startAngle - currentAngle
+        const cos = Math.cos(delta)
+        const sin = Math.sin(delta)
+
+        const rotatedPath = interaction.startPath.map((point) => {
+          const dx = Number(point.lng || 0) - center.lng
+          const dy = Number(point.lat || 0) - center.lat
+          return {
+            lat: center.lat + (dy * cos - dx * sin),
+            lng: center.lng + (dx * cos + dy * sin),
+          }
+        })
+
+        onAssetUpdate({
+          ...interaction.object,
+          path: rotatedPath,
+          rotation: Number(normalizeAngle((interaction.startRotation || 0) + (delta * 180) / Math.PI).toFixed(1)),
+        })
+        return
       }
 
       if (interaction.objectType === 'annotation') {
@@ -560,8 +677,8 @@ export default function MapCanvas({
           if (!latLng) return
           const movedAnnotation = buildAnnotationPlacement({
             ...interaction.object,
-            lat: latLng.lat(),
-            lng: latLng.lng(),
+            lat: latLng.lat() - (interaction.latOffset || 0),
+            lng: latLng.lng() - (interaction.lngOffset || 0),
           })
           onAssetUpdate(movedAnnotation)
         }
@@ -603,6 +720,7 @@ export default function MapCanvas({
       layoutType: 'free',
       showGrid: false,
       gridSize: 3,
+      gridRotation: 0,
       subType: defaultSubType,
       parentId: null,
       path,
@@ -869,6 +987,7 @@ export default function MapCanvas({
           layoutType: 'free',
           showGrid: false,
           gridSize: 3,
+          gridRotation: 0,
           subType: defaultSubType,
           parentId: null,
           path,
@@ -904,13 +1023,14 @@ export default function MapCanvas({
         east: Math.max(firstPoint.lng, point.lng),
         west: Math.min(firstPoint.lng, point.lng),
       }
-      onFloorPlanChange(prevPlan => prevPlan ? {
-        ...prevPlan,
+      const nextFloorPlan = normalizeFloorPlanState({
+        ...floorPlan,
         bounds: nextBounds,
-      } : prevPlan)
+      })
+      onFloorPlanChange(nextFloorPlan)
       setTempFloorPoints([])
       onFloorPlacementChange(false)
-      onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan, bounds: nextBounds })
+      onSelect({ id: 'floor-plan', type: 'floor', ...nextFloorPlan })
       return
     }
 
@@ -982,10 +1102,12 @@ export default function MapCanvas({
         lng: event.latLng.lng(),
         text: trimmedText,
         label: trimmedText,
-        color: textStyle?.color || '#1f2937',
-        backgroundColor: textStyle?.backgroundColor || 'rgba(255,255,255,0.96)',
+        pinColor: textStyle?.pinColor || '#ea4335',
+        color: textStyle?.color || '#111827',
+        backgroundColor: textStyle?.backgroundColor || '#fff7d6',
         fontSize: textStyle?.fontSize || 14,
-        borderColor: textStyle?.borderColor || 'rgba(15,23,42,0.12)',
+        fontWeight: textStyle?.fontWeight || 700,
+        borderColor: textStyle?.borderColor || '#334155',
         borderWidth: textStyle?.borderWidth || 1,
         borderRadius: textStyle?.borderRadius || 12,
         status: 'planned',
@@ -1153,14 +1275,24 @@ export default function MapCanvas({
       const rect = map.getDiv().getBoundingClientRect()
       if (!floorGeometry) return
 
+      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
+      const latOffset = clickLatLng ? clickLatLng.lat() - floorGeometry.centerLat : 0
+      const lngOffset = clickLatLng ? clickLatLng.lng() - floorGeometry.centerLng : 0
+
       interactionRef.current = {
         objectType: 'floor',
         type,
         startX: event.clientX,
         startY: event.clientY,
         center: { x: rect.left + floorGeometry.centerPoint.x, y: rect.top + floorGeometry.centerPoint.y },
+        startCenter: { lat: floorGeometry.centerLat, lng: floorGeometry.centerLng },
+        latOffset,
+        lngOffset,
         startWidthPx: floorGeometry.widthPx,
         startHeightPx: floorGeometry.heightPx,
+        startWidthM: floorGeometry.widthM,
+        startHeightM: floorGeometry.heightM,
+        metersPerPixel: floorGeometry.metersPerPixel,
         startRotation: object.rotation || 0,
         resizeHandle,
         startPointerAngle: Math.atan2(
@@ -1174,12 +1306,35 @@ export default function MapCanvas({
       return
     }
 
+    if (object.type === 'zone' && type === 'rotate') {
+      if (layers.zones?.locked || !Array.isArray(object.path) || object.path.length < 3) return
+      interactionRef.current = {
+        objectType: 'zone',
+        type,
+        object,
+        startX: event.clientX,
+        startY: event.clientY,
+        startPath: object.path.map((point) => ({ lat: Number(point.lat || 0), lng: Number(point.lng || 0) })),
+        startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
+      }
+      document.body.style.userSelect = 'none'
+      onSelect(object)
+      return
+    }
+
     if (object.type === 'annotation') {
       if (layers.annotations?.locked) return
+
+      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
+      const latOffset = clickLatLng ? clickLatLng.lat() - object.lat : 0
+      const lngOffset = clickLatLng ? clickLatLng.lng() - object.lng : 0
+
       interactionRef.current = {
         objectType: 'annotation',
         type,
         object,
+        latOffset,
+        lngOffset,
       }
       document.body.style.userSelect = 'none'
       onSelect(object)
@@ -1216,21 +1371,36 @@ export default function MapCanvas({
   const mapOptions = useMemo(() => ({
     clickableIcons: false,
     isFractionalZoomEnabled: true,
+    keyboardShortcuts: true,
     mapTypeControl: true,
     mapTypeControlOptions: {
       style: window.google?.maps?.MapTypeControlStyle?.HORIZONTAL_BAR,
-      position: window.google?.maps?.ControlPosition?.TOP_LEFT,
+      position: window.google?.maps?.ControlPosition?.TOP_RIGHT,
       mapTypeIds: ['roadmap', 'terrain', 'hybrid', 'satellite'],
     },
     streetViewControl: false,
     fullscreenControl: false,
     rotateControl: true,
     zoomControl: true,
+    zoomControlOptions: {
+      position: window.google?.maps?.ControlPosition?.RIGHT_BOTTOM,
+    },
     scaleControl: false,
-    disableDoubleClickZoom: drawMode === 'line' || drawMode === 'route' || drawMode === 'polygon' || drawMode === 'measure',
-    gestureHandling: 'auto',
-    draggableCursor: drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : undefined,
-  }), [drawMode, pendingAssetDef, placingFloor])
+    draggable: true,
+    minZoom: isViewOnly && Number.isFinite(viewOnlyMinZoom) ? viewOnlyMinZoom : undefined,
+    maxZoom: isViewOnly && Number.isFinite(viewOnlyMaxZoom) ? Math.max(viewOnlyMinZoom ?? 0, viewOnlyMaxZoom) : undefined,
+    restriction: isViewOnly && viewOnlyRestrictionBounds
+      ? { latLngBounds: viewOnlyRestrictionBounds, strictBounds: false }
+      : undefined,
+    disableDoubleClickZoom: isViewOnly ? false : drawMode === 'line' || drawMode === 'route' || drawMode === 'polygon' || drawMode === 'measure',
+    gestureHandling: 'greedy',
+    draggableCursor: isViewOnly
+      ? 'grab'
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
+    draggingCursor: isViewOnly
+      ? 'grabbing'
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
+  }), [drawMode, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
 
   if (!apiKey) {
     return (
@@ -1267,8 +1437,8 @@ export default function MapCanvas({
     <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }} onDrop={handleDrop} onDragOver={handleDragOver}>
       <GoogleMap
         mapContainerStyle={{ width: '100%', height: '100%' }}
-        center={eventDetails?.resolvedLocation?.center || MAP_CENTER}
-        zoom={14}
+        center={defaultCenter}
+        zoom={defaultZoom}
         onLoad={onLoad}
         onClick={handleMapClick}
         onDblClick={handleMapDoubleClick}
@@ -1277,6 +1447,18 @@ export default function MapCanvas({
         /* zoom updates are handled via bounds_changed RAF listener in onLoad */
         options={mapOptions}
       >
+        {eventDetails?.resolvedLocation?.center && (
+          <MarkerF
+            position={eventDetails.resolvedLocation.center}
+            title={eventDetails.resolvedLocation.formattedAddress || eventDetails.locationQuery || 'Selected location'}
+            zIndex={450}
+            options={{
+              clickable: false,
+              optimized: true,
+            }}
+          />
+        )}
+
         {layers.floor?.visible && floorPlan?.bounds && (
           <FloorPlanOverlay
             floorPlan={floorPlan}
@@ -1285,6 +1467,7 @@ export default function MapCanvas({
             onSelect={onSelect}
             onStartInteraction={handleStartInteraction}
             map={mapRef.current}
+            zoom={mapZoom}
           />
         )}
 
@@ -1316,6 +1499,21 @@ export default function MapCanvas({
             ? Math.max(...zoneScreenPoints.map(point => point.y)) - Math.min(...zoneScreenPoints.map(point => point.y))
             : 0
 
+          const zoneRotateAnchor = mapRef.current && Array.isArray(zone.path) && zone.path.length >= 3
+            ? zone.path.reduce((bestPoint, point) => {
+              const screenPoint = latLngToContainerPoint(mapRef.current, point.lat, point.lng)
+              if (!screenPoint) return bestPoint
+              if (!bestPoint || screenPoint.y < bestPoint.screenY) {
+                return {
+                  lat: point.lat,
+                  lng: point.lng,
+                  screenY: screenPoint.y,
+                }
+              }
+              return bestPoint
+            }, null)
+            : null
+
           const zoneDisplayName = getZoneDisplayName(zone)
           const zoneLabelMaxWidthPx = Math.min(180, Math.max(64, zoneLabelWidthPx - 14))
           const canShowZoneLabel = !!zoneCenter
@@ -1323,6 +1521,13 @@ export default function MapCanvas({
             && zoneLabelWidthPx >= 36
             && zoneLabelHeightPx >= 14
             && (mapZoom >= 15 || selectedId === zone.id)
+          const showZoneRotateControl = !!zoneRotateAnchor
+            && selectedId === zone.id
+            && drawMode === 'select'
+            && !layers.zones?.locked
+            && zone.shapeType !== 'circle'
+            && Array.isArray(zone.path)
+            && zone.path.length >= 3
 
           return (
             <React.Fragment key={zone.id}>
@@ -1439,6 +1644,59 @@ export default function MapCanvas({
                   </div>
                 </OverlayView>
               )}
+              {showZoneRotateControl && (
+                <OverlayView
+                  position={zoneRotateAnchor}
+                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                  getPixelPositionOffset={() => ({ x: 0, y: 0 })}
+                >
+                  <div style={{ position: 'relative', width: 0, height: 0, pointerEvents: 'none' }}>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '50%',
+                        top: '-44px',
+                        width: '2px',
+                        height: '24px',
+                        background: 'linear-gradient(180deg, #38bdf8 0%, #0ea5e9 100%)',
+                        transform: 'translateX(-50%)',
+                        boxShadow: '0 0 0 1px rgba(255,255,255,0.65)',
+                        pointerEvents: 'auto',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onMouseDown={(event) => handleStartInteraction(event, zone, 'rotate')}
+                      style={{
+                        position: 'absolute',
+                        left: '50%',
+                        top: '-66px',
+                        transform: 'translateX(-50%)',
+                        width: '30px',
+                        height: '30px',
+                        borderRadius: '999px',
+                        border: '1.5px solid #0ea5e9',
+                        background: 'linear-gradient(180deg, #ffffff 0%, #eff6ff 100%)',
+                        color: '#0369a1',
+                        fontSize: '15px',
+                        fontWeight: 700,
+                        cursor: 'grab',
+                        padding: 0,
+                        pointerEvents: 'auto',
+                        boxShadow: '0 10px 24px rgba(15, 23, 42, 0.18)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: 1,
+                      }}
+                      title="Rotate zone"
+                      aria-label="Rotate zone"
+                    >
+                      ↻
+                    </button>
+                  </div>
+                </OverlayView>
+              )}
             </React.Fragment>
           )
         })}
@@ -1455,15 +1713,34 @@ export default function MapCanvas({
                 width: `${overlay.width}px`,
                 height: `${overlay.height}px`,
                 pointerEvents: 'none',
-                opacity: overlay.opacity,
-                backgroundImage: `linear-gradient(to right, ${overlay.color} 1px, transparent 1px), linear-gradient(to bottom, ${overlay.color} 1px, transparent 1px)`,
-                backgroundSize: `${overlay.cellPx}px ${overlay.cellPx}px`,
-                backgroundPosition: '0 0',
                 clipPath: overlay.clipPath,
                 WebkitClipPath: overlay.clipPath,
+                overflow: 'hidden',
                 boxSizing: 'border-box',
               }}
-            />
+            >
+              <div
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  height: '100%',
+                }}
+              >
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: '-60%',
+                    opacity: overlay.opacity,
+                    backgroundImage: `linear-gradient(to right, ${overlay.color} 1px, transparent 1px), linear-gradient(to bottom, ${overlay.color} 1px, transparent 1px)`,
+                    backgroundSize: `${overlay.cellPx}px ${overlay.cellPx}px`,
+                    backgroundPosition: 'center center',
+                    transform: `rotate(${overlay.rotationDeg || 0}deg)`,
+                    transformOrigin: 'center center',
+                    willChange: 'transform',
+                  }}
+                />
+              </div>
+            </div>
           </OverlayView>
         ))}
 
@@ -1474,62 +1751,62 @@ export default function MapCanvas({
           if (parentZone && isZoneOrParentHidden(parentZone)) return null
 
           return (
-          <React.Fragment key={line.id}>
-            <Polyline
-              path={line.path}
-              options={{
-                strokeColor: line.color || '#f59e0b',
-                strokeWeight: line.strokeWeight || 4,
-                strokeOpacity: (line.pattern || 'dashed') === 'solid' ? 1 : 0,
-                clickable: drawMode === 'select' || drawMode === 'erase',
-                editable: selectedId === line.id && !layers.lines?.locked,
-                draggable: selectedId === line.id && !layers.lines?.locked,
-                icons: getLinePatternIcons(line.pattern || 'dashed', line.color || '#f59e0b'),
-                zIndex: selectedId === line.id ? 10 : 1,
-              }}
-              onClick={() => {
-                if (drawMode === 'erase') {
-                  onEraseAsset(line.id, 'line')
-                  return
-                }
-                if (drawMode !== 'select') return
-                onSelect(line)
-              }}
-              onMouseOver={(e) => {
-                if (drawMode !== 'select' && drawMode !== 'erase') return
-                setHoveredLine(line)
-                const rect = mapRef.current?.getDiv?.().getBoundingClientRect?.()
-                if (rect && e.domEvent) setHoverScreenPos({ x: e.domEvent.clientX - rect.left, y: e.domEvent.clientY - rect.top })
-              }}
-              onMouseMove={(e) => {
-                if (!hoveredLine) return
-                const rect = mapRef.current?.getDiv?.().getBoundingClientRect?.()
-                if (rect && e.domEvent) setHoverScreenPos({ x: e.domEvent.clientX - rect.left, y: e.domEvent.clientY - rect.top })
-              }}
-              onMouseOut={() => setHoveredLine(null)}
-              onDragEnd={() => handleLineGeometryChange(line)}
-              onLoad={(polyline) => {
-                const previousLine = lineOverlayRefs.current[line.id]
-                if (previousLine && previousLine !== polyline) {
-                  previousLine.setMap?.(null)
-                }
+            <React.Fragment key={line.id}>
+              <Polyline
+                path={line.path}
+                options={{
+                  strokeColor: line.color || '#f59e0b',
+                  strokeWeight: line.strokeWeight || 4,
+                  strokeOpacity: (line.pattern || 'dashed') === 'solid' ? 1 : 0,
+                  clickable: drawMode === 'select' || drawMode === 'erase',
+                  editable: selectedId === line.id && !layers.lines?.locked,
+                  draggable: selectedId === line.id && !layers.lines?.locked,
+                  icons: getLinePatternIcons(line.pattern || 'dashed', line.color || '#f59e0b'),
+                  zIndex: selectedId === line.id ? 10 : 1,
+                }}
+                onClick={() => {
+                  if (drawMode === 'erase') {
+                    onEraseAsset(line.id, 'line')
+                    return
+                  }
+                  if (drawMode !== 'select') return
+                  onSelect(line)
+                }}
+                onMouseOver={(e) => {
+                  if (drawMode !== 'select' && drawMode !== 'erase') return
+                  setHoveredLine(line)
+                  const rect = mapRef.current?.getDiv?.().getBoundingClientRect?.()
+                  if (rect && e.domEvent) setHoverScreenPos({ x: e.domEvent.clientX - rect.left, y: e.domEvent.clientY - rect.top })
+                }}
+                onMouseMove={(e) => {
+                  if (!hoveredLine) return
+                  const rect = mapRef.current?.getDiv?.().getBoundingClientRect?.()
+                  if (rect && e.domEvent) setHoverScreenPos({ x: e.domEvent.clientX - rect.left, y: e.domEvent.clientY - rect.top })
+                }}
+                onMouseOut={() => setHoveredLine(null)}
+                onDragEnd={() => handleLineGeometryChange(line)}
+                onLoad={(polyline) => {
+                  const previousLine = lineOverlayRefs.current[line.id]
+                  if (previousLine && previousLine !== polyline) {
+                    previousLine.setMap?.(null)
+                  }
 
-                lineOverlayRefs.current[line.id] = polyline
-                if (selectedId === line.id && !layers.lines?.locked) {
-                  const path = polyline.getPath()
-                  const sync = () => handleLineGeometryChange(line)
-                  path.addListener('set_at', sync)
-                  path.addListener('insert_at', sync)
-                  path.addListener('remove_at', sync)
-                }
-              }}
-              onUnmount={(polyline) => {
-                polyline?.setMap?.(null)
-                delete lineOverlayRefs.current[line.id]
-                delete lastLineSnapshotRef.current[line.id]
-              }}
-            />
-          </React.Fragment>
+                  lineOverlayRefs.current[line.id] = polyline
+                  if (selectedId === line.id && !layers.lines?.locked) {
+                    const path = polyline.getPath()
+                    const sync = () => handleLineGeometryChange(line)
+                    path.addListener('set_at', sync)
+                    path.addListener('insert_at', sync)
+                    path.addListener('remove_at', sync)
+                  }
+                }}
+                onUnmount={(polyline) => {
+                  polyline?.setMap?.(null)
+                  delete lineOverlayRefs.current[line.id]
+                  delete lastLineSnapshotRef.current[line.id]
+                }}
+              />
+            </React.Fragment>
           )
         })}
 
@@ -1785,37 +2062,26 @@ export default function MapCanvas({
           color={layers.grid?.color}
         />
 
-        {layers.assets?.visible && assets
-          .filter(asset => {
-            // Keep assets visible even when the top-level Zones layer is hidden.
-            // Only hide them when their own parent zone has been individually hidden.
-            if (asset.parentId) {
-              const parentZone = zones.find(z => z.id === asset.parentId)
-              if (parentZone && isZoneOrParentHidden(parentZone)) return false
-            }
-
-            return true
-          })
-          .map(asset => (
-            <AssetOverlay
-              key={`${asset.id}-${asset.fillColor}-${asset.strokeColor}-${asset.strokeWeight}`}
-              asset={asset}
-              zoom={mapZoom}
-              selected={selectedId === asset.id}
-              locked={!!layers.assets?.locked}
-              interactive={drawMode === 'select' || drawMode === 'erase'}
-              drawMode={drawMode}
-              onEraseAsset={onEraseAsset}
-              onSelect={onSelect}
-              onStartInteraction={handleStartInteraction}
-              onHover={setHoveredItem}
-              map={mapRef.current}
-              onAssetUpdate={onAssetUpdate}
-            />
-          ))
+        {visibleAssets.map(asset => (
+          <AssetOverlay
+            key={`${asset.id}-${asset.fillColor}-${asset.strokeColor}-${asset.strokeWeight}`}
+            asset={asset}
+            zoom={mapZoom}
+            selected={selectedId === asset.id}
+            locked={!!layers.assets?.locked}
+            interactive={drawMode === 'select' || drawMode === 'erase'}
+            drawMode={drawMode}
+            onEraseAsset={onEraseAsset}
+            onSelect={onSelect}
+            onStartInteraction={handleStartInteraction}
+            onHover={setHoveredItem}
+            map={mapRef.current}
+            onAssetUpdate={onAssetUpdate}
+          />
+        ))
         }
 
-        {layers.annotations?.visible && annotations.filter(annotation => annotation.id !== selectedAnnotation?.id).map(annotation => (
+        {visibleAnnotations.map(annotation => (
           <AnnotationOverlay
             key={annotation.id}
             annotation={annotation}
@@ -1879,23 +2145,28 @@ export default function MapCanvas({
         <div style={{
           position: 'absolute',
           left: `${hoverScreenPos.x + 14}px`,
-          top: `${hoverScreenPos.y - 50}px`,
-          background: 'rgba(15,23,42,0.9)',
-          color: '#fff',
-          border: `1px solid ${hoveredLine.color || '#f59e0b'}`,
-          borderRadius: '8px',
-          padding: '6px 10px',
-          fontSize: '11px',
-          fontWeight: 700,
+          top: `${hoverScreenPos.y - 56}px`,
+          background: 'rgba(255,255,255,0.97)',
+          color: '#1a1a1a',
+          border: '1px solid rgba(15,23,42,0.08)',
+          borderRadius: '10px',
+          padding: '9px 11px',
+          fontSize: '12px',
+          fontWeight: 500,
           whiteSpace: 'nowrap',
           pointerEvents: 'none',
           zIndex: 25,
-          boxShadow: '0 6px 16px rgba(0,0,0,0.28)',
-          lineHeight: 1.45,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
+          lineHeight: 1.4,
         }}>
-          <div style={{ color: hoveredLine.color || '#f59e0b', marginBottom: '1px' }}>{hoveredLine.label || 'Line'}</div>
-          <div>📏 {formatDistance(hoveredLine.lengthM, measurementUnit)}</div>
-          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.58)', marginTop: '2px' }}>{hoveredLine.path?.length} pts · {hoveredLine.pattern || 'dashed'} · {hoveredLine.strokeWeight || 4}px</div>
+          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px', color: hoveredLine.color || '#f59e0b' }}>
+            {hoveredLine.label || 'Line'}
+          </div>
+          <div style={{ fontSize: '11px', color: '#666', lineHeight: 1.65 }}>
+            <div><span style={{ fontWeight: 600, color: '#333' }}>Length:</span> {formatDistance(hoveredLine.lengthM, measurementUnit)}</div>
+            <div><span style={{ fontWeight: 600, color: '#333' }}>Points:</span> {hoveredLine.path?.length}</div>
+            <div><span style={{ fontWeight: 600, color: '#333' }}>Style:</span> {hoveredLine.pattern || 'Dashed'} · {hoveredLine.strokeWeight || 4}px</div>
+          </div>
         </div>
       )}
 

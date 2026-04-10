@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useEffect, useState } from 'react'
-import { OverlayView } from '@react-google-maps/api'
+import { MarkerF, OverlayView } from '@react-google-maps/api'
 import AssetGlyph from './AssetGlyph'
 import {
   getAssetSize,
@@ -49,22 +49,72 @@ function hexToRgba(hex, opacity) {
   }
 }
 
-export function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate }) {
-  const ASSET_MIN_ZOOM = 13
-  if (zoom < ASSET_MIN_ZOOM) return null
-  
-  const { widthPx, lengthPx, metersPerPixel: mpp } = getAssetSize(asset, zoom)
+export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate }) {
+  const ASSET_MIN_ZOOM = 11
+  const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
+  if (liveZoom < ASSET_MIN_ZOOM) return null
+
+  const baseZoom = 18
+  const { widthPx, lengthPx, metersPerPixel: mpp } = getAssetSize(asset, liveZoom)
+  const { widthPx: baseWidthPx, lengthPx: baseLengthPx } = getAssetSize(asset, baseZoom)
+  const scale = Math.max(0.01, widthPx / Math.max(1, baseWidthPx))
   const rotationDeg = asset.rotationDeg || 0
   const fillColor = asset.fillColor || asset.assetDef?.color || '#3d8ef8'
   const fillOpacity = asset.fillOpacity !== undefined ? asset.fillOpacity : 0.85
   const strokeColor = asset.strokeColor || asset.assetDef?.color || '#3d8ef8'
   const strokeWeight = asset.strokeWeight || 2
   const color = asset.assetDef?.color || '#3d8ef8'
-  const baseAssetPx = Math.max(20, Math.min(widthPx, lengthPx))
+  const baseAssetPx = Math.max(20, Math.min(baseWidthPx, baseLengthPx))
+  const renderedShortSidePx = Math.max(18, Math.min(widthPx, lengthPx))
+  const assetBorderWidth = Math.max(1, Math.min(2, Number(strokeWeight || 2)))
+  const selectedBorderWidth = Math.max(1.5, Math.min(2.5, assetBorderWidth + 0.5))
+  const assetCornerRadius = Math.max(6, Math.min(10, Math.round(renderedShortSidePx * 0.14)))
   const statusDotSize = Math.max(8, Math.min(16, Math.round(baseAssetPx * 0.24)))
   const statusDotInset = Math.max(2, Math.round(statusDotSize * 0.24))
   const statusDotBorder = Math.max(1.5, Math.round(statusDotSize * 0.16))
-  
+  const useMarkerMode = !selected && liveZoom <= 13.5 && !!window.google?.maps
+
+  if (useMarkerMode) {
+    const markerLabelText = String(asset.label || asset.assetDef?.name || 'A').trim().charAt(0).toUpperCase()
+    return (
+      <MarkerF
+        position={{ lat: asset.lat, lng: asset.lng }}
+        title={asset.label || asset.assetDef?.name || 'Asset'}
+        icon={{
+          path: window.google.maps.SymbolPath.CIRCLE,
+          fillColor: color,
+          fillOpacity: 0.96,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+          scale: liveZoom <= 12 ? 6 : 7,
+        }}
+        label={{
+          text: markerLabelText,
+          color: '#ffffff',
+          fontWeight: '700',
+          fontSize: liveZoom <= 12 ? '9px' : '10px',
+        }}
+        zIndex={450}
+        options={{
+          clickable: interactive,
+          cursor: !interactive || locked ? 'default' : drawMode === 'erase' ? 'not-allowed' : 'pointer',
+          optimized: true,
+        }}
+        onClick={(event) => {
+          if (!interactive) return
+          event?.domEvent?.stopPropagation?.()
+          if (drawMode === 'erase') {
+            onEraseAsset?.(asset)
+            return
+          }
+          onSelect(asset)
+        }}
+        onMouseOver={() => onHover?.({ type: 'asset', data: asset })}
+        onMouseOut={() => onHover?.(null)}
+      />
+    )
+  }
+
   // Keep latest refs so native listeners always see current values
   const assetRef = useRef(asset)
   const mapRef = useRef(map)
@@ -121,15 +171,15 @@ export function AssetOverlay({ asset, zoom, selected, locked, interactive, onSel
       if (!latLng) return
       onAssetUpdateRef.current({
         ...assetRef.current,
-        lat: latLng.lat(),
-        lng: latLng.lng(),
+        lat: latLng.lat() - (ds.latOffset || 0),
+        lng: latLng.lng() - (ds.lngOffset || 0),
       })
     }
   }, [])
 
   const onPointerUpFn = useCallback((e) => {
     if (!dragState.current) return
-    try { e.target.releasePointerCapture(e.pointerId) } catch {}
+    try { e.target.releasePointerCapture(e.pointerId) } catch { }
     e.target.removeEventListener('pointermove', onPointerMoveFn)
     e.target.removeEventListener('pointerup', onPointerUpFn)
     dragState.current = null
@@ -197,7 +247,15 @@ export function AssetOverlay({ asset, zoom, selected, locked, interactive, onSel
     e.preventDefault()
     e.stopPropagation()
 
-    dragState.current = { type: 'move' }
+    const clickLatLng = clientPointToLatLng(mapRef.current, e.clientX, e.clientY)
+    const latOffset = clickLatLng ? clickLatLng.lat() - asset.lat : 0
+    const lngOffset = clickLatLng ? clickLatLng.lng() - asset.lng : 0
+
+    dragState.current = {
+      type: 'move',
+      latOffset,
+      lngOffset
+    }
     startCapture(e.target, e.pointerId)
     onSelect(asset)
   }, [interactive, locked, drawMode, asset, onSelect, startCapture])
@@ -207,68 +265,79 @@ export function AssetOverlay({ asset, zoom, selected, locked, interactive, onSel
       position={{ lat: asset.lat, lng: asset.lng }}
       mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
       getPixelPositionOffset={() => ({
-        x: -Math.round(widthPx / 2),
-        y: -Math.round(lengthPx / 2),
+        x: -(baseWidthPx / 2),
+        y: -(baseLengthPx / 2),
       })}
     >
-      <div style={{ width: `${widthPx}px`, height: `${lengthPx}px`, position: 'relative', pointerEvents: 'auto', zIndex: 12 }}>
-        <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotationDeg}deg)`, transformOrigin: 'center center' }}>
+      <div style={{
+        width: `${baseWidthPx}px`,
+        height: `${baseLengthPx}px`,
+        position: 'relative',
+        pointerEvents: 'auto',
+        zIndex: 12,
+        transform: `scale(${scale})`,
+        transformOrigin: 'center center',
+      }}>
+        <div style={{ position: 'absolute', inset: 0, transform: `translateZ(0) rotate(${rotationDeg}deg)`, transformOrigin: 'center center', transition: 'transform 120ms linear', willChange: 'transform' }}>
           <button
-              type="button"
-              onPointerDown={handleMovePointerDown}
-              onMouseOver={() => onHover?.({ type: 'asset', data: asset })}
-              onMouseOut={() => onHover?.(null)}
-              onClick={(event) => {
-                if (!interactive) return
-                event.stopPropagation()
-                if (drawMode === 'erase') {
-                  onEraseAsset?.(asset)
-                  return
-                }
-                onSelect(asset)
-              }}
+            type="button"
+            onPointerDown={handleMovePointerDown}
+            onMouseOver={() => onHover?.({ type: 'asset', data: asset })}
+            onMouseOut={() => onHover?.(null)}
+            onClick={(event) => {
+              if (!interactive) return
+              event.stopPropagation()
+              if (drawMode === 'erase') {
+                onEraseAsset?.(asset)
+                return
+              }
+              onSelect(asset)
+            }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              borderRadius: `${assetCornerRadius}px`,
+              border: selected ? `${selectedBorderWidth}px solid #38bdf8` : `${assetBorderWidth}px solid ${strokeColor}`,
+              background: selected ? `${fillColor}33` : hexToRgba(fillColor, fillOpacity),
+              boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.8)' : 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: !interactive ? 'default' : drawMode === 'erase' ? 'not-allowed' : locked ? 'pointer' : 'grab',
+              pointerEvents: interactive ? 'auto' : 'none',
+              padding: 0,
+              boxSizing: 'border-box',
+              touchAction: locked ? 'auto' : 'none',
+              transition: 'border-color 120ms linear, background 120ms linear, box-shadow 120ms linear',
+              backfaceVisibility: 'hidden',
+            }}
+          >
+            <div
               style={{
-                position: 'absolute',
-                inset: 0,
-                width: '100%',
-                height: '100%',
-                borderRadius: '16px',
-                border: selected ? `${Math.max(2, strokeWeight + 1)}px solid #38bdf8` : `${Math.ceil(strokeWeight)}px solid ${strokeColor}`,
-                background: selected ? `${fillColor}33` : hexToRgba(fillColor, fillOpacity),
-                boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.8)' : 'none',
+                width: `${Math.min(baseWidthPx, baseLengthPx) * 0.56}px`,
+                height: `${Math.min(baseWidthPx, baseLengthPx) * 0.56}px`,
+                borderRadius: '999px',
+                background: '#ffffff',
+                border: `2px solid ${color}`,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                cursor: !interactive || locked ? 'default' : 'grab',
-                pointerEvents: !interactive || locked ? 'none' : 'auto',
-                padding: 0,
-                touchAction: 'none',
+                fontSize: `${Math.max(8, Math.min(baseWidthPx, baseLengthPx) * 0.28)}px`,
+                boxShadow: '0 8px 24px rgba(15, 23, 42, 0.18)',
+                pointerEvents: 'none',
               }}
             >
-              <div
-                style={{
-                  width: `${Math.min(widthPx, lengthPx) * 0.56}px`,
-                  height: `${Math.min(widthPx, lengthPx) * 0.56}px`,
-                  borderRadius: '999px',
-                  background: '#ffffff',
-                  border: `2px solid ${color}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: `${Math.max(8, Math.min(widthPx, lengthPx) * 0.28)}px`,
-                  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.18)',
-                  pointerEvents: 'none',
-                }}
-              >
-                {widthPx > 6 && (
-                  <AssetGlyph
-                    asset={asset.assetDef}
-                    size={Math.max(8, Math.min(widthPx, lengthPx) * 0.28)}
-                    color={asset.assetDef?.iconColor || color}
-                  />
-                )}
-              </div>
-            </button>
+              {baseWidthPx > 6 && (
+                <AssetGlyph
+                  asset={asset.assetDef}
+                  size={Math.max(8, Math.min(baseWidthPx, baseLengthPx) * 0.28)}
+                  color={asset.assetDef?.iconColor || color}
+                />
+              )}
+            </div>
+          </button>
 
           {selected && interactive && !locked && (
             <>
@@ -320,7 +389,7 @@ export function AssetOverlay({ asset, zoom, selected, locked, interactive, onSel
               ))}
             </>
           )}
-          
+
           {/* Status indicator dot — scales with zoom/asset size like native map markers */}
           <div
             style={{
@@ -341,11 +410,14 @@ export function AssetOverlay({ asset, zoom, selected, locked, interactive, onSel
       </div>
     </OverlayView>
   )
-}
+})
 
-export function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map }) {
-  const geometry = getFloorGeometry(map, floorPlan?.bounds)
+export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom }) {
+  const baseZoom = 18
+  const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
+  const geometry = getFloorGeometry(map, floorPlan, baseZoom)
   if (!geometry) return null
+  const scale = Math.max(0.01, Math.pow(2, liveZoom - baseZoom))
 
   const rotation = floorPlan.rotation || 0
   const resizeHandles = [
@@ -356,137 +428,116 @@ export function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStar
   ]
 
   return (
-    <>
-      <OverlayView
-        position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
-        mapPaneName={OverlayView.OVERLAY_LAYER}
-        getPixelPositionOffset={() => ({
-          x: -Math.round(geometry.widthPx / 2),
-          y: -Math.round(geometry.heightPx / 2),
-        })}
-      >
-        <div style={{ width: `${geometry.widthPx}px`, height: `${geometry.heightPx}px`, position: 'relative', pointerEvents: 'none' }}>
-          <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}>
-            <img
-              src={floorPlan.imageUrl}
-              alt="Floor plan"
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'fill',
-                display: 'block',
-                opacity: floorPlan.opacity ?? 0.7,
-                userSelect: 'none',
-                pointerEvents: 'none',
-              }}
-            />
-          </div>
-        </div>
-      </OverlayView>
+    <OverlayView
+      position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
+      mapPaneName={selected ? OverlayView.OVERLAY_MOUSE_TARGET : OverlayView.OVERLAY_LAYER}
+      getPixelPositionOffset={() => ({
+        x: -(geometry.widthPx / 2),
+        y: -(geometry.heightPx / 2),
+      })}
+    >
+      <div style={{
+        width: `${geometry.widthPx}px`,
+        height: `${geometry.heightPx}px`,
+        position: 'relative',
+        pointerEvents: 'none',
+        transformOrigin: 'center center',
+      }}>
+        <div style={{ position: 'absolute', inset: 0, transform: `scale(${scale}) rotate(${rotation}deg)`, transformOrigin: 'center center', willChange: 'transform' }}>
+          <img
+            src={floorPlan.imageUrl}
+            alt="Floor plan"
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'fill',
+              display: 'block',
+              opacity: floorPlan.opacity ?? 0.7,
+              userSelect: 'none',
+              pointerEvents: 'none',
+            }}
+          />
 
-      {selected && (
-        <OverlayView
-          position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
-          mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-          getPixelPositionOffset={() => ({
-            x: -Math.round(geometry.widthPx / 2),
-            y: -Math.round(geometry.heightPx / 2),
-          })}
-        >
-          <div style={{ width: `${geometry.widthPx}px`, height: `${geometry.heightPx}px`, position: 'relative', pointerEvents: 'none' }}>
-          <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
-              }}
-              onMouseDown={(event) => !locked && onStartInteraction(event, floorPlan, 'move')}
-              style={{
-                position: 'absolute',
-                inset: 0,
-                padding: 0,
-                border: selected ? '2px solid #38bdf8' : '2px solid rgba(255,255,255,0.42)',
-                background: 'transparent',
-                cursor: locked ? 'default' : 'move',
-                borderRadius: '14px',
-                overflow: 'hidden',
-                boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.92)' : 'none',
-                pointerEvents: 'auto',
-              }}
-            >
-              <img
-                src={floorPlan.imageUrl}
-                alt="Floor plan"
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
+            }}
+            onMouseDown={(event) => {
+              if (!selected || locked) return
+              onStartInteraction(event, floorPlan, 'move')
+            }}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              padding: 0,
+              border: selected ? '2px solid #38bdf8' : '2px solid transparent',
+              background: 'transparent',
+              cursor: selected && !locked ? 'move' : 'pointer',
+              borderRadius: '14px',
+              overflow: 'hidden',
+              boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.92)' : 'none',
+              pointerEvents: 'auto',
+            }}
+          />
+
+          {selected && !locked && (
+            <>
+              <div style={{ position: 'absolute', top: '-32px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)', pointerEvents: 'auto' }} />
+              <button
+                type="button"
+                onMouseDown={(event) => onStartInteraction(event, floorPlan, 'rotate')}
                 style={{
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'fill',
-                  display: 'block',
-                  opacity: 0,
-                  userSelect: 'none',
-                  pointerEvents: 'none',
+                  position: 'absolute',
+                  top: '-50px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: '26px',
+                  height: '26px',
+                  borderRadius: '999px',
+                  border: '2px solid #38bdf8',
+                  background: '#ffffff',
+                  cursor: 'grab',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  padding: 0,
+                  pointerEvents: 'auto',
                 }}
-              />
-            </button>
-
-            {selected && !locked && (
-              <>
-                <div style={{ position: 'absolute', top: '-32px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)', pointerEvents: 'auto' }} />
+              >
+                R
+              </button>
+              {resizeHandles.map((handle) => (
                 <button
+                  key={handle.key}
                   type="button"
-                  onMouseDown={(event) => onStartInteraction(event, floorPlan, 'rotate')}
+                  onMouseDown={(event) => onStartInteraction(event, floorPlan, 'resize', handle)}
                   style={{
                     position: 'absolute',
-                    top: '-50px',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    width: '26px',
-                    height: '26px',
-                    borderRadius: '999px',
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '4px',
                     border: '2px solid #38bdf8',
                     background: '#ffffff',
-                    cursor: 'grab',
-                    fontSize: '13px',
-                    fontWeight: 700,
+                    cursor: handle.cursor,
                     padding: 0,
                     pointerEvents: 'auto',
+                    ...handle,
                   }}
-                >
-                  R
-                </button>
-                {resizeHandles.map((handle) => (
-                  <button
-                    key={handle.key}
-                    type="button"
-                    onMouseDown={(event) => onStartInteraction(event, floorPlan, 'resize', handle)}
-                    style={{
-                      position: 'absolute',
-                      width: '16px',
-                      height: '16px',
-                      borderRadius: '4px',
-                      border: '2px solid #38bdf8',
-                      background: '#ffffff',
-                      cursor: handle.cursor,
-                      padding: 0,
-                      pointerEvents: 'auto',
-                      ...handle,
-                    }}
-                  />
-                ))}
-              </>
-            )}
-          </div>
+                />
+              ))}
+            </>
+          )}
         </div>
-      </OverlayView>
-      )}
-    </>
+      </div>
+    </OverlayView>
   )
-}
+})
 
-export function AnnotationOverlay({ annotation, selected, locked, interactive, onSelect, onStartInteraction, onUpdate, drawMode = 'select', onEraseAsset, zoom, onHover }) {
+export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotation, selected, locked, interactive, onSelect, onStartInteraction, onUpdate, drawMode = 'select', onEraseAsset, zoom, onHover }) {
   const [isEditing, setIsEditing] = useState(false)
   const [draftText, setDraftText] = useState(annotation.text || '')
+  const [isHovered, setIsHovered] = useState(false)
 
   useEffect(() => {
     if (!isEditing) {
@@ -496,112 +547,99 @@ export function AnnotationOverlay({ annotation, selected, locked, interactive, o
 
   const isSelected = Boolean(selected)
   const zoomValue = Number(zoom || 15)
-  const minVisibleZoom = isEditing ? 0 : 8
+  const minVisibleZoom = isEditing || isSelected ? 0 : 10
 
   if (!isSelected && zoomValue < minVisibleZoom) {
     return null
   }
 
   const pinLabel = String(annotation.label || annotation.text || 'Drop Pin').trim() || 'Drop Pin'
-  const pinColor = annotation.pinColor || getStatusColor(annotation.status || 'planned') || '#ea4335'
+  const pinColor = annotation.pinColor || '#ea4335'
   const textColor = annotation.color || '#202124'
   const fontSize = Math.max(12, Number(annotation.fontSize || 13))
   const fontWeight = Math.max(500, Number(annotation.fontWeight ?? 600))
   const selectedColor = '#1a73e8'
-  const rawBackground = annotation.backgroundColor || 'rgba(255,255,255,0.96)'
-  const rawBorder = annotation.borderColor || 'rgba(15,23,42,0.12)'
-  const boxBackground = rawBackground === '#fff7d6' ? 'rgba(255,255,255,0.96)' : rawBackground
-  const boxBorder = rawBorder === 'rgba(15,23,42,0.18)' ? 'rgba(15,23,42,0.12)' : rawBorder
-  const boxBorderWidth = Math.max(1, Number(annotation.borderWidth ?? 1))
-  const pinSize = isSelected ? 30 : 24
-  const pinTailSize = Math.max(8, Math.round(pinSize * 0.4))
+  const boxBackground = '#ffffff'
+  const boxBorder = 'rgba(15,23,42,0.12)'
+  const boxBorderWidth = 1
+  const useCompactMarker = !isSelected && !isEditing && zoomValue < 13
+  const markerScale = isSelected ? 1.18 : zoomValue >= 17 ? 0.96 : zoomValue >= 15 ? 0.88 : zoomValue >= 13 ? 0.78 : 0.68
+  const markerIsDraggable = interactive && !locked && drawMode === 'select' && !isEditing
+  const showStaticLabel = !isHovered && !isEditing && !useCompactMarker && (zoomValue >= 15 || isSelected)
 
-  const pinWrapperStyle = {
-    position: 'relative',
-    width: `${pinSize}px`,
-    height: `${pinSize + pinTailSize + 4}px`,
-    transform: 'translate(-50%, calc(-100% - 2px))',
-    transformOrigin: 'bottom center',
-    pointerEvents: interactive ? 'auto' : 'none',
-  }
+  const markerIcon = window.google?.maps
+    ? (useCompactMarker
+      ? {
+        path: window.google.maps.SymbolPath.CIRCLE,
+        fillColor: pinColor,
+        fillOpacity: 0.95,
+        strokeColor: '#ffffff',
+        strokeWeight: 2,
+        scale: zoomValue < 12 ? 4 : 5,
+        anchor: new window.google.maps.Point(0, 0),
+      }
+      : {
+        path: 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z',
+        fillColor: pinColor,
+        fillOpacity: 1,
+        strokeColor: isSelected ? selectedColor : '#ffffff',
+        strokeWeight: isSelected ? 2 : 1.5,
+        scale: markerScale,
+        anchor: new window.google.maps.Point(12, 24),
+        labelOrigin: new window.google.maps.Point(12, 9),
+      })
+    : undefined
 
-  const pinHeadStyle = {
+  const markerLabel = useCompactMarker
+    ? undefined
+    : {
+      text: pinLabel.charAt(0).toUpperCase(),
+      color: '#ffffff',
+      fontWeight: '700',
+      fontSize: `${Math.max(8, Math.round(9 * markerScale))}px`,
+    }
+
+  const staticLabelStyle = {
     position: 'absolute',
-    top: 0,
     left: '50%',
-    width: `${pinSize}px`,
-    height: `${pinSize}px`,
-    borderRadius: '50%',
-    background: pinColor,
-    border: `2px solid ${isSelected ? selectedColor : '#ffffff'}`,
-    boxShadow: isSelected ? '0 8px 18px rgba(26,115,232,0.22)' : '0 6px 14px rgba(15,23,42,0.18)',
+    bottom: '26px',
     transform: 'translateX(-50%)',
-    display: 'flex',
+    display: 'inline-flex',
     alignItems: 'center',
-    justifyContent: 'center',
-  }
-
-  const pinCenterStyle = {
-    width: `${Math.max(10, Math.round(pinSize * 0.44))}px`,
-    height: `${Math.max(10, Math.round(pinSize * 0.44))}px`,
-    borderRadius: '50%',
-    background: '#ffffff',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: pinColor,
-    fontSize: `${Math.max(8, Math.round(pinSize * 0.3))}px`,
-    fontWeight: 800,
-    lineHeight: 1,
-  }
-
-  const pinTailStyle = {
-    position: 'absolute',
-    left: '50%',
-    bottom: '2px',
-    width: `${pinTailSize}px`,
-    height: `${pinTailSize}px`,
-    background: pinColor,
-    borderRight: `2px solid ${isSelected ? selectedColor : '#ffffff'}`,
-    borderBottom: `2px solid ${isSelected ? selectedColor : '#ffffff'}`,
-    transform: 'translateX(-50%) rotate(45deg)',
-    borderRadius: '2px',
-    boxSizing: 'border-box',
-    boxShadow: '2px 2px 8px rgba(15,23,42,0.12)',
-  }
-
-  const selectedLabelStyle = {
-    position: 'absolute',
-    left: '50%',
-    bottom: `${pinSize + pinTailSize + 8}px`,
-    transform: 'translateX(-50%)',
-    maxWidth: '220px',
-    padding: '4px 8px',
+    maxWidth: '180px',
+    padding: '3px 8px',
     borderRadius: '999px',
     background: 'rgba(255,255,255,0.96)',
-    border: '1px solid rgba(15,23,42,0.08)',
-    color: textColor,
-    fontSize: `${fontSize}px`,
+    color: '#0f172a',
+    fontSize: `${Math.max(11, fontSize - 1)}px`,
     fontWeight: 700,
     lineHeight: 1.2,
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    boxShadow: '0 6px 14px rgba(15,23,42,0.12)',
+    boxShadow: '0 4px 12px rgba(15,23,42,0.12)',
+    border: '1px solid rgba(15,23,42,0.08)',
+    pointerEvents: 'none',
+  }
+
+  const labelOverlayStyle = {
+    position: 'relative',
+    width: 0,
+    height: 0,
+    pointerEvents: 'none',
   }
 
   const editorStyle = {
     minWidth: '160px',
     maxWidth: '300px',
     padding: '10px 12px',
-    borderRadius: `${Math.max(10, Number(annotation.borderRadius ?? 12))}px`,
+    borderRadius: '12px',
     border: `${boxBorderWidth}px solid ${isSelected ? selectedColor : boxBorder}`,
     background: boxBackground,
     color: textColor,
     boxShadow: '0 10px 22px rgba(15,23,42,0.14)',
-    transform: 'translate(-50%, calc(-100% - 12px))',
+    transform: 'translate(-50%, calc(-100% - 18px))',
     transformOrigin: 'bottom center',
-    backdropFilter: 'blur(6px)',
   }
 
   const editorTailStyle = {
@@ -616,13 +654,6 @@ export function AnnotationOverlay({ annotation, selected, locked, interactive, o
     transform: 'translateX(-50%) rotate(45deg)',
     boxSizing: 'border-box',
     zIndex: -1,
-  }
-
-  const buttonStyle = {
-    all: 'unset',
-    display: 'block',
-    cursor: !interactive || locked ? 'default' : drawMode === 'erase' ? 'not-allowed' : selected ? 'move' : 'pointer',
-    pointerEvents: interactive ? 'auto' : 'none',
   }
 
   const saveDraft = () => {
@@ -643,91 +674,123 @@ export function AnnotationOverlay({ annotation, selected, locked, interactive, o
   }
 
   return (
-    <OverlayView
-      position={{ lat: annotation.lat, lng: annotation.lng }}
-      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-      getPixelPositionOffset={() => ({ x: 0, y: 0 })}
-    >
-      {isEditing ? (
-        <div
-          style={{ ...editorStyle, position: 'relative', cursor: 'text' }}
-          onClick={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
+    <>
+      <MarkerF
+        position={{ lat: annotation.lat, lng: annotation.lng }}
+        title={pinLabel}
+        icon={markerIcon}
+        label={markerLabel}
+        draggable={markerIsDraggable}
+        zIndex={isSelected ? 900 : 500}
+        options={{
+          clickable: interactive,
+          cursor: !interactive || locked ? 'default' : drawMode === 'erase' ? 'not-allowed' : markerIsDraggable ? 'grab' : 'pointer',
+          optimized: true,
+        }}
+        onClick={(event) => {
+          if (!interactive) return
+          event?.domEvent?.stopPropagation?.()
+          if (drawMode === 'erase') {
+            onEraseAsset?.(annotation, 'annotation')
+            return
+          }
+          onSelect(annotation)
+        }}
+        onDblClick={(event) => {
+          if (!interactive || locked || drawMode !== 'select') return
+          event?.domEvent?.preventDefault?.()
+          event?.domEvent?.stopPropagation?.()
+          onSelect(annotation)
+          setIsEditing(true)
+        }}
+        onDragStart={() => {
+          if (!markerIsDraggable) return
+          onSelect(annotation)
+        }}
+        onDragEnd={(event) => {
+          if (!markerIsDraggable) return
+          const lat = event.latLng?.lat?.()
+          const lng = event.latLng?.lng?.()
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return
+          onUpdate?.({
+            ...annotation,
+            lat,
+            lng,
+          })
+        }}
+        onMouseOver={() => {
+          setIsHovered(true)
+          onHover?.({ type: 'annotation', data: annotation })
+        }}
+        onMouseOut={() => {
+          setIsHovered(false)
+          onHover?.(null)
+        }}
+      />
+
+      {showStaticLabel && (
+        <OverlayView
+          position={{ lat: annotation.lat, lng: annotation.lng }}
+          mapPaneName={OverlayView.FLOAT_PANE}
+          getPixelPositionOffset={() => ({ x: 0, y: 0 })}
         >
-          <textarea
-            autoFocus
-            value={draftText}
-            onChange={(event) => setDraftText(event.target.value)}
-            onBlur={saveDraft}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                setDraftText(annotation.text || '')
-                setIsEditing(false)
-              }
-              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-                event.preventDefault()
-                saveDraft()
-              }
-            }}
-            style={{
-              width: '100%',
-              minHeight: '72px',
-              border: 'none',
-              outline: 'none',
-              resize: 'vertical',
-              background: 'transparent',
-              color: textColor,
-              fontSize: `${fontSize}px`,
-              fontWeight,
-              lineHeight: 1.45,
-              fontFamily: 'inherit',
-            }}
-          />
-          <div style={{ marginTop: '4px', fontSize: '10px', opacity: 0.7 }}>
-            Ctrl+Enter to save
+          <div style={labelOverlayStyle}>
+            <div style={staticLabelStyle} title={pinLabel}>{pinLabel}</div>
           </div>
-          <div style={editorTailStyle} />
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={(event) => {
-            if (!interactive) return
-            event.stopPropagation()
-            if (drawMode === 'erase') {
-              onEraseAsset?.(annotation, 'annotation')
-              return
-            }
-            onSelect(annotation)
-          }}
-          onDoubleClick={(event) => {
-            if (!interactive || locked || drawMode !== 'select') return
-            event.preventDefault()
-            event.stopPropagation()
-            onSelect(annotation)
-            setIsEditing(true)
-          }}
-          onMouseDown={(event) => {
-            if (isEditing || !selected || drawMode !== 'select') return
-            interactive && !locked && onStartInteraction(event, annotation, 'move')
-          }}
-          onMouseOver={() => onHover?.({ type: 'annotation', data: annotation })}
-          onMouseOut={() => onHover?.(null)}
-          style={buttonStyle}
-        >
-          <div style={pinWrapperStyle}>
-            {isSelected && <div style={selectedLabelStyle}>{pinLabel}</div>}
-            <div style={pinHeadStyle}>
-              <div style={pinCenterStyle}>{pinLabel.charAt(0).toUpperCase()}</div>
-            </div>
-            <div style={pinTailStyle} />
-          </div>
-        </button>
+        </OverlayView>
       )}
-    </OverlayView>
+
+      {isEditing && (
+        <OverlayView
+          position={{ lat: annotation.lat, lng: annotation.lng }}
+          mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+          getPixelPositionOffset={() => ({ x: 0, y: 0 })}
+        >
+          <div
+            style={{ ...editorStyle, position: 'relative', cursor: 'text' }}
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <textarea
+              autoFocus
+              value={draftText}
+              onChange={(event) => setDraftText(event.target.value)}
+              onBlur={saveDraft}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setDraftText(annotation.text || '')
+                  setIsEditing(false)
+                }
+                if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                  event.preventDefault()
+                  saveDraft()
+                }
+              }}
+              style={{
+                width: '100%',
+                minHeight: '72px',
+                border: 'none',
+                outline: 'none',
+                resize: 'vertical',
+                background: 'transparent',
+                color: textColor,
+                fontSize: `${fontSize}px`,
+                fontWeight,
+                lineHeight: 1.45,
+                fontFamily: 'inherit',
+              }}
+            />
+            <div style={{ marginTop: '4px', fontSize: '10px', opacity: 0.7 }}>
+              Ctrl+Enter to save
+            </div>
+            <div style={editorTailStyle} />
+          </div>
+        </OverlayView>
+      )}
+    </>
   )
-}
+})
 
 export function MeasurementOverlay({ screenPosition, text }) {
   if (!screenPosition || !text) return null

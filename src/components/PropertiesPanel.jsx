@@ -480,7 +480,43 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                       })}
                     />
                   </div>
-                  
+
+                  <div style={styles.field}>
+                    <label style={styles.label}>Grid Rotation (deg)</label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 84px', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        type="range"
+                        min="-180"
+                        max="180"
+                        step="1"
+                        value={Number(selected.gridRotation || 0)}
+                        onChange={e => onUpdate({
+                          ...selected,
+                          showGrid: true,
+                          layoutType: 'grid',
+                          gridRotation: Number(e.target.value) || 0,
+                        })}
+                        style={{ width: '100%' }}
+                      />
+                      <input
+                        type="number"
+                        min="-180"
+                        max="180"
+                        step="1"
+                        style={styles.input}
+                        value={selected.gridRotation ?? 0}
+                        onChange={e => onUpdate({
+                          ...selected,
+                          showGrid: true,
+                          layoutType: 'grid',
+                          gridRotation: Number(e.target.value) || 0,
+                        })}
+                      />
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-dim)', marginTop: '6px', lineHeight: 1.45 }}>
+                      Rotates only this zone’s internal grid, not the main map grid.
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -1060,107 +1096,18 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
           <>
             <div style={styles.sectionDivider} />
             <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Pin Style & Preview</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: '10px' }}>
-                Double-click the pin on the map to edit it directly. Hover it to see the tooltip details.
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Text Color</label>
-                  <input
-                    type="color"
-                    style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.color || '#111827'}
-                    onChange={e => onUpdate({ ...selected, color: e.target.value })}
-                  />
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Background</label>
-                  <input
-                    type="color"
-                    style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.backgroundColor || '#fff7d6'}
-                    onChange={e => onUpdate({ ...selected, backgroundColor: e.target.value })}
-                  />
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Font Size</label>
-                  <input
-                    type="number"
-                    min="10"
-                    max="32"
-                    step="1"
-                    style={styles.input}
-                    value={selected.fontSize || 14}
-                    onChange={e => onUpdate({ ...selected, fontSize: Number(e.target.value) || 14 })}
-                  />
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Font Weight</label>
-                  <select
-                    style={styles.select}
-                    value={selected.fontWeight || 700}
-                    onChange={e => onUpdate({ ...selected, fontWeight: Number(e.target.value) || 700 })}
-                  >
-                    <option value="500">Medium</option>
-                    <option value="600">Semi Bold</option>
-                    <option value="700">Bold</option>
-                    <option value="800">Extra Bold</option>
-                  </select>
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Border</label>
-                  <input
-                    type="color"
-                    style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.borderColor?.startsWith('#') ? selected.borderColor : '#334155'}
-                    onChange={e => onUpdate({ ...selected, borderColor: e.target.value })}
-                  />
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Border Width</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="6"
-                    step="1"
-                    style={styles.input}
-                    value={selected.borderWidth ?? 1}
-                    onChange={e => onUpdate({ ...selected, borderWidth: Math.max(1, Number(e.target.value) || 1) })}
-                  />
-                </div>
-              </div>
+              <div style={styles.blockTitle}>Pin Appearance</div>
               <div style={styles.field}>
-                <label style={styles.label}>Corner Radius</label>
+                <label style={styles.label}>Pin Color</label>
                 <input
-                  type="number"
-                  min="4"
-                  max="24"
-                  step="1"
-                  style={styles.input}
-                  value={selected.borderRadius ?? 10}
-                  onChange={e => onUpdate({ ...selected, borderRadius: Math.max(4, Number(e.target.value) || 10) })}
+                  type="color"
+                  style={{ ...styles.input, padding: '4px', height: '36px' }}
+                  value={selected.pinColor || '#ea4335'}
+                  onChange={e => onUpdate({ ...selected, pinColor: e.target.value })}
                 />
               </div>
-              <div
-                style={{
-                  marginTop: '6px',
-                  padding: '10px 12px',
-                  borderRadius: `${Math.max(4, Number(selected.borderRadius ?? 10))}px`,
-                  border: `${Math.max(1, Number(selected.borderWidth ?? 1))}px solid ${selected.borderColor || 'rgba(15,23,42,0.18)'}`,
-                  background: selected.backgroundColor || '#fff7d6',
-                  color: selected.color || '#111827',
-                  fontSize: `${Math.max(10, Number(selected.fontSize || 14))}px`,
-                  fontWeight: Math.max(500, Number(selected.fontWeight || 700)),
-                  lineHeight: 1.4,
-                  boxShadow: '0 8px 18px rgba(15,23,42,0.16)',
-                }}
-              >
-                {selected.text || 'Annotation preview'}
+              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.55 }}>
+                The pin title shows beside the marker on the map. Full details appear in the hover tooltip.
               </div>
             </div>
             <div style={styles.statCard}>

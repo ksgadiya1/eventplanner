@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces } from 'lucide-react'
+import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye } from 'lucide-react'
 
 const styles = {
   toolbar: {
@@ -133,6 +133,19 @@ const styles = {
     border: 'none',
     transition: 'background 0.15s',
   },
+  modeBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 10px',
+    borderRadius: '999px',
+    border: '1px solid rgba(59,130,246,0.28)',
+    background: 'rgba(59,130,246,0.1)',
+    color: 'var(--accent)',
+    fontSize: '12px',
+    fontWeight: 700,
+    marginRight: '8px',
+  },
   exportWrap: {
     position: 'relative',
   },
@@ -242,6 +255,11 @@ export default function Toolbar({
   eventId,
   eventName,
   isArchived = false,
+  isViewOnly = false,
+  viewOnlyMinZoom,
+  viewOnlyMaxZoom,
+  onEnterViewOnly,
+  onExitViewOnly,
   onSave,
   onUnarchive,
   onGoHome,
@@ -274,53 +292,70 @@ export default function Toolbar({
         </div>
       </div>
 
-      {tools.map(t => (
-        <button
-          key={t.id}
-          style={{ ...styles.toolBtn, ...(drawMode === t.id ? styles.activeToolBtn : {}) }}
-          onClick={() => onDrawMode(t.id)}
-          onMouseEnter={e => { if (drawMode !== t.id) e.currentTarget.style.background = 'var(--bg-hover)' }}
-          onMouseLeave={e => { if (drawMode !== t.id) e.currentTarget.style.background = 'transparent' }}
-        >
-          {t.icon} {t.label}
-        </button>
-      ))}
+      {isViewOnly ? (
+        <>
+          <div style={styles.modeBadge} title="Shared view-only mode is active">
+            <Eye size={14} /> View Only • Z{viewOnlyMinZoom}–{viewOnlyMaxZoom}
+          </div>
+          <button
+            style={{ ...styles.themeBtn, marginRight: '8px' }}
+            onClick={onExitViewOnly}
+            title="Return to editable mode"
+          >
+            Exit View
+          </button>
+        </>
+      ) : (
+        <>
+          {tools.map(t => (
+            <button
+              key={t.id}
+              style={{ ...styles.toolBtn, ...(drawMode === t.id ? styles.activeToolBtn : {}) }}
+              onClick={() => onDrawMode(t.id)}
+              onMouseEnter={e => { if (drawMode !== t.id) e.currentTarget.style.background = 'var(--bg-hover)' }}
+              onMouseLeave={e => { if (drawMode !== t.id) e.currentTarget.style.background = 'transparent' }}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
 
-      <div style={styles.divider} />
+          <div style={styles.divider} />
 
-      <button
-        style={{ ...styles.toolBtn, color: canUndo ? 'var(--text-secondary)' : 'var(--text-dim)', opacity: canUndo ? 1 : 0.4 }}
-        onClick={onUndo}
-        disabled={!canUndo}
-        title="Undo (Ctrl+Z)"
-        onMouseEnter={e => { if (canUndo) e.currentTarget.style.background = 'var(--bg-hover)' }}
-        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-      >
-        <RotateCcw size={14} />
-      </button>
+          <button
+            style={{ ...styles.toolBtn, color: canUndo ? 'var(--text-secondary)' : 'var(--text-dim)', opacity: canUndo ? 1 : 0.4 }}
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+            onMouseEnter={e => { if (canUndo) e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <RotateCcw size={14} />
+          </button>
 
-      <button
-        style={{ ...styles.toolBtn, color: canRedo ? 'var(--text-secondary)' : 'var(--text-dim)', opacity: canRedo ? 1 : 0.4 }}
-        onClick={onRedo}
-        disabled={!canRedo}
-        title="Redo (Ctrl+Y)"
-        onMouseEnter={e => { if (canRedo) e.currentTarget.style.background = 'var(--bg-hover)' }}
-        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-      >
-        <RotateCw size={14} />
-      </button>
+          <button
+            style={{ ...styles.toolBtn, color: canRedo ? 'var(--text-secondary)' : 'var(--text-dim)', opacity: canRedo ? 1 : 0.4 }}
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Y)"
+            onMouseEnter={e => { if (canRedo) e.currentTarget.style.background = 'var(--bg-hover)' }}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <RotateCw size={14} />
+          </button>
 
-      <button
-        style={{ ...styles.toolBtn, color: drawMode === 'erase' ? 'var(--danger)' : 'var(--text-secondary)' }}
-        onClick={() => onDrawMode('erase')}
-        title="Erase item"
-        onMouseEnter={e => e.currentTarget.style.background = drawMode === 'erase' ? '#fee2e2' : 'var(--bg-hover)'}
-        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-      >
-        <Eraser size={14} /> Erase
-      </button>
+          <button
+            style={{ ...styles.toolBtn, color: drawMode === 'erase' ? 'var(--danger)' : 'var(--text-secondary)' }}
+            onClick={() => onDrawMode('erase')}
+            title="Erase item"
+            onMouseEnter={e => e.currentTarget.style.background = drawMode === 'erase' ? '#fee2e2' : 'var(--bg-hover)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <Eraser size={14} /> Erase
+          </button>
 
-      <div style={styles.divider} />
+          <div style={styles.divider} />
+        </>
+      )}
 
       <button
         style={styles.unitSelector}
@@ -339,17 +374,37 @@ export default function Toolbar({
       </button>
 
       <div style={styles.rightSection}>
-        <div style={styles.searchWrap}>
-          <input
-            style={styles.searchInput}
-            value={locationQuery || ''}
-            onChange={(event) => onLocationQueryChange?.(event.target.value)}
-            placeholder="Search address or what3words"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') onLocationSearch?.()
+        {!isViewOnly && (
+          <div style={styles.searchWrap}>
+            <input
+              style={styles.searchInput}
+              value={locationQuery || ''}
+              onChange={(event) => onLocationQueryChange?.(event.target.value)}
+              placeholder="Search address or what3words"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') onLocationSearch?.()
+              }}
+            />
+          </div>
+        )}
+
+        {!isViewOnly && (
+          <button
+            style={styles.themeBtn}
+            onClick={onEnterViewOnly}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = 'var(--bg-hover)'
+              e.currentTarget.style.borderColor = 'var(--border-light)'
             }}
-          />
-        </div>
+            onMouseLeave={e => {
+              e.currentTarget.style.background = 'var(--bg-secondary)'
+              e.currentTarget.style.borderColor = 'var(--border)'
+            }}
+            title="Open the current map as a locked view-only share mode"
+          >
+            <Eye size={13} /> View Only
+          </button>
+        )}
 
         <button
           style={styles.themeBtn}
@@ -367,7 +422,7 @@ export default function Toolbar({
           {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
         </button>
 
-        {isArchived ? (
+        {!isViewOnly && (isArchived ? (
           <button
             style={{
               ...styles.exportBtn,
@@ -395,7 +450,7 @@ export default function Toolbar({
           >
             <Save size={13} /> Save
           </button>
-        )}
+        ))}
 
         <div style={styles.exportWrap} ref={exportMenuRef}>
           <button

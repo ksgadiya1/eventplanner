@@ -47,13 +47,8 @@ export function getAssetSize(asset, zoom) {
   const resolvedZoom = Number.isFinite(zoom) ? zoom : 15
   const scale = metersPerPixel(asset.lat, resolvedZoom)
 
-  const minSizePx = resolvedZoom <= 13
-    ? 16
-    : resolvedZoom <= 14
-      ? 20
-      : resolvedZoom <= 15
-        ? 24
-        : 28
+  const smoothZoomFactor = Math.max(0, resolvedZoom - 10)
+  const minSizePx = Math.max(12, Math.min(28, 12 + smoothZoomFactor * 2.6))
 
   return {
     widthM,
@@ -103,9 +98,122 @@ export function clientPointToLatLng(map, clientX, clientY) {
   return projection.fromPointToLatLng(worldPoint)
 }
 
+function deriveFloorPlacementFromBounds(bounds) {
+  if (!bounds) return null
+
+  const centerLat = (Number(bounds.north || 0) + Number(bounds.south || 0)) / 2
+  const centerLng = (Number(bounds.east || 0) + Number(bounds.west || 0)) / 2
+  const googleApi = window.google
+
+  let widthM = 0
+  let heightM = 0
+
+  if (googleApi?.maps?.geometry?.spherical) {
+    const westPoint = new googleApi.maps.LatLng(centerLat, Number(bounds.west || 0))
+    const eastPoint = new googleApi.maps.LatLng(centerLat, Number(bounds.east || 0))
+    const northPoint = new googleApi.maps.LatLng(Number(bounds.north || 0), centerLng)
+    const southPoint = new googleApi.maps.LatLng(Number(bounds.south || 0), centerLng)
+
+    widthM = googleApi.maps.geometry.spherical.computeDistanceBetween(westPoint, eastPoint)
+    heightM = googleApi.maps.geometry.spherical.computeDistanceBetween(northPoint, southPoint)
+  } else {
+    const latScaleM = 111111
+    const lngScaleM = 111111 * Math.max(0.000001, Math.cos(centerLat * Math.PI / 180))
+    widthM = Math.abs(Number(bounds.east || 0) - Number(bounds.west || 0)) * lngScaleM
+    heightM = Math.abs(Number(bounds.north || 0) - Number(bounds.south || 0)) * latScaleM
+  }
+
+  return {
+    center: { lat: centerLat, lng: centerLng },
+    widthM: Math.max(1, Number(widthM || 0)),
+    heightM: Math.max(1, Number(heightM || 0)),
+  }
+}
+
+export function buildFloorBoundsFromPlacement(floorPlan) {
+  if (!floorPlan) return null
+
+  const center = floorPlan.center
+  const widthM = Number(floorPlan.widthM)
+  const heightM = Number(floorPlan.heightM)
+  const rotation = Number(floorPlan.rotation || 0)
+
+  if (!Number.isFinite(center?.lat) || !Number.isFinite(center?.lng) || !Number.isFinite(widthM) || !Number.isFinite(heightM)) {
+    return floorPlan.bounds || null
+  }
+
+  const googleApi = window.google
+  const halfWidthM = Math.max(0.01, widthM / 2)
+  const halfHeightM = Math.max(0.01, heightM / 2)
+
+  if (googleApi?.maps?.geometry?.spherical) {
+    const horizontalBearing = 90 + rotation
+    const verticalBearing = 180 + rotation
+
+    const movePoint = (origin, distanceM, bearing) => {
+      if (!distanceM) return origin
+      return googleApi.maps.geometry.spherical.computeOffset(origin, distanceM, bearing)
+    }
+
+    const buildCorner = (dx, dy) => {
+      let point = new googleApi.maps.LatLng(center.lat, center.lng)
+      point = movePoint(point, Math.abs(dx), dx >= 0 ? horizontalBearing : horizontalBearing + 180)
+      point = movePoint(point, Math.abs(dy), dy >= 0 ? verticalBearing : verticalBearing + 180)
+      return { lat: point.lat(), lng: point.lng() }
+    }
+
+    const corners = [
+      buildCorner(-halfWidthM, -halfHeightM),
+      buildCorner(halfWidthM, -halfHeightM),
+      buildCorner(halfWidthM, halfHeightM),
+      buildCorner(-halfWidthM, halfHeightM),
+    ]
+
+    return {
+      north: Math.max(...corners.map(point => point.lat)),
+      south: Math.min(...corners.map(point => point.lat)),
+      east: Math.max(...corners.map(point => point.lng)),
+      west: Math.min(...corners.map(point => point.lng)),
+    }
+  }
+
+  const latDelta = halfHeightM / 111111
+  const lngDelta = halfWidthM / (111111 * Math.max(0.000001, Math.cos(center.lat * Math.PI / 180)))
+
+  return {
+    north: center.lat + latDelta,
+    south: center.lat - latDelta,
+    east: center.lng + lngDelta,
+    west: center.lng - lngDelta,
+  }
+}
+
+export function normalizeFloorPlanState(floorPlan) {
+  if (!floorPlan) return floorPlan
+
+  const nextPlan = { ...floorPlan }
+  const hasCenter = Number.isFinite(nextPlan.center?.lat) && Number.isFinite(nextPlan.center?.lng)
+  const hasSize = Number.isFinite(Number(nextPlan.widthM)) && Number.isFinite(Number(nextPlan.heightM))
+
+  if ((!hasCenter || !hasSize) && nextPlan.bounds) {
+    const derived = deriveFloorPlacementFromBounds(nextPlan.bounds)
+    if (derived) {
+      nextPlan.center = derived.center
+      nextPlan.widthM = Number(derived.widthM.toFixed(2))
+      nextPlan.heightM = Number(derived.heightM.toFixed(2))
+    }
+  }
+
+  if (nextPlan.center && Number.isFinite(Number(nextPlan.widthM)) && Number.isFinite(Number(nextPlan.heightM))) {
+    nextPlan.bounds = buildFloorBoundsFromPlacement(nextPlan)
+  }
+
+  return nextPlan
+}
+
 export function isPointInsideFloorOverlay(map, floorPlan, clickPoint) {
-  if (!map || !floorPlan?.bounds) return false
-  const geometry = getFloorGeometry(map, floorPlan.bounds)
+  if (!map || !floorPlan) return false
+  const geometry = getFloorGeometry(map, floorPlan)
   if (!geometry) return false
 
   const localX = clickPoint.x - geometry.centerPoint.x
@@ -221,22 +329,34 @@ export function getLinePatternIcons(pattern, color) {
   return undefined
 }
 
-export function getFloorGeometry(map, bounds) {
-  if (!map || !bounds) return null
-  const centerLat = (bounds.north + bounds.south) / 2
-  const centerLng = (bounds.east + bounds.west) / 2
-  const centerPoint = latLngToContainerPoint(map, centerLat, centerLng)
-  const northWest = latLngToContainerPoint(map, bounds.north, bounds.west)
-  const southEast = latLngToContainerPoint(map, bounds.south, bounds.east)
+export function getFloorGeometry(map, floorPlanOrBounds, passedZoom = null) {
+  if (!map || !floorPlanOrBounds) return null
 
-  if (!centerPoint || !northWest || !southEast) return null
+  const normalized = normalizeFloorPlanState(
+    floorPlanOrBounds?.bounds ? floorPlanOrBounds : { bounds: floorPlanOrBounds, rotation: 0 }
+  )
+
+  const centerLat = Number(normalized.center?.lat)
+  const centerLng = Number(normalized.center?.lng)
+  const widthM = Number(normalized.widthM)
+  const heightM = Number(normalized.heightM)
+  const centerPoint = latLngToContainerPoint(map, centerLat, centerLng)
+
+  if (!centerPoint || !Number.isFinite(widthM) || !Number.isFinite(heightM)) return null
+
+  const zoom = Number.isFinite(passedZoom) ? passedZoom : (Number.isFinite(map.getZoom?.()) ? map.getZoom() : 15)
+  const currentMetersPerPixel = metersPerPixel(centerLat, zoom)
 
   return {
     centerLat,
     centerLng,
     centerPoint,
-    widthPx: Math.abs(southEast.x - northWest.x),
-    heightPx: Math.abs(southEast.y - northWest.y),
+    widthM,
+    heightM,
+    metersPerPixel: currentMetersPerPixel,
+    widthPx: Math.max(1, widthM / currentMetersPerPixel),
+    heightPx: Math.max(1, heightM / currentMetersPerPixel),
+    bounds: normalized.bounds || null,
   }
 }
 

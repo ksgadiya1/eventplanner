@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import { toPng } from 'html-to-image'
+import { toCanvas } from 'html-to-image'
 import { jsPDF } from 'jspdf'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
@@ -9,7 +9,7 @@ import StatsBar from './components/StatsBar'
 import HomeScreen from './components/HomeScreen'
 import { computeZoneCapacity } from './data/assets'
 import { getRouteStylePreset } from './data/routeTypes'
-import { metersPerPixel } from './utils/mapGeometry'
+import { getAssetSize, getFloorGeometry, latLngToContainerPoint, normalizeFloorPlanState } from './utils/mapGeometry'
 import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
@@ -18,6 +18,16 @@ const PROJECT_STORAGE_KEY = 'eventwiz-project-v1'
 const CUSTOM_ASSET_LIBRARY_STORAGE_KEY = 'eventwiz-custom-asset-library-v1'
 const EVENT_META_STORAGE_KEY = 'eventwiz-event-meta-v1'
 const NAV_STATE_STORAGE_KEY = 'eventwiz-nav-state-v1'
+const DEFAULT_MAP_VIEWPORT = {
+  center: { lat: 23.0225, lng: 72.5714 },
+  zoom: 14,
+}
+
+function normalizePersistedZoom(value, fallback = DEFAULT_MAP_VIEWPORT.zoom) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(2, Math.min(21, Math.round(parsed)))
+}
 
 function readRouteState() {
   if (typeof window === 'undefined') return { currentView: 'home', eventId: null }
@@ -81,15 +91,45 @@ function writeNavigationState(currentView, eventId) {
 function writeRouteState(currentView, eventId, options = {}) {
   if (typeof window === 'undefined') return
 
-  const { replace = true } = options
+  const { replace = true, preserveViewParams = false } = options
   const nextPath = currentView === 'editor' && eventId
     ? `/${encodeURIComponent(eventId)}`
     : '/'
-  const nextUrl = `${nextPath}${window.location.search}`
+
+  const params = new URLSearchParams(window.location.search)
+  if (!preserveViewParams) {
+    ;['view', 'mode', 'zoom', 'minZoom', 'maxZoom'].forEach((key) => params.delete(key))
+  }
+
+  const nextSearch = params.toString()
+  const nextUrl = `${nextPath}${nextSearch ? `?${nextSearch}` : ''}`
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`
 
   if (currentUrl !== nextUrl) {
     window.history[replace ? 'replaceState' : 'pushState'](null, '', nextUrl)
+  }
+}
+
+function readSharedViewState() {
+  if (typeof window === 'undefined') {
+    return { isViewOnly: false, zoom: null, minZoom: null, maxZoom: null }
+  }
+
+  const params = new URLSearchParams(window.location.search)
+  const normalizeNumber = (value) => {
+    if (value == null || value === '') return null
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  const viewParam = String(params.get('view') || '').toLowerCase()
+  const modeParam = String(params.get('mode') || '').toLowerCase()
+
+  return {
+    isViewOnly: viewParam === '1' || viewParam === 'true' || modeParam === 'view',
+    zoom: normalizeNumber(params.get('zoom')),
+    minZoom: normalizeNumber(params.get('minZoom')),
+    maxZoom: normalizeNumber(params.get('maxZoom')),
   }
 }
 
@@ -100,6 +140,91 @@ const DEFAULT_LAYERS = {
   lines: { visible: true, locked: false },
   floor: { visible: true, locked: false },
   grid: { visible: false, locked: false },
+}
+
+function getExportStatusColor(status) {
+  switch (status) {
+    case 'confirmed':
+    case 'installed':
+      return '#10b981'
+    case 'removed':
+      return '#ef4444'
+    case 'planned':
+    default:
+      return '#f59e0b'
+  }
+}
+
+function buildCanvasPolylinePath(ctx, points, closePath = false) {
+  if (!ctx || !Array.isArray(points) || !points.length) return false
+  ctx.beginPath()
+  ctx.moveTo(points[0].x, points[0].y)
+  for (let index = 1; index < points.length; index += 1) {
+    ctx.lineTo(points[index].x, points[index].y)
+  }
+  if (closePath) ctx.closePath()
+  return true
+}
+
+function buildCanvasRoundedRectPath(ctx, x, y, width, height, radius = 12) {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2))
+  ctx.beginPath()
+  ctx.moveTo(x + safeRadius, y)
+  ctx.lineTo(x + width - safeRadius, y)
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius)
+  ctx.lineTo(x + width, y + height - safeRadius)
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height)
+  ctx.lineTo(x + safeRadius, y + height)
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius)
+  ctx.lineTo(x, y + safeRadius)
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y)
+  ctx.closePath()
+}
+
+function drawCanvasPin(ctx, { x, y, color = '#ea4335', label = '', size = 18, compact = false }) {
+  ctx.save()
+
+  if (compact) {
+    ctx.beginPath()
+    ctx.arc(x, y, Math.max(4, size * 0.42), 0, Math.PI * 2)
+    ctx.fillStyle = color
+    ctx.fill()
+    ctx.lineWidth = 2
+    ctx.strokeStyle = '#ffffff'
+    ctx.stroke()
+    ctx.restore()
+    return
+  }
+
+  const circleRadius = size * 0.42
+  const circleCenterY = y - size * 0.82
+
+  ctx.beginPath()
+  ctx.moveTo(x, y)
+  ctx.lineTo(x - circleRadius * 0.8, circleCenterY + circleRadius * 0.4)
+  ctx.arc(x, circleCenterY, circleRadius, Math.PI * 0.92, Math.PI * 0.08, true)
+  ctx.lineTo(x + circleRadius * 0.8, circleCenterY + circleRadius * 0.4)
+  ctx.closePath()
+  ctx.fillStyle = color
+  ctx.fill()
+  ctx.lineWidth = 1.8
+  ctx.strokeStyle = '#ffffff'
+  ctx.stroke()
+
+  ctx.beginPath()
+  ctx.arc(x, circleCenterY, circleRadius * 0.52, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+
+  if (label) {
+    ctx.fillStyle = color
+    ctx.font = `700 ${Math.max(9, size * 0.46)}px Arial, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, x, circleCenterY + 0.5)
+  }
+
+  ctx.restore()
 }
 
 function collectDescendantZoneIds(rootZoneId, zones) {
@@ -381,6 +506,9 @@ export default function App() {
   })
   const [currentView, setCurrentView] = useState(() => readNavigationState().currentView)
   const [eventId, setEventId] = useState(() => readNavigationState().eventId)
+  const [sharedView, setSharedView] = useState(() => readSharedViewState())
+  const isViewOnly = sharedView.isViewOnly
+  const [mapViewport, setMapViewport] = useState(DEFAULT_MAP_VIEWPORT)
   const [eventMetaMap, setEventMetaMap] = useState(() => readEventMetaMap())
   const [eventList, setEventList] = useState([])
   const [assetData, setAssetData] = useState({
@@ -394,10 +522,12 @@ export default function App() {
     ...getRouteStylePreset('custom'),
   }))
   const [textStyle, setTextStyle] = useState({
-    color: '#1f2937',
-    backgroundColor: 'rgba(255,255,255,0.96)',
+    pinColor: '#ea4335',
+    color: '#111827',
+    backgroundColor: '#fff7d6',
     fontSize: 14,
-    borderColor: 'rgba(15,23,42,0.12)',
+    fontWeight: 700,
+    borderColor: '#334155',
     borderWidth: 1,
     borderRadius: 12,
   })
@@ -428,6 +558,38 @@ export default function App() {
   })
   const mapRef = useRef(null)
   const hasHydratedRef = useRef(false)
+
+  const viewOnlyMinZoom = useMemo(() => {
+    const baseZoom = Number.isFinite(sharedView.zoom)
+      ? sharedView.zoom
+      : (Number.isFinite(Number(mapViewport.zoom)) ? Number(mapViewport.zoom) : DEFAULT_MAP_VIEWPORT.zoom)
+
+    return Number.isFinite(sharedView.minZoom)
+      ? sharedView.minZoom
+      : Math.max(2, Math.floor(baseZoom) - 2)
+  }, [mapViewport.zoom, sharedView.minZoom, sharedView.zoom])
+
+  const viewOnlyMaxZoom = useMemo(() => {
+    const baseZoom = Number.isFinite(sharedView.zoom)
+      ? sharedView.zoom
+      : (Number.isFinite(Number(mapViewport.zoom)) ? Number(mapViewport.zoom) : DEFAULT_MAP_VIEWPORT.zoom)
+    const candidate = Number.isFinite(sharedView.maxZoom)
+      ? sharedView.maxZoom
+      : Math.min(21, Math.ceil(baseZoom) + 2)
+
+    return Math.max(viewOnlyMinZoom + 1, candidate)
+  }, [mapViewport.zoom, sharedView.maxZoom, sharedView.zoom, viewOnlyMinZoom])
+
+  const effectiveLayers = useMemo(() => {
+    if (!isViewOnly) return layers
+
+    return Object.fromEntries(
+      Object.entries(layers || {}).map(([key, value]) => [
+        key,
+        { ...(value || {}), locked: true },
+      ])
+    )
+  }, [isViewOnly, layers])
 
   const refreshEventList = useCallback(async () => {
     const res = await fetch(`${API_BASE_URL}/maps`)
@@ -480,6 +642,7 @@ export default function App() {
   useEffect(() => {
     writeNavigationState(currentView, eventId)
     writeRouteState(currentView, eventId)
+    setSharedView(readSharedViewState())
   }, [currentView, eventId])
 
   useEffect(() => {
@@ -487,6 +650,7 @@ export default function App() {
       const routeState = readRouteState()
       setCurrentView(routeState.currentView)
       setEventId(routeState.eventId)
+      setSharedView(readSharedViewState())
     }
 
     window.addEventListener('popstate', handleLocationChange)
@@ -582,6 +746,17 @@ export default function App() {
       setPendingAssetDef(null)
     }
   }, [drawMode, pendingAssetDef])
+
+  useEffect(() => {
+    if (!isViewOnly) return
+
+    if (drawMode !== 'select') {
+      setDrawMode('select')
+    }
+
+    setPendingAssetDef(null)
+    setPlacingFloor(false)
+  }, [drawMode, isViewOnly])
 
   // Auto-clean zones with invalid labels (empty or "0")
   useEffect(() => {
@@ -1026,6 +1201,11 @@ export default function App() {
   }, [])
 
   const handleDrawMode = useCallback((mode) => {
+    if (isViewOnly) {
+      setDrawMode('select')
+      return
+    }
+
     if (mode === 'line') {
       mode = 'route'
     }
@@ -1039,9 +1219,11 @@ export default function App() {
         ...preset,
       }))
     }
-  }, [lineStyle?.routeType])
+  }, [isViewOnly, lineStyle?.routeType])
 
   const handleLocationSearch = useCallback(() => {
+    if (isViewOnly) return
+
     const query = (eventDetails.locationQuery || '').trim()
     if (!query) return
     setEventDetails(prev => ({
@@ -1049,7 +1231,66 @@ export default function App() {
       locationQuery: query,
       resolvedLocation: null,
     }))
-  }, [eventDetails.locationQuery])
+  }, [eventDetails.locationQuery, isViewOnly])
+
+  const handleViewportChange = useCallback((nextViewport) => {
+    if (!nextViewport?.center) return
+
+    setMapViewport((prev) => {
+      const prevLat = Number(prev?.center?.lat || 0)
+      const prevLng = Number(prev?.center?.lng || 0)
+      const nextLat = Number(nextViewport.center?.lat || 0)
+      const nextLng = Number(nextViewport.center?.lng || 0)
+      const prevZoom = Number(prev?.zoom || 0)
+      const nextZoom = Number(nextViewport.zoom || 0)
+
+      if (
+        Math.abs(prevLat - nextLat) < 1e-7
+        && Math.abs(prevLng - nextLng) < 1e-7
+        && Math.abs(prevZoom - nextZoom) < 1e-7
+      ) {
+        return prev
+      }
+
+      return nextViewport
+    })
+  }, [])
+
+  const handleEnterViewOnly = useCallback(() => {
+    if (typeof window === 'undefined' || !eventId) return
+
+    const url = new URL(window.location.href)
+    const liveZoom = mapRef.current?.getZoom?.()
+    const liveCenter = mapRef.current?.getCenter?.()
+    const baseZoom = Number.isFinite(Number(liveZoom))
+      ? Math.round(Number(liveZoom))
+      : (Number.isFinite(Number(mapViewport.zoom)) ? Math.round(Number(mapViewport.zoom)) : DEFAULT_MAP_VIEWPORT.zoom)
+    const nextMinZoom = Math.max(2, baseZoom - 2)
+    const nextMaxZoom = Math.min(21, baseZoom + 2)
+
+    if (liveCenter) {
+      setMapViewport({
+        center: { lat: liveCenter.lat(), lng: liveCenter.lng() },
+        zoom: baseZoom,
+      })
+    }
+
+    url.searchParams.set('view', '1')
+    url.searchParams.set('zoom', String(baseZoom))
+    url.searchParams.set('minZoom', String(nextMinZoom))
+    url.searchParams.set('maxZoom', String(nextMaxZoom))
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`)
+    setSharedView(readSharedViewState())
+  }, [eventId, mapViewport.zoom])
+
+  const handleExitViewOnly = useCallback(() => {
+    if (typeof window === 'undefined') return
+
+    const url = new URL(window.location.href)
+    ;['view', 'mode', 'zoom', 'minZoom', 'maxZoom'].forEach((key) => url.searchParams.delete(key))
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`)
+    setSharedView(readSharedViewState())
+  }, [])
 
   const handleFloorPlanUpload = useCallback((imageUrl) => {
     setFloorPlan({
@@ -1057,6 +1298,9 @@ export default function App() {
       type: 'floor',
       imageUrl,
       bounds: null,
+      center: null,
+      widthM: null,
+      heightM: null,
       opacity: 0.7,
       rotation: 0,
     })
@@ -1064,7 +1308,7 @@ export default function App() {
   }, [])
 
   const handleFloorPlanChange = useCallback((updater) => {
-    setFloorPlan(prev => typeof updater === 'function' ? updater(prev) : updater)
+    setFloorPlan(prev => normalizeFloorPlanState(typeof updater === 'function' ? updater(prev) : updater))
   }, [])
 
   // Delete selected
@@ -1121,6 +1365,8 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      if (isViewOnly) return
+
       const target = event.target
       const tagName = target?.tagName?.toLowerCase?.()
       const isTypingField = tagName === 'input' || tagName === 'textarea' || target?.isContentEditable
@@ -1154,7 +1400,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleDelete, handleRedo, handleUndo, selectedId])
+  }, [handleDelete, handleRedo, handleUndo, isViewOnly, selectedId])
 
   // Layer toggles
   const handleDuplicate = useCallback(() => {
@@ -1239,6 +1485,8 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      if (isViewOnly) return
+
       const target = event.target
       const tagName = target?.tagName?.toLowerCase?.()
       const isTypingField = tagName === 'input' || tagName === 'textarea' || target?.isContentEditable
@@ -1272,7 +1520,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleDelete, handleRedo, handleUndo, selectedId])
+  }, [handleDelete, handleRedo, handleUndo, isViewOnly, selectedId])
 
   const handleToggleVisibility = useCallback((layerId) => {
     setLayers(prev => ({
@@ -1288,28 +1536,289 @@ export default function App() {
     }))
   }, [])
 
-  // Capture the map container DOM node as a data URL
+  // Capture the current map view with a dedicated canvas renderer for reliable PNG/PDF export.
   const captureMapImage = useCallback(async () => {
     const map = mapRef.current
     if (!map) throw new Error('Map not loaded')
     const mapDiv = map.getDiv()
     if (!mapDiv) throw new Error('Map container not found')
 
-    // html-to-image captures the entire DOM subtree including canvas tiles, overlays, SVG
-    const dataUrl = await toPng(mapDiv, {
-      cacheBust: true,
-      pixelRatio: 2,
-      skipFonts: true,
-      // Skip Google UI controls (zoom buttons, map type switcher, etc.)
-      filter: (node) => {
-        if (!(node instanceof HTMLElement)) return true
-        const cls = node.className || ''
-        if (typeof cls === 'string' && (cls.includes('gm-control') || cls.includes('gm-style-cc') || cls.includes('gm-bundled-control'))) return false
-        return true
-      },
-    })
-    return dataUrl
-  }, [])
+    const googleMapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
+    const rect = mapDiv.getBoundingClientRect()
+    const width = Math.max(1, Math.round(rect.width))
+    const height = Math.max(1, Math.round(rect.height))
+    const pixelRatio = 2
+
+    const exportCanvas = document.createElement('canvas')
+    exportCanvas.width = width * pixelRatio
+    exportCanvas.height = height * pixelRatio
+    const ctx = exportCanvas.getContext('2d')
+    if (!ctx) throw new Error('Canvas context unavailable')
+
+    ctx.scale(pixelRatio, pixelRatio)
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, width, height)
+
+    const imageCache = new Map()
+    const loadImage = (src) => {
+      if (!src) return Promise.reject(new Error('Missing image source'))
+      if (imageCache.has(src)) return imageCache.get(src)
+
+      const promise = new Promise((resolve, reject) => {
+        const image = new Image()
+        if (!String(src).startsWith('data:')) image.crossOrigin = 'anonymous'
+        image.decoding = 'async'
+        image.onload = () => resolve(image)
+        image.onerror = reject
+        image.src = src
+      })
+
+      imageCache.set(src, promise)
+      return promise
+    }
+
+    const zoneMap = new Map(zones.map(zone => [zone.id, zone]))
+    const isZoneHidden = (zone) => {
+      if (!zone) return false
+      if (zone.visible === false) return true
+      return zone.parentId ? isZoneHidden(zoneMap.get(zone.parentId)) : false
+    }
+    const isParentHidden = (parentId) => (parentId ? isZoneHidden(zoneMap.get(parentId)) : false)
+
+    const previousSelectedId = selectedId
+    if (previousSelectedId) {
+      setSelectedId(null)
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    }
+
+    const drawBaseMapFromDom = async () => {
+      const baseClone = mapDiv.cloneNode(true)
+      baseClone.style.width = `${width}px`
+      baseClone.style.height = `${height}px`
+      baseClone.style.position = 'fixed'
+      baseClone.style.left = '-20000px'
+      baseClone.style.top = '0'
+      baseClone.style.margin = '0'
+      baseClone.style.pointerEvents = 'none'
+      baseClone.style.zIndex = '-1'
+      baseClone.style.background = '#ffffff'
+      baseClone.style.overflow = 'hidden'
+
+      Array.from(baseClone.querySelectorAll('.gm-style-cc, .gm-fullscreen-control, .gm-svpc, .gm-style-mtc, .gm-bundled-control, .gmnoprint')).forEach((node) => {
+        if (node instanceof HTMLElement) node.style.display = 'none'
+      })
+
+      Array.from(baseClone.querySelectorAll('button, textarea, svg, canvas')).forEach((node) => {
+        if (node instanceof HTMLElement) node.style.visibility = 'hidden'
+      })
+
+      Array.from(baseClone.querySelectorAll('img')).forEach((node) => {
+        if (!(node instanceof HTMLImageElement)) return
+        const src = node.getAttribute('src') || ''
+        const isGoogleTile = /googleapis|gstatic|googleusercontent|maps\.google/i.test(src)
+        if (!isGoogleTile) node.style.visibility = 'hidden'
+      })
+
+      document.body.appendChild(baseClone)
+      try {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const baseCanvas = await toCanvas(baseClone, {
+          cacheBust: true,
+          pixelRatio,
+          skipFonts: true,
+          backgroundColor: '#ffffff',
+        })
+        ctx.drawImage(baseCanvas, 0, 0, width, height)
+      } finally {
+        baseClone.remove()
+      }
+    }
+
+    try {
+      const center = map.getCenter?.()
+      const mapTypeId = map.getMapTypeId?.() || mapViewMode || 'roadmap'
+      const zoom = Math.max(1, Math.round(map.getZoom?.() || 14))
+      let baseMapDrawn = false
+
+      if (center && googleMapsKey) {
+        const sizeScale = Math.min(1, 640 / Math.max(width, height))
+        const requestWidth = Math.max(1, Math.round(width * sizeScale))
+        const requestHeight = Math.max(1, Math.round(height * sizeScale))
+        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${center.lat()},${center.lng()}&zoom=${zoom}&size=${requestWidth}x${requestHeight}&scale=2&maptype=${encodeURIComponent(mapTypeId)}&format=png&key=${encodeURIComponent(googleMapsKey)}`
+
+        try {
+          const baseMapImage = await loadImage(staticMapUrl)
+          ctx.drawImage(baseMapImage, 0, 0, width, height)
+          baseMapDrawn = true
+        } catch (error) {
+          console.warn('Static Maps export unavailable; falling back to DOM capture.', error)
+        }
+      }
+
+      if (!baseMapDrawn) {
+        await drawBaseMapFromDom()
+      }
+
+      if (layers.floor?.visible !== false && floorPlan?.bounds && floorPlan?.imageUrl) {
+        try {
+          const floorImage = await loadImage(floorPlan.imageUrl)
+          const geometry = getFloorGeometry(map, floorPlan)
+          if (geometry) {
+            ctx.save()
+            ctx.translate(geometry.centerPoint.x, geometry.centerPoint.y)
+            ctx.rotate(((floorPlan.rotation || 0) * Math.PI) / 180)
+            ctx.globalAlpha = floorPlan.opacity ?? 0.7
+            ctx.drawImage(floorImage, -geometry.widthPx / 2, -geometry.heightPx / 2, geometry.widthPx, geometry.heightPx)
+            ctx.restore()
+          }
+        } catch (error) {
+          console.warn('Could not draw floor plan in export.', error)
+        }
+      }
+
+      if (layers.zones?.visible !== false) {
+        zones.forEach((zone) => {
+          if (isZoneHidden(zone)) return
+          const points = (zone.path || [])
+            .map(point => latLngToContainerPoint(map, point.lat, point.lng))
+            .filter(Boolean)
+          if (points.length < 3) return
+
+          ctx.save()
+          buildCanvasPolylinePath(ctx, points, true)
+          ctx.globalAlpha = zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2
+          ctx.fillStyle = zone.fillColor || zone.zoneType?.color || '#3d8ef8'
+          ctx.fill()
+          ctx.globalAlpha = 1
+          ctx.strokeStyle = zone.strokeColor || zone.zoneType?.color || '#3d8ef8'
+          ctx.lineWidth = zone.strokeWeight || 2
+          ctx.stroke()
+          ctx.restore()
+        })
+      }
+
+      if (layers.lines?.visible !== false) {
+        lines.forEach((line) => {
+          if (line.visible === false || isParentHidden(line.parentId)) return
+          const points = (line.path || [])
+            .map(point => latLngToContainerPoint(map, point.lat, point.lng))
+            .filter(Boolean)
+          if (points.length < 2) return
+
+          ctx.save()
+          buildCanvasPolylinePath(ctx, points, false)
+          ctx.strokeStyle = line.color || '#f59e0b'
+          ctx.lineWidth = line.strokeWeight || 4
+          ctx.lineCap = 'round'
+          ctx.lineJoin = 'round'
+          if ((line.pattern || 'dashed') === 'dotted') {
+            ctx.setLineDash([2, 10])
+          } else if ((line.pattern || 'dashed') === 'dashed') {
+            ctx.setLineDash([14, 10])
+          } else {
+            ctx.setLineDash([])
+          }
+          ctx.stroke()
+          ctx.restore()
+        })
+      }
+
+      if (layers.assets?.visible !== false) {
+        for (const asset of assets) {
+          if (isParentHidden(asset.parentId)) continue
+          const point = latLngToContainerPoint(map, asset.lat, asset.lng)
+          if (!point) continue
+
+          const { widthPx, lengthPx } = getAssetSize(asset, map.getZoom())
+          const fillColor = asset.fillColor || asset.assetDef?.color || '#3d8ef8'
+          const strokeColor = asset.strokeColor || asset.assetDef?.color || '#3d8ef8'
+          const fillOpacity = asset.fillOpacity !== undefined ? asset.fillOpacity : 0.85
+          const innerSize = Math.min(widthPx, lengthPx) * 0.56
+          const iconSize = Math.max(12, innerSize * 0.7)
+          const iconText = (() => {
+            const rawIcon = asset.assetDef?.icon
+            if (typeof rawIcon === 'string' && rawIcon && !rawIcon.includes(':')) return rawIcon.slice(0, 2)
+            const label = asset.assetDef?.name || asset.label || 'A'
+            return String(label).trim().charAt(0).toUpperCase()
+          })()
+
+          ctx.save()
+          ctx.translate(point.x, point.y)
+          ctx.rotate(((asset.rotationDeg || 0) * Math.PI) / 180)
+
+          buildCanvasRoundedRectPath(ctx, -widthPx / 2, -lengthPx / 2, widthPx, lengthPx, Math.max(10, Math.min(widthPx, lengthPx) * 0.22))
+          ctx.globalAlpha = fillOpacity
+          ctx.fillStyle = fillColor
+          ctx.fill()
+          ctx.globalAlpha = 1
+          ctx.lineWidth = asset.strokeWeight || 2
+          ctx.strokeStyle = strokeColor
+          ctx.stroke()
+
+          ctx.beginPath()
+          ctx.arc(0, 0, innerSize / 2, 0, Math.PI * 2)
+          ctx.fillStyle = '#ffffff'
+          ctx.fill()
+          ctx.lineWidth = 2
+          ctx.strokeStyle = strokeColor
+          ctx.stroke()
+
+          if (asset.assetDef?.imageUrl) {
+            try {
+              const iconImage = await loadImage(asset.assetDef.imageUrl)
+              ctx.drawImage(iconImage, -iconSize / 2, -iconSize / 2, iconSize, iconSize)
+            } catch {
+              ctx.fillStyle = asset.assetDef?.iconColor || strokeColor
+              ctx.font = `700 ${Math.max(11, iconSize * 0.6)}px Arial, sans-serif`
+              ctx.textAlign = 'center'
+              ctx.textBaseline = 'middle'
+              ctx.fillText(iconText, 0, 0)
+            }
+          } else {
+            ctx.fillStyle = asset.assetDef?.iconColor || strokeColor
+            ctx.font = `700 ${Math.max(11, iconSize * 0.6)}px Arial, sans-serif`
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'middle'
+            ctx.fillText(iconText, 0, 0)
+          }
+
+          const statusDotSize = Math.max(5, Math.min(widthPx, lengthPx) * 0.12)
+          ctx.beginPath()
+          ctx.arc(widthPx / 2 - statusDotSize * 1.4, lengthPx / 2 - statusDotSize * 1.4, statusDotSize, 0, Math.PI * 2)
+          ctx.fillStyle = getExportStatusColor(asset.status || 'planned')
+          ctx.fill()
+          ctx.lineWidth = 2
+          ctx.strokeStyle = '#ffffff'
+          ctx.stroke()
+          ctx.restore()
+        }
+      }
+
+      if (layers.annotations?.visible !== false) {
+        annotations.forEach((annotation) => {
+          if (isParentHidden(annotation.parentId)) return
+          const point = latLngToContainerPoint(map, annotation.lat, annotation.lng)
+          if (!point) return
+
+          const compact = zoom < 14
+          drawCanvasPin(ctx, {
+            x: point.x,
+            y: point.y,
+            color: annotation.pinColor || '#ea4335',
+            label: compact ? '' : String(annotation.label || annotation.text || 'P').trim().charAt(0).toUpperCase(),
+            size: compact ? 12 : 18,
+            compact,
+          })
+        })
+      }
+
+      return exportCanvas.toDataURL('image/png')
+    } finally {
+      if (previousSelectedId) {
+        requestAnimationFrame(() => setSelectedId(previousSelectedId))
+      }
+    }
+  }, [annotations, assets, floorPlan, layers, lines, mapViewMode, selectedId, zones])
 
   // Export current viewport as PNG / PDF / JSON
   const handleExport = useCallback(async (format = 'png') => {
@@ -1641,7 +2150,7 @@ export default function App() {
       eventType: patch.eventType ?? currentData.eventType ?? currentData.event_type ?? 'festival',
       center_lat: patch.center_lat ?? currentData.center_lat ?? 51.505,
       center_lng: patch.center_lng ?? currentData.center_lng ?? -0.09,
-      zoom: patch.zoom ?? currentData.zoom ?? 13,
+      zoom: normalizePersistedZoom(patch.zoom ?? currentData.zoom ?? 13),
       measurementUnit: patch.measurementUnit ?? currentData.measurementUnit ?? 'meters',
       layers: patch.layers ?? currentData.layers ?? DEFAULT_LAYERS,
       settings: nextSettings,
@@ -1718,6 +2227,10 @@ export default function App() {
           eventType: eventType || 'festival',
           isArchived: false,
         }))
+        setMapViewport({
+          center: { lat: 51.505, lng: -0.09 },
+          zoom: 13,
+        })
         setCurrentView('editor')
       }
     } catch (err) {
@@ -1745,6 +2258,13 @@ export default function App() {
           eventType: data.eventType || data.event_type || 'festival',
           isArchived: Boolean(data.isArchived),
         }))
+        setMapViewport({
+          center: {
+            lat: Number.isFinite(Number(data.center_lat)) ? Number(data.center_lat) : DEFAULT_MAP_VIEWPORT.center.lat,
+            lng: Number.isFinite(Number(data.center_lng)) ? Number(data.center_lng) : DEFAULT_MAP_VIEWPORT.center.lng,
+          },
+          zoom: Number.isFinite(Number(data.zoom)) ? Number(data.zoom) : DEFAULT_MAP_VIEWPORT.zoom,
+        })
         setZones(data.zones || [])
         setAssets(data.assets || [])
         setLines(data.lines || [])
@@ -1880,15 +2400,25 @@ export default function App() {
     }
     console.log('Attempting to save map...', { eventId, eventDetails, zonesCount: zones.length, assetsCount: assets.length })
     try {
+      const liveCenter = mapRef.current?.getCenter?.()
+      const liveZoom = mapRef.current?.getZoom?.()
+      const safeCenter = {
+        lat: liveCenter ? liveCenter.lat() : (Number.isFinite(Number(mapViewport.center?.lat)) ? Number(mapViewport.center.lat) : DEFAULT_MAP_VIEWPORT.center.lat),
+        lng: liveCenter ? liveCenter.lng() : (Number.isFinite(Number(mapViewport.center?.lng)) ? Number(mapViewport.center.lng) : DEFAULT_MAP_VIEWPORT.center.lng),
+      }
+      const safeZoom = normalizePersistedZoom(
+        Number.isFinite(Number(liveZoom)) ? Number(liveZoom) : (Number.isFinite(Number(mapViewport.zoom)) ? Number(mapViewport.zoom) : DEFAULT_MAP_VIEWPORT.zoom)
+      )
+
       const res = await fetch(`${API_BASE_URL}/maps/${eventId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: eventDetails.name,
           eventType: eventDetails.eventType,
-          center_lat: 51.505,
-          center_lng: -0.09,
-          zoom: 13,
+          center_lat: safeCenter.lat,
+          center_lng: safeCenter.lng,
+          zoom: safeZoom,
           measurementUnit: measurementUnit,
           layers,
           settings: {
@@ -1960,6 +2490,11 @@ export default function App() {
         eventId={eventId}
         eventName={eventDetails.name}
         isArchived={!!eventDetails.isArchived}
+        isViewOnly={isViewOnly}
+        viewOnlyMinZoom={viewOnlyMinZoom}
+        viewOnlyMaxZoom={viewOnlyMaxZoom}
+        onEnterViewOnly={handleEnterViewOnly}
+        onExitViewOnly={handleExitViewOnly}
         onSave={handleSaveMap}
         onUnarchive={() => handleArchiveEvent(eventId, false)}
         onGoHome={() => {
@@ -1970,56 +2505,58 @@ export default function App() {
       />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        <Sidebar
-          collapsed={leftSidebarCollapsed}
-          onToggleCollapse={() => setLeftSidebarCollapsed(prev => !prev)}
-          drawMode={drawMode}
-          onDrawMode={handleDrawMode}
-          onAssetDragStart={handleAssetDragStart}
-          onAssetDragEnd={handleAssetDragEnd}
-          pendingAssetDef={pendingAssetDef}
-          onAssetClickPlace={handleAssetClickPlace}
-          onImportAssets={handleImportAssets}
-          onImportProject={handleImportProject}
-          onDownloadAssetList={handleDownloadAssetList}
-          zones={zones}
-          assets={assets}
-          lines={lines}
-          annotations={annotations}
-          selectedId={selectedId}
-          onSelectItem={handleSelect}
-          onUpdateAsset={handleUpdate}
-          floorPlan={floorPlan}
-          placingFloor={placingFloor}
-          onFloorPlanUpload={handleFloorPlanUpload}
-          onStartFloorPlacement={() => {
-            if (!floorPlan?.imageUrl) return
-            setFloorPlan(prev => prev ? { ...prev, bounds: null } : prev)
-            setPlacingFloor(true)
-          }}
-          onFloorOpacityChange={(opacity) => {
-            setFloorPlan(prev => prev ? { ...prev, opacity } : prev)
-          }}
-          layers={layers}
-          onToggleLayer={handleToggleLayer}
-          onToggleLock={handleToggleLock}
-          selectedZoneType={selectedZoneType}
-          onZoneTypeChange={(zone) => setSelectedZoneType(zone)}
-          lineStyle={lineStyle}
-          onLineStyleChange={setLineStyle}
-          textStyle={textStyle}
-          onTextStyleChange={setTextStyle}
-          annotationDraftText={annotationDraftText}
-          onAnnotationDraftTextChange={setAnnotationDraftText}
-          assetCategories={assetData.categories}
-          zoneTypes={assetData.zoneTypes}
-        />
+        {!isViewOnly && (
+          <Sidebar
+            collapsed={leftSidebarCollapsed}
+            onToggleCollapse={() => setLeftSidebarCollapsed(prev => !prev)}
+            drawMode={drawMode}
+            onDrawMode={handleDrawMode}
+            onAssetDragStart={handleAssetDragStart}
+            onAssetDragEnd={handleAssetDragEnd}
+            pendingAssetDef={pendingAssetDef}
+            onAssetClickPlace={handleAssetClickPlace}
+            onImportAssets={handleImportAssets}
+            onImportProject={handleImportProject}
+            onDownloadAssetList={handleDownloadAssetList}
+            zones={zones}
+            assets={assets}
+            lines={lines}
+            annotations={annotations}
+            selectedId={selectedId}
+            onSelectItem={handleSelect}
+            onUpdateAsset={handleUpdate}
+            floorPlan={floorPlan}
+            placingFloor={placingFloor}
+            onFloorPlanUpload={handleFloorPlanUpload}
+            onStartFloorPlacement={() => {
+              if (!floorPlan?.imageUrl) return
+              setFloorPlan(prev => prev ? { ...prev, bounds: null } : prev)
+              setPlacingFloor(true)
+            }}
+            onFloorOpacityChange={(opacity) => {
+              setFloorPlan(prev => prev ? { ...prev, opacity } : prev)
+            }}
+            layers={layers}
+            onToggleLayer={handleToggleLayer}
+            onToggleLock={handleToggleLock}
+            selectedZoneType={selectedZoneType}
+            onZoneTypeChange={(zone) => setSelectedZoneType(zone)}
+            lineStyle={lineStyle}
+            onLineStyleChange={setLineStyle}
+            textStyle={textStyle}
+            onTextStyleChange={setTextStyle}
+            annotationDraftText={annotationDraftText}
+            onAnnotationDraftTextChange={setAnnotationDraftText}
+            assetCategories={assetData.categories}
+            zoneTypes={assetData.zoneTypes}
+          />
+        )}
 
         <MapCanvas
           drawMode={drawMode}
           onDrawMode={setDrawMode}
           selectedZoneType={selectedZoneType}
-          layers={layers}
+          layers={effectiveLayers}
           zones={zones}
           assets={assets}
           lines={lines}
@@ -2046,24 +2583,31 @@ export default function App() {
           textStyle={textStyle}
           annotationDraftText={annotationDraftText}
           onMapRef={(ref) => { mapRef.current = ref }}
+          onViewportChange={handleViewportChange}
+          initialView={mapViewport}
+          isViewOnly={isViewOnly}
+          viewOnlyMinZoom={viewOnlyMinZoom}
+          viewOnlyMaxZoom={viewOnlyMaxZoom}
           measurementUnit={measurementUnit}
         />
 
-        <PropertiesPanel
-          collapsed={!selectedId}
-          selected={selectedItem}
-          zones={zones}
-          assets={assets}
-          lines={lines}
-          annotations={annotations}
-          onUpdate={handleUpdate}
-          onDuplicate={handleDuplicate}
-          onDelete={handleDelete}
-          onClose={() => setSelectedId(null)}
-          measurementUnit={measurementUnit}
-          crowdDensityOptions={assetData.crowdDensityOptions}
-          zoneTypes={assetData.zoneTypes}
-        />
+        {!isViewOnly && (
+          <PropertiesPanel
+            collapsed={!selectedId}
+            selected={selectedItem}
+            zones={zones}
+            assets={assets}
+            lines={lines}
+            annotations={annotations}
+            onUpdate={handleUpdate}
+            onDuplicate={handleDuplicate}
+            onDelete={handleDelete}
+            onClose={() => setSelectedId(null)}
+            measurementUnit={measurementUnit}
+            crowdDensityOptions={assetData.crowdDensityOptions}
+            zoneTypes={assetData.zoneTypes}
+          />
+        )}
 
       </div>
 
