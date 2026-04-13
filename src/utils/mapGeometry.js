@@ -253,6 +253,145 @@ export function computePolygonMetrics(path, google) {
   return { areaM2, perimeterM }
 }
 
+export function getPathCentroid(path) {
+  if (!Array.isArray(path) || !path.length) return null
+  const totals = path.reduce((sum, point) => ({
+    lat: sum.lat + Number(point?.lat || 0),
+    lng: sum.lng + Number(point?.lng || 0),
+  }), { lat: 0, lng: 0 })
+
+  return {
+    lat: totals.lat / path.length,
+    lng: totals.lng / path.length,
+  }
+}
+
+function isValidLatLng(point) {
+  return Number.isFinite(Number(point?.lat)) && Number.isFinite(Number(point?.lng))
+}
+
+function buildOffsetFromAnchor(anchor, point, google) {
+  const spherical = google?.maps?.geometry?.spherical
+  if (!spherical || !isValidLatLng(anchor) || !isValidLatLng(point)) return null
+
+  const anchorLatLng = new google.maps.LatLng(anchor.lat, anchor.lng)
+  const pointLatLng = new google.maps.LatLng(point.lat, point.lng)
+
+  return {
+    distanceM: spherical.computeDistanceBetween(anchorLatLng, pointLatLng),
+    headingDeg: spherical.computeHeading(anchorLatLng, pointLatLng),
+  }
+}
+
+function rebuildPointFromOffset(anchor, offset, google) {
+  const spherical = google?.maps?.geometry?.spherical
+  if (!spherical || !isValidLatLng(anchor)) return null
+
+  const distanceM = Number(offset?.distanceM)
+  const headingDeg = Number(offset?.headingDeg)
+  if (!Number.isFinite(distanceM) || !Number.isFinite(headingDeg)) return null
+
+  const point = spherical.computeOffset(
+    new google.maps.LatLng(anchor.lat, anchor.lng),
+    distanceM,
+    headingDeg
+  )
+
+  return { lat: point.lat(), lng: point.lng() }
+}
+
+export function getZoneAnchor(zone) {
+  if (isValidLatLng(zone?.center)) return { lat: Number(zone.center.lat), lng: Number(zone.center.lng) }
+  return getPathCentroid(zone?.path || [])
+}
+
+export function serializeZoneTemplateGeometry(zone, google) {
+  if (!google || !zone) return null
+
+  const anchor = getZoneAnchor(zone)
+  if (!anchor) return null
+
+  const pathOffsets = Array.isArray(zone.path)
+    ? zone.path
+      .map(point => buildOffsetFromAnchor(anchor, point, google))
+      .filter(Boolean)
+    : []
+
+  const centerOffset = isValidLatLng(zone.center)
+    ? buildOffsetFromAnchor(anchor, zone.center, google)
+    : null
+
+  return {
+    anchor,
+    pathOffsets,
+    centerOffset,
+    shapeType: zone.shapeType || 'polygon',
+    radiusM: Number.isFinite(Number(zone.radiusM)) ? Number(zone.radiusM) : null,
+  }
+}
+
+export function instantiateZoneFromTemplate(template, anchorPoint, google) {
+  if (!google || !anchorPoint || !isValidLatLng(anchorPoint) || !template) return null
+
+  const zoneType = template.zoneType || { id: 'generic', name: 'Zone', color: '#3d8ef8', fillOpacity: 0.2 }
+  const allowedAssetTypes = Array.isArray(template.allowedAssetTypes)
+    ? template.allowedAssetTypes
+    : (zoneType.allowedAssetTypes || [])
+
+  const rebuiltPath = Array.isArray(template.pathOffsets)
+    ? template.pathOffsets
+      .map(offset => rebuildPointFromOffset(anchorPoint, offset, google))
+      .filter(Boolean)
+    : []
+
+  const isCircle = template.shapeType === 'circle'
+  const radiusM = Number(template.radiusM)
+  const center = isCircle && template.centerOffset
+    ? rebuildPointFromOffset(anchorPoint, template.centerOffset, google)
+    : null
+
+  const path = isCircle && center && Number.isFinite(radiusM) && radiusM > 0
+    ? buildCirclePath(center, radiusM, google, 72)
+    : rebuiltPath
+
+  if (!Array.isArray(path) || path.length < 3) return null
+
+  const metrics = isCircle && Number.isFinite(radiusM) && radiusM > 0
+    ? { areaM2: Math.PI * radiusM * radiusM, perimeterM: 2 * Math.PI * radiusM }
+    : computePolygonMetrics(path, google)
+
+  return {
+    id: `zone_${Date.now()}`,
+    type: 'zone',
+    shapeType: template.shapeType || 'polygon',
+    center: center || undefined,
+    radiusM: isCircle && Number.isFinite(radiusM) ? radiusM : undefined,
+    zoneType: { ...zoneType },
+    layoutType: template.layoutType || 'free',
+    showGrid: Boolean(template.showGrid),
+    gridSize: Math.max(1, Number(template.gridSize || 3)),
+    gridRotation: Number(template.gridRotation || 0),
+    subType: template.subType || null,
+    parentId: null,
+    path,
+    areaM2: metrics.areaM2,
+    perimeterM: metrics.perimeterM,
+    capacity: null,
+    label: template.zoneLabel || template.label || zoneType?.name || 'Zone',
+    allowedAssetTypes,
+    contentLocked: Boolean(template.contentLocked || allowedAssetTypes.length),
+    status: template.status || 'planned',
+    notes: template.notes || '',
+    fillColor: template.fillColor,
+    fillOpacity: template.fillOpacity,
+    strokeColor: template.strokeColor,
+    strokeWeight: template.strokeWeight,
+    density: template.density,
+    visible: true,
+  }
+}
+
+
 export function extractPathFromOverlay(overlay) {
   return overlay?.getPath?.()?.getArray?.()?.map(point => ({
     lat: point.lat(),
@@ -435,6 +574,27 @@ export function buildCirclePath(center, radiusM, google, steps = 256) {
   })
 }
 
+export function buildRectanglePath(center, halfWidthM, halfHeightM, google, rotationDeg = 0) {
+  if (!google || !center) return []
+  const origin = new google.maps.LatLng(center.lat, center.lng)
+  const rotationRad = (Number(rotationDeg) || 0) * Math.PI / 180
+  const corners = [
+    { x: halfWidthM, y: halfHeightM },
+    { x: -halfWidthM, y: halfHeightM },
+    { x: -halfWidthM, y: -halfHeightM },
+    { x: halfWidthM, y: -halfHeightM },
+  ]
+
+  return corners.map(({ x, y }) => {
+    const rotatedX = x * Math.cos(rotationRad) - y * Math.sin(rotationRad)
+    const rotatedY = x * Math.sin(rotationRad) + y * Math.cos(rotationRad)
+    const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY)
+    const bearing = (Math.atan2(rotatedX, rotatedY) * 180 / Math.PI + 360) % 360
+    const point = google.maps.geometry.spherical.computeOffset(origin, distance, bearing)
+    return { lat: point.lat(), lng: point.lng() }
+  })
+}
+
 export function buildSquarePath(center, halfSideM, google) {
   if (!google || !center) return []
   const origin = new google.maps.LatLng(center.lat, center.lng)
@@ -449,6 +609,18 @@ export function buildSquarePath(center, halfSideM, google) {
     { lat: sw.lat(), lng: sw.lng() },
     { lat: se.lat(), lng: se.lng() },
   ]
+}
+
+export function getPathCenter(path) {
+  if (!Array.isArray(path) || path.length === 0) return null
+  const center = path.reduce((acc, point) => ({
+    lat: acc.lat + (point.lat || 0),
+    lng: acc.lng + (point.lng || 0),
+  }), { lat: 0, lng: 0 })
+  return {
+    lat: center.lat / path.length,
+    lng: center.lng / path.length,
+  }
 }
 
 export function limitGridSlots(slots, maxPoints = 450) {

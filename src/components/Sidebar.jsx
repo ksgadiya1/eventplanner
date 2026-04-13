@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Download } from 'lucide-react'
+import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Download, Trash2 } from 'lucide-react'
 import AssetGlyph from './AssetGlyph'
 
 
@@ -399,6 +399,10 @@ export default function Sidebar({
   onAssetDragEnd,
   pendingAssetDef,
   onAssetClickPlace,
+  zoneTemplates = [],
+  pendingZoneTemplate,
+  onZoneTemplateClickPlace,
+  onDeleteZoneTemplate,
   onImportAssets,
   onImportProject,
   onDownloadAssetList,
@@ -426,8 +430,9 @@ export default function Sidebar({
   zoneTypes = [],
 }) {
   const [activeTab, setActiveTab] = useState('assets')
-  const [expandedCats, setExpandedCats] = useState({ 'Performance': true, 'Access & Security': true })
+  const [expandedCats, setExpandedCats] = useState({ 'Performance': true, 'Access & Security': true, 'Custom Assets': true })
   const [assetSearch, setAssetSearch] = useState('')
+  const [customAssetSearch, setCustomAssetSearch] = useState('')
   const [assetFilter, setAssetFilter] = useState('all')
   const [assetColorOverride, setAssetColorOverride] = useState('')
   const [recentAssetIds, setRecentAssetIds] = useState(() => {
@@ -474,6 +479,39 @@ export default function Sidebar({
     return lookup
   }, [assetCategories])
 
+  const mergedAssetCategories = useMemo(() => {
+    const merged = Object.entries(assetCategories || {}).reduce((acc, [categoryLabel, categoryAssets]) => ({
+      ...acc,
+      [categoryLabel]: Array.isArray(categoryAssets) ? [...categoryAssets] : [],
+    }), {})
+
+    if (zoneTemplates.length) {
+      const templateAssets = zoneTemplates.map(template => ({
+        ...template,
+        itemKind: 'zone-template',
+        category: 'Custom Assets',
+        assetType: 'Area Template',
+        color: template.strokeColor || template.fillColor || template.zoneType?.color || '#3d8ef8',
+        iconColor: template.strokeColor || template.fillColor || template.zoneType?.color || '#3d8ef8',
+        keywords: [
+          template.name,
+          template.zoneType?.name,
+          'area',
+          'template',
+          'custom',
+        ].filter(Boolean),
+        libraryTags: ['custom', 'zone-template'],
+      }))
+
+      merged['Custom Assets'] = [
+        ...templateAssets,
+        ...(Array.isArray(merged['Custom Assets']) ? merged['Custom Assets'] : []),
+      ]
+    }
+
+    return merged
+  }, [assetCategories, zoneTemplates])
+
   const recentAssets = useMemo(() => (
     recentAssetIds
       .map(assetId => assetLookup.get(assetId))
@@ -514,8 +552,13 @@ export default function Sidebar({
   )
 
   const matchesAssetSearch = (asset, categoryLabel) => {
-    const query = assetSearch.trim().toLowerCase()
-    if (!query) return true
+    const globalQuery = assetSearch.trim().toLowerCase()
+    const customQuery = categoryLabel === 'Custom Assets'
+      ? customAssetSearch.trim().toLowerCase()
+      : ''
+
+    if (!globalQuery && !customQuery) return true
+
     const haystack = [
       asset.name,
       asset.id,
@@ -528,11 +571,14 @@ export default function Sidebar({
       .join(' ')
       .toLowerCase()
 
-    return haystack.includes(query)
+    const matchesGlobalQuery = !globalQuery || haystack.includes(globalQuery)
+    const matchesCustomQuery = !customQuery || haystack.includes(customQuery)
+
+    return matchesGlobalQuery && matchesCustomQuery
   }
 
   const filteredAssetCategories = useMemo(() => (
-    Object.entries(assetCategories || {}).reduce((entries, [categoryLabel, categoryAssets]) => {
+    Object.entries(mergedAssetCategories || {}).reduce((entries, [categoryLabel, categoryAssets]) => {
       const safeAssets = Array.isArray(categoryAssets) ? categoryAssets : []
       const filteredAssets = safeAssets.filter(asset => (
         matchesAssetFilter(asset) && matchesAssetSearch(asset, categoryLabel)
@@ -544,19 +590,25 @@ export default function Sidebar({
 
       return entries
     }, [])
-  ), [assetCategories, assetFilter, assetSearch])
+  ), [assetFilter, assetSearch, customAssetSearch, mergedAssetCategories])
 
   const hasAssetLibrary = useMemo(() => (
-    Object.values(assetCategories || {}).some(categoryAssets => Array.isArray(categoryAssets) && categoryAssets.length > 0)
-  ), [assetCategories])
+    Object.values(mergedAssetCategories || {}).some(categoryAssets => Array.isArray(categoryAssets) && categoryAssets.length > 0)
+  ), [mergedAssetCategories])
 
   const startAssetPlacement = (asset) => {
+    if (asset.itemKind === 'zone-template') {
+      onZoneTemplateClickPlace?.(asset)
+      return
+    }
+
     const prepared = buildAssetVariant(asset)
     rememberAsset(asset.id)
     onAssetClickPlace?.(prepared)
   }
 
   const startAssetDrag = (event, asset) => {
+    if (asset.itemKind === 'zone-template') return
     const prepared = buildAssetVariant(asset)
     rememberAsset(asset.id)
     isDraggingAssetRef.current = true
@@ -564,19 +616,24 @@ export default function Sidebar({
   }
 
   const renderAssetCard = (asset, compact = false) => {
+    const isZoneTemplate = asset.itemKind === 'zone-template'
     const assetColor = assetColorOverride || asset.color
+    const isActive = isZoneTemplate
+      ? pendingZoneTemplate?.id === asset.id
+      : pendingAssetDef?.id === asset.id
 
     return (
       <div
         key={`${compact ? 'recent' : 'asset'}-${asset.id}`}
         style={{
           ...(compact ? styles.miniAssetCard : styles.assetCard),
-          borderColor: pendingAssetDef?.id === asset.id ? (pendingAssetDef.color || asset.color) : `${asset.color}44`,
-          background: pendingAssetDef?.id === asset.id ? `${pendingAssetDef.color || asset.color}18` : 'var(--bg-secondary)',
-          cursor: compact ? 'pointer' : 'grab',
+          borderColor: isActive ? assetColor : `${assetColor}44`,
+          background: isActive ? `${assetColor}18` : 'var(--bg-secondary)',
+          cursor: compact || isZoneTemplate ? 'pointer' : 'grab',
           transition: 'all 0.15s',
+          position: 'relative',
         }}
-        draggable={!compact}
+        draggable={!compact && !isZoneTemplate}
         onDragStart={compact ? undefined : (event) => startAssetDrag(event, asset)}
         onDragEnd={compact ? undefined : (event) => {
           onAssetDragEnd?.(event)
@@ -589,14 +646,61 @@ export default function Sidebar({
           startAssetPlacement(asset)
         }}
       >
+        {isZoneTemplate && !compact && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDeleteZoneTemplate?.(asset.id)
+            }}
+            style={{
+              ...styles.iconBtn,
+              position: 'absolute',
+              top: '8px',
+              right: '8px',
+              width: '24px',
+              height: '24px',
+              background: 'var(--bg-panel)',
+            }}
+            title={`Delete ${asset.name}`}
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
         <div style={{ ...styles.assetIcon, border: `1px solid ${assetColor}33`, color: assetColor }}>
-          <AssetGlyph asset={{ ...asset, color: assetColor, iconColor: assetColor }} size={compact ? 18 : 20} />
+          {isZoneTemplate ? (
+            asset.shapeType === 'circle' ? (
+              <div
+                style={{
+                  width: compact ? '18px' : '22px',
+                  height: compact ? '18px' : '22px',
+                  borderRadius: '999px',
+                  background: `${assetColor}22`,
+                  border: `2px solid ${assetColor}`,
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: compact ? '18px' : '22px',
+                  height: compact ? '18px' : '22px',
+                  background: `${assetColor}22`,
+                  border: `2px solid ${assetColor}`,
+                  clipPath: 'polygon(15% 50%, 50% 15%, 85% 25%, 78% 75%, 38% 88%)',
+                }}
+              />
+            )
+          ) : (
+            <AssetGlyph asset={{ ...asset, color: assetColor, iconColor: assetColor }} size={compact ? 18 : 20} />
+          )}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ ...styles.assetName, color: 'var(--text-primary)' }}>{asset.name}</div>
           {!compact && (
             <div style={{ fontSize: '10px', color: assetColor, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              {asset.assetType || asset.category || ''}
+              {isZoneTemplate
+                ? `${asset.zoneType?.name || 'Area'}`
+                : (asset.assetType || asset.category || '')}
             </div>
           )}
         </div>
@@ -843,6 +947,7 @@ export default function Sidebar({
                 </div>
               </div>
             )}
+
             <input
               type="file"
               ref={assetImportInputRef}
@@ -969,9 +1074,20 @@ export default function Sidebar({
                     {cat}
                   </div>
                   {expandedCats[cat] && (
-                    <div style={styles.assetGrid}>
-                      {filteredAssets.map(asset => renderAssetCard(asset))}
-                    </div>
+                    <>
+                      {cat === 'Custom Assets' && (
+                        <input
+                          type="text"
+                          value={customAssetSearch}
+                          onChange={(event) => setCustomAssetSearch(event.target.value)}
+                          placeholder="Search custom assets..."
+                          style={{ ...styles.floorInput, marginTop: 0, marginBottom: '10px' }}
+                        />
+                      )}
+                      <div style={styles.assetGrid}>
+                        {filteredAssets.map(asset => renderAssetCard(asset))}
+                      </div>
+                    </>
                   )}
                 </div>
               )

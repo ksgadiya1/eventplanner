@@ -9,13 +9,21 @@ import StatsBar from './components/StatsBar'
 import HomeScreen from './components/HomeScreen'
 import { computeZoneCapacity } from './data/assets'
 import { getRouteStylePreset } from './data/routeTypes'
-import { getAssetSize, getFloorGeometry, latLngToContainerPoint, normalizeFloorPlanState } from './utils/mapGeometry'
+// import {
+//   getAssetSize,
+//   getFloorGeometry,
+//   latLngToContainerPoint,
+//   normalizeFloorPlanState,
+//   serializeZoneTemplateGeometry,
+// } from './utils/mapGeometry'
+import { buildCirclePath, buildRectanglePath, computePolygonMetrics, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry } from './utils/mapGeometry'
 import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
 
 const PROJECT_STORAGE_KEY = 'eventwiz-project-v1'
 const CUSTOM_ASSET_LIBRARY_STORAGE_KEY = 'eventwiz-custom-asset-library-v1'
+const ZONE_TEMPLATE_STORAGE_KEY = 'eventwiz-zone-templates-v1'
 const EVENT_META_STORAGE_KEY = 'eventwiz-event-meta-v1'
 const NAV_STATE_STORAGE_KEY = 'eventwiz-nav-state-v1'
 const DEFAULT_MAP_VIEWPORT = {
@@ -299,6 +307,26 @@ function writeCustomAssetCategories(categories) {
   }
 }
 
+function readZoneTemplates() {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(ZONE_TEMPLATE_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeZoneTemplates(templates) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(ZONE_TEMPLATE_STORAGE_KEY, JSON.stringify(Array.isArray(templates) ? templates : []))
+  } catch {
+    // ignore storage failures
+  }
+}
+
 function readEventMetaMap() {
   if (typeof window === 'undefined') return {}
   try {
@@ -511,6 +539,7 @@ export default function App() {
   const [mapViewport, setMapViewport] = useState(DEFAULT_MAP_VIEWPORT)
   const [eventMetaMap, setEventMetaMap] = useState(() => readEventMetaMap())
   const [eventList, setEventList] = useState([])
+  const [zoneTemplates, setZoneTemplates] = useState(() => readZoneTemplates())
   const [assetData, setAssetData] = useState({
     categories: {},
     zoneTypes: [],
@@ -538,6 +567,7 @@ export default function App() {
   const [floorPlan, setFloorPlan] = useState(null)
   const [placingFloor, setPlacingFloor] = useState(false)
   const [pendingAssetDef, setPendingAssetDef] = useState(null)
+  const [pendingZoneTemplate, setPendingZoneTemplate] = useState(null)
   const [annotationDraftText, setAnnotationDraftText] = useState('New annotation')
   const [selectedId, setSelectedId] = useState(null)
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
@@ -638,6 +668,10 @@ export default function App() {
   useEffect(() => {
     writeEventMetaMap(eventMetaMap)
   }, [eventMetaMap])
+
+  useEffect(() => {
+    writeZoneTemplates(zoneTemplates)
+  }, [zoneTemplates])
 
   useEffect(() => {
     writeNavigationState(currentView, eventId)
@@ -748,6 +782,12 @@ export default function App() {
   }, [drawMode, pendingAssetDef])
 
   useEffect(() => {
+    if (drawMode !== 'select' && pendingZoneTemplate) {
+      setPendingZoneTemplate(null)
+    }
+  }, [drawMode, pendingZoneTemplate])
+
+  useEffect(() => {
     if (!isViewOnly) return
 
     if (drawMode !== 'select') {
@@ -755,6 +795,7 @@ export default function App() {
     }
 
     setPendingAssetDef(null)
+    setPendingZoneTemplate(null)
     setPlacingFloor(false)
   }, [drawMode, isViewOnly])
 
@@ -1028,6 +1069,7 @@ export default function App() {
 
   // Asset drag start
   const handleAssetDragStart = useCallback((e, assetDef) => {
+    setPendingZoneTemplate(null)
     setPendingAssetDef(null)
     e.dataTransfer.setData('application/eventwiz-asset', JSON.stringify(assetDef))
     e.dataTransfer.effectAllowed = 'copy'
@@ -1036,13 +1078,21 @@ export default function App() {
   const handleAssetDragEnd = useCallback(() => { }, [])
 
   const handleAssetClickPlace = useCallback((assetDef) => {
+    setPendingZoneTemplate(null)
     setPendingAssetDef(prev => (prev?.id === assetDef.id ? null : assetDef))
+    setDrawMode('select')
+  }, [])
+
+  const handleZoneTemplateClickPlace = useCallback((template) => {
+    setPendingAssetDef(null)
+    setPendingZoneTemplate(prev => (prev?.id === template.id ? null : template))
     setDrawMode('select')
   }, [])
 
   // Select item
   const handleSelect = useCallback((item) => {
     setPendingAssetDef(null)
+    setPendingZoneTemplate(null)
     setSelectedId(item.id)
     setDrawMode('select')
 
@@ -1096,6 +1146,95 @@ export default function App() {
     }
   }, [])
 
+  const handleSaveZoneTemplate = useCallback((zone, options = {}) => {
+    if (!zone || zone.type !== 'zone') return
+    if (!window.google) {
+      window.alert('Map is still loading. Please try again in a moment.')
+      return
+    }
+
+    const geometry = serializeZoneTemplateGeometry(zone, window.google)
+    if (!geometry || !Array.isArray(geometry.pathOffsets) || geometry.pathOffsets.length < 3) {
+      window.alert('This area could not be saved as a reusable template.')
+      return
+    }
+
+    const savedAt = new Date().toISOString()
+    const replaceTemplateId = options.mode === 'replace' ? options.templateId : null
+    const existingTemplate = replaceTemplateId
+      ? zoneTemplates.find(template => template.id === replaceTemplateId)
+      : null
+
+    if (options.mode === 'replace' && !existingTemplate) {
+      window.alert('Please choose a saved template to replace.')
+      return
+    }
+
+    let templateId = existingTemplate?.id || `zone_template_${Date.now()}`
+    let templateName = existingTemplate?.name || ''
+
+    if (options.mode !== 'replace') {
+      const baseName = `${zone.label || zone.zoneType?.name || 'Zone'} Template`
+      const suggestedName = getNextVersionName(baseName, zoneTemplates.map(template => template.name))
+      const nextName = window.prompt('Template name', suggestedName)
+
+      if (nextName == null) return
+
+      const trimmedName = nextName.trim()
+      if (!trimmedName) {
+        window.alert('Template name is required.')
+        return
+      }
+
+      templateName = trimmedName
+    }
+
+    const nextTemplate = {
+      id: templateId,
+      name: templateName,
+      zoneLabel: zone.label || zone.zoneType?.name || 'Zone',
+      zoneType: zone.zoneType ? { ...zone.zoneType } : null,
+      subType: zone.subType ? { ...zone.subType } : null,
+      layoutType: zone.layoutType || 'free',
+      showGrid: Boolean(zone.showGrid),
+      gridSize: Number(zone.gridSize || zone.rowSpacing || 3),
+      gridRotation: Number(zone.gridRotation || 0),
+      fillColor: zone.fillColor,
+      fillOpacity: zone.fillOpacity,
+      strokeColor: zone.strokeColor,
+      strokeWeight: zone.strokeWeight,
+      allowedAssetTypes: Array.isArray(zone.allowedAssetTypes) ? [...zone.allowedAssetTypes] : [],
+      contentLocked: Boolean(zone.contentLocked),
+      status: zone.status || 'planned',
+      notes: zone.notes || '',
+      density: zone.density,
+      createdAt: existingTemplate?.createdAt || savedAt,
+      updatedAt: savedAt,
+      ...geometry,
+    }
+
+    if (existingTemplate) {
+      setZoneTemplates(prev => prev.map(template => (
+        template.id === existingTemplate.id ? nextTemplate : template
+      )))
+      window.alert(`Replaced "${existingTemplate.name}".`)
+      return
+    }
+
+    setZoneTemplates(prev => [nextTemplate, ...prev])
+    window.alert(`Saved "${templateName}" to Area Templates.`)
+  }, [zoneTemplates])
+
+  const handleDeleteZoneTemplate = useCallback((templateId) => {
+    const template = zoneTemplates.find(item => item.id === templateId)
+    if (!template) return
+
+    if (!window.confirm(`Delete the "${template.name}" area template?`)) return
+
+    setZoneTemplates(prev => prev.filter(item => item.id !== templateId))
+    setPendingZoneTemplate(prev => (prev?.id === templateId ? null : prev))
+  }, [zoneTemplates])
+
   const updateDebounceRef = useRef(null)
 
   // Update selected item properties
@@ -1107,9 +1246,111 @@ export default function App() {
       const previousZone = zones.find(zone => zone.id === updated.id)
       const isZoneGeometryChange = !arePathsEqual(previousZone?.path, updated.path)
       const didLayoutChange = previousZone?.layoutType !== updated.layoutType
-      const nextZoneRecord = {
+      let nextZoneRecord = {
         ...updated,
         capacity: computeZoneCapacity(updated),
+      }
+
+      const isSquareShape = updated.shapeType === 'square'
+      const isCircleShape = updated.shapeType === 'circle'
+      const widthChanged = isSquareShape && Number(updated.widthM) !== Number(previousZone?.widthM)
+      const lengthChanged = isSquareShape && Number(updated.lengthM) !== Number(previousZone?.lengthM)
+      const radiusChanged = isCircleShape && Number(updated.radiusM) !== Number(previousZone?.radiusM)
+      const rotationChanged = Number(updated.rotation) !== Number(previousZone?.rotation)
+
+      if ((widthChanged || lengthChanged) && window.google?.maps?.geometry?.spherical) {
+        const center = updated.center || getPathCenter(previousZone?.path || updated.path)
+        const widthM = Number(updated.widthM)
+        const lengthM = Number(updated.lengthM)
+        const rotationDeg = Number(updated.rotation || 0)
+
+        if (center && Number.isFinite(widthM) && Number.isFinite(lengthM)) {
+          const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, rotationDeg)
+          if (path.length >= 3) {
+            const metrics = computePolygonMetrics(path, window.google)
+            nextZoneRecord = {
+              ...nextZoneRecord,
+              path,
+              center,
+              widthM,
+              lengthM,
+              areaM2: metrics.areaM2,
+              perimeterM: metrics.perimeterM,
+            }
+          }
+        }
+      }
+
+      if (radiusChanged && window.google?.maps?.geometry?.spherical) {
+        const center = updated.center || previousZone?.center || getPathCenter(previousZone?.path || updated.path)
+        const radiusM = Number(updated.radiusM)
+
+        if (center && Number.isFinite(radiusM) && radiusM > 0) {
+          const path = buildCirclePath(center, radiusM, window.google, 72)
+          if (path.length >= 3) {
+            nextZoneRecord = {
+              ...nextZoneRecord,
+              center,
+              radiusM,
+              path,
+              areaM2: Math.PI * radiusM * radiusM,
+              perimeterM: 2 * Math.PI * radiusM,
+            }
+          }
+        }
+      }
+
+      if (rotationChanged && !isSquareShape && Array.isArray(nextZoneRecord.path) && nextZoneRecord.path.length >= 3) {
+        const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
+        const oldRotation = Number(previousZone?.rotation || 0)
+        const newRotation = Number(updated.rotation || 0)
+        const deltaRotation = newRotation - oldRotation
+        const radians = (deltaRotation * Math.PI) / 180
+        const cos = Math.cos(radians)
+        const sin = Math.sin(radians)
+
+        if (center) {
+          const rotatedPath = nextZoneRecord.path.map((point) => {
+            const dx = point.lng - center.lng
+            const dy = point.lat - center.lat
+            return {
+              lat: center.lat + (dy * cos - dx * sin),
+              lng: center.lng + (dx * cos + dy * sin),
+            }
+          })
+          nextZoneRecord = {
+            ...nextZoneRecord,
+            path: rotatedPath,
+            rotation: newRotation,
+          }
+        }
+      } else if (rotationChanged && isSquareShape) {
+        const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
+        const newRotation = Number(updated.rotation || 0)
+
+        if (center && nextZoneRecord.widthM && nextZoneRecord.lengthM && window.google?.maps?.geometry?.spherical) {
+          const rotatedPath = buildRectanglePath(center, nextZoneRecord.widthM / 2, nextZoneRecord.lengthM / 2, window.google, newRotation)
+          if (rotatedPath.length >= 3) {
+            const metrics = computePolygonMetrics(rotatedPath, window.google)
+            nextZoneRecord = {
+              ...nextZoneRecord,
+              path: rotatedPath,
+              areaM2: metrics.areaM2,
+              perimeterM: metrics.perimeterM,
+              rotation: newRotation,
+            }
+          } else {
+            nextZoneRecord = {
+              ...nextZoneRecord,
+              rotation: newRotation,
+            }
+          }
+        } else {
+          nextZoneRecord = {
+            ...nextZoneRecord,
+            rotation: newRotation,
+          }
+        }
       }
 
       if (didLayoutChange) {
@@ -1872,238 +2113,608 @@ export default function App() {
           format: 'a4',
         })
 
-        const pageW = pdf.internal.pageSize.getWidth()
+  //       const pageW = pdf.internal.pageSize.getWidth()
+  //       const pageH = pdf.internal.pageSize.getHeight()
+  //       const margin = 28
+  //       const contentW = pageW - margin * 2
+  //       let cursorY = margin
+
+  //       const getZoneName = (zone) => {
+  //         const customLabel = typeof zone?.label === 'string' ? zone.label.trim() : ''
+  //         return customLabel || zone?.zoneType?.name || 'Zone'
+  //       }
+  //       const getAssetLabel = (asset) => asset?.label?.trim() || asset?.assetDef?.label || asset?.assetDef?.name || 'Asset'
+  //       const toText = (value, fallback = '—') => {
+  //         if (value === null || value === undefined) return fallback
+  //         const text = String(value).trim()
+  //         return text || fallback
+  //       }
+  //       const zoneLookup = new Map(zones.map(zone => [zone.id, getZoneName(zone)]))
+  //       const addPageIfNeeded = (needed = 24) => {
+  //         if (cursorY + needed <= pageH - margin) return
+  //         pdf.addPage()
+  //         cursorY = margin
+  //       }
+  //       const addSectionTitle = (title) => {
+  //         addPageIfNeeded(42)
+  //         if (cursorY > margin) cursorY += 4
+  //         pdf.setFont('helvetica', 'bold')
+  //         pdf.setFontSize(16)
+  //         pdf.setTextColor(17, 24, 39)
+  //         pdf.text(title, margin, cursorY)
+  //         pdf.setDrawColor(226, 232, 240)
+  //         pdf.setLineWidth(1)
+  //         pdf.line(margin, cursorY + 8, pageW - margin, cursorY + 8)
+  //         cursorY += 24
+  //       }
+  //       const addCard = (title, lines = []) => {
+  //         const wrapped = lines.flatMap(line => pdf.splitTextToSize(line, contentW - 28))
+  //         const lineHeight = 15
+  //         const headerHeight = 22
+  //         const bodyTop = 38
+  //         const bottomPadding = 12
+  //         const cardHeight = Math.max(62, bodyTop + wrapped.length * lineHeight + bottomPadding)
+
+  //         addPageIfNeeded(cardHeight + 14)
+  //         pdf.setDrawColor(218, 223, 232)
+  //         pdf.setFillColor(250, 251, 253)
+  //         pdf.roundedRect(margin, cursorY, contentW, cardHeight, 8, 8, 'FD')
+
+  //         pdf.setFont('helvetica', 'bold')
+  //         pdf.setFontSize(12)
+  //         pdf.setTextColor(15, 23, 42)
+  //         pdf.text(title, margin + 14, cursorY + headerHeight)
+
+  //         pdf.setFont('helvetica', 'normal')
+  //         pdf.setFontSize(10)
+  //         pdf.setTextColor(71, 85, 105)
+
+  //         let lineY = cursorY + bodyTop
+  //         wrapped.forEach(line => {
+  //           pdf.text(line, margin + 14, lineY)
+  //           lineY += lineHeight
+  //         })
+
+  //         cursorY += cardHeight + 14
+  //       }
+
+  //       pdf.setFont('helvetica', 'bold')
+  //       pdf.setFontSize(22)
+  //       pdf.setTextColor(15, 23, 42)
+  //       pdf.text(eventDetails?.name || 'EventWiz Detailed Report', margin, cursorY)
+  //       cursorY += 18
+
+  //       pdf.setFont('helvetica', 'normal')
+  //       pdf.setFontSize(11)
+  //       pdf.setTextColor(71, 85, 105)
+  //       pdf.text(`Generated ${new Date().toLocaleString()} | View ${mapViewMode || 'roadmap'} | Unit ${measurementUnit}`, margin, cursorY)
+  //       cursorY += 16
+
+  //       const mapMaxHeight = 220
+  //       const imageScale = Math.min(contentW / img.naturalWidth, mapMaxHeight / img.naturalHeight)
+  //       const renderW = img.naturalWidth * imageScale
+  //       const renderH = img.naturalHeight * imageScale
+  //       pdf.addImage(dataUrl, 'PNG', margin, cursorY, renderW, renderH)
+  //       cursorY += renderH + 16
+
+  //       const uniqueZoneTypes = []
+  //       const seenIds = new Set()
+  //       for (const zone of zones) {
+  //         const zoneType = zone.zoneType
+  //         if (zoneType?.id && !seenIds.has(zoneType.id)) {
+  //           seenIds.add(zoneType.id)
+  //           uniqueZoneTypes.push(zoneType)
+  //         }
+  //       }
+
+  //       pdf.setFont('helvetica', 'bold')
+  //       pdf.setFontSize(13)
+  //       pdf.setTextColor(30, 41, 59)
+  //       pdf.text('Snapshot Overview', margin, cursorY)
+  //       cursorY += 14
+  //       pdf.setFont('helvetica', 'normal')
+  //       pdf.setFontSize(10)
+  //       pdf.text(`Zones: ${zones.length}   Assets: ${assets.length}   Routes: ${lines.length}   Notes: ${annotations.length}`, margin, cursorY)
+  //       cursorY += 12
+
+  //       if (uniqueZoneTypes.length) {
+  //         let legendX = margin
+  //         let legendY = cursorY
+  //         uniqueZoneTypes.forEach((zoneType, index) => {
+  //           const hex = zoneType.color || '#3d8ef8'
+  //           const normalizedHex = /^#([0-9a-f]{6})$/i.test(hex) ? hex : '#3d8ef8'
+  //           const r = parseInt(normalizedHex.slice(1, 3), 16)
+  //           const g = parseInt(normalizedHex.slice(3, 5), 16)
+  //           const b = parseInt(normalizedHex.slice(5, 7), 16)
+  //           if (index > 0 && legendX > pageW - 150) {
+  //             legendX = margin
+  //             legendY += 16
+  //           }
+  //           pdf.setFillColor(r, g, b)
+  //           pdf.rect(legendX, legendY - 8, 10, 10, 'F')
+  //           pdf.setTextColor(55, 65, 81)
+  //           pdf.text(zoneType.name || zoneType.id, legendX + 16, legendY)
+  //           legendX += 120
+  //         })
+  //         cursorY = legendY + 18
+  //       } else {
+  //         cursorY += 6
+  //       }
+
+  //       pdf.addPage()
+  //       cursorY = margin
+
+  //       addSectionTitle('Event Summary')
+  //       addCard('Event Details', [
+  //         `Name: ${toText(eventDetails?.name, 'Untitled Event')}`,
+  //         `Type: ${toText(eventDetails?.eventType, 'general')}`,
+  //         `Location Query: ${toText(eventDetails?.locationQuery)}`,
+  //         `Resolved Address: ${toText(eventDetails?.resolvedLocation?.formattedAddress)}`,
+  //         `Coordinates: ${eventDetails?.resolvedLocation?.lat != null && eventDetails?.resolvedLocation?.lng != null
+  //           ? `${Number(eventDetails.resolvedLocation.lat).toFixed(5)}, ${Number(eventDetails.resolvedLocation.lng).toFixed(5)}`
+  //           : '—'}`,
+  //       ])
+  //       addCard('Plan Totals', [
+  //         `Zones: ${zones.length}`,
+  //         `Assets: ${assets.length}`,
+  //         `Routes / Lines: ${lines.length}`,
+  //         `Annotations: ${annotations.length}`,
+  //         `Floor Plan Added: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
+  //       ])
+
+  //       addSectionTitle('Zone Details')
+  //       if (zones.length) {
+  //         zones.forEach((zone, index) => {
+  //           const centroid = zone.path?.length
+  //             ? zone.path.reduce((acc, point) => ({ lat: acc.lat + point.lat, lng: acc.lng + point.lng }), { lat: 0, lng: 0 })
+  //             : null
+  //           const zoneCenter = centroid
+  //             ? `${(centroid.lat / zone.path.length).toFixed(5)}, ${(centroid.lng / zone.path.length).toFixed(5)}`
+  //             : '—'
+
+  //           addCard(`${index + 1}. ${getZoneName(zone)}`, [
+  //             `Type: ${toText(zone.zoneType?.name, zone.zoneType?.id || 'Zone')}`,
+  //             `Status: ${toText(zone.status, 'planned')}`,
+  //             `Layout: ${toText(zone.layoutType, 'free')}`,
+  //             `Parent: ${toText(zoneLookup.get(zone.parentId))}`,
+  //             `Area: ${formatArea(zone.areaM2, measurementUnit)}`,
+  //             `Perimeter: ${formatDistance(zone.perimeterM, measurementUnit)}`,
+  //             `Capacity: ${zone.capacity != null ? Number(zone.capacity).toLocaleString() : '—'}`,
+  //             `Center: ${zoneCenter}`,
+  //           ])
+  //         })
+  //       } else {
+  //         addCard('No Zones', ['No zones have been created in this plan yet.'])
+  //       }
+
+  //       addSectionTitle('Asset Placement Details')
+  //       if (assets.length) {
+  //         assets.forEach((asset, index) => {
+  //           addCard(`${index + 1}. ${getAssetLabel(asset)}`, [
+  //             `Type: ${toText(asset.assetDef?.category, asset.assetDef?.id || 'asset')}`,
+  //             `Parent Zone: ${toText(zoneLookup.get(asset.parentId))}`,
+  //             `Position: ${Number(asset.lat || 0).toFixed(5)}, ${Number(asset.lng || 0).toFixed(5)}`,
+  //             `Size: ${formatDistance(asset.widthM || asset.assetDef?.defaultWidth || 0, measurementUnit)} × ${formatDistance(asset.lengthM || asset.assetDef?.defaultLength || 0, measurementUnit)}`,
+  //             `Rotation: ${Number(asset.rotationDeg || 0).toFixed(0)}°`,
+  //           ])
+  //         })
+  //       } else {
+  //         addCard('No Assets', ['No assets have been placed on the map yet.'])
+  //       }
+
+  //       addSectionTitle('Routes and Line Details')
+  //       if (lines.length) {
+  //         lines.forEach((line, index) => {
+  //           addCard(`${index + 1}. ${toText(line.label, 'Route')}`, [
+  //             `Route Type: ${toText(line.routeType, 'custom')}`,
+  //             `Parent Zone: ${toText(zoneLookup.get(line.parentId))}`,
+  //             `Length: ${formatDistance(line.lengthM, measurementUnit)}`,
+  //             `Segments: ${Math.max(0, (line.path?.length || 1) - 1)}`,
+  //             `Style: ${toText(line.pattern, 'solid')}`,
+  //             `Weight: ${toText(line.strokeWeight, 4)}`,
+  //             `Color: ${toText(line.color, '#f59e0b')}`,
+  //           ])
+  //         })
+  //       } else {
+  //         addCard('No Routes', ['No route or line data has been added yet.'])
+  //       }
+
+  //       addSectionTitle('Notes and Overlays')
+  //       if (annotations.length) {
+  //         annotations.forEach((annotation, index) => {
+  //           addCard(`${index + 1}. Annotation`, [
+  //             `Text: ${toText(annotation.text, '—')}`,
+  //             `Position: ${Number(annotation.lat || 0).toFixed(5)}, ${Number(annotation.lng || 0).toFixed(5)}`,
+  //           ])
+  //         })
+  //       } else {
+  //         addCard('Annotations', ['No annotation notes have been added.'])
+  //       }
+
+  //       addCard('Floor Plan', [
+  //         `Attached: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
+  //         `Opacity: ${floorPlan?.opacity != null ? `${Math.round(floorPlan.opacity * 100)}%` : '—'}`,
+  //         `Rotation: ${floorPlan?.rotation != null ? `${floorPlan.rotation}°` : '—'}`,
+  //       ])
+
+  //       pdf.save(`eventwiz-detailed-report-${Date.now()}.pdf`)
+  //       return
+  //     }
+  //   } catch (err) {
+  //     console.error('Export failed:', err)
+  //     window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
+  //   }
+  // }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, measurementUnit, selectedZoneType, textStyle, zones])
+const pageW = pdf.internal.pageSize.getWidth()
         const pageH = pdf.internal.pageSize.getHeight()
-        const margin = 28
+        const margin = 24
         const contentW = pageW - margin * 2
-        let cursorY = margin
+        const bodyBottomY = pageH - 34
+        const topStartY = 42
+        let cursorY = topStartY
 
-        const getZoneName = (zone) => {
-          const customLabel = typeof zone?.label === 'string' ? zone.label.trim() : ''
-          return customLabel || zone?.zoneType?.name || 'Zone'
-        }
-        const getAssetLabel = (asset) => asset?.label?.trim() || asset?.assetDef?.label || asset?.assetDef?.name || 'Asset'
-        const toText = (value, fallback = '—') => {
+        const now = new Date()
+        const reportDate = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+        const reportHeader = `EVENTWIZ OPERATIONAL REPORT ${reportDate}`
+
+        const text = (value, fallback = '-') => {
           if (value === null || value === undefined) return fallback
-          const text = String(value).trim()
-          return text || fallback
+          const out = String(value).trim()
+          return out || fallback
         }
-        const zoneLookup = new Map(zones.map(zone => [zone.id, getZoneName(zone)]))
-        const addPageIfNeeded = (needed = 24) => {
-          if (cursorY + needed <= pageH - margin) return
-          pdf.addPage()
-          cursorY = margin
+
+        const toPoint = (lat, lng) => {
+          if (lat == null || lng == null) return '-'
+          return `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`
         }
-        const addSectionTitle = (title) => {
-          addPageIfNeeded(42)
-          if (cursorY > margin) cursorY += 4
+
+        const zoneName = (zone) => text(zone?.label, text(zone?.zoneType?.name, 'Zone'))
+        const assetName = (asset) => text(asset?.label, text(asset?.assetDef?.name, 'Asset'))
+
+        const zoneLookup = new Map(zones.map(zone => [zone.id, zoneName(zone)]))
+        const liveCenter = mapRef.current?.getCenter?.()
+        const centerLat = liveCenter ? liveCenter.lat() : mapViewport?.center?.lat
+        const centerLng = liveCenter ? liveCenter.lng() : mapViewport?.center?.lng
+        const centerText = toPoint(centerLat, centerLng)
+
+        const gridLabel = layers?.grid?.visible ? 'Visible' : 'Hidden'
+        const snapEnabled = zones.some(zone => Boolean(zone.showGrid ?? ['grid', 'rows'].includes(zone.layoutType)))
+        const snapLabel = snapEnabled ? 'Enabled' : 'Disabled'
+        const versionLabel = 'v1'
+        const unitsLabel = measurementUnit === 'feet' ? 'imperial' : 'metric'
+        const mapTypeLabel = text(mapViewMode, 'roadmap')
+
+        const totalCapacity = zones.reduce((sum, zone) => sum + (Number(zone?.capacity) || 0), 0)
+        const totalAreaM2 = zones.reduce((sum, zone) => sum + (Number(zone?.areaM2) || 0), 0)
+
+        const eventLocation = text(eventDetails?.resolvedLocation?.formattedAddress, text(eventDetails?.locationQuery, 'Not set'))
+        const eventDate = text(eventDetails?.date, text(eventDetails?.eventDate, text(eventDetails?.startDate, reportDate)))
+        const layoutType = text(eventDetails?.layoutType, text(eventDetails?.eventType, 'operations'))
+
+        const drawPageHeader = () => {
           pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(16)
-          pdf.setTextColor(17, 24, 39)
-          pdf.text(title, margin, cursorY)
-          pdf.setDrawColor(226, 232, 240)
-          pdf.setLineWidth(1)
-          pdf.line(margin, cursorY + 8, pageW - margin, cursorY + 8)
-          cursorY += 24
-        }
-        const addCard = (title, lines = []) => {
-          const wrapped = lines.flatMap(line => pdf.splitTextToSize(line, contentW - 28))
-          const lineHeight = 15
-          const headerHeight = 22
-          const bodyTop = 38
-          const bottomPadding = 12
-          const cardHeight = Math.max(62, bodyTop + wrapped.length * lineHeight + bottomPadding)
-
-          addPageIfNeeded(cardHeight + 14)
-          pdf.setDrawColor(218, 223, 232)
-          pdf.setFillColor(250, 251, 253)
-          pdf.roundedRect(margin, cursorY, contentW, cardHeight, 8, 8, 'FD')
-
-          pdf.setFont('helvetica', 'bold')
-          pdf.setFontSize(12)
-          pdf.setTextColor(15, 23, 42)
-          pdf.text(title, margin + 14, cursorY + headerHeight)
-
-          pdf.setFont('helvetica', 'normal')
           pdf.setFontSize(10)
-          pdf.setTextColor(71, 85, 105)
-
-          let lineY = cursorY + bodyTop
-          wrapped.forEach(line => {
-            pdf.text(line, margin + 14, lineY)
-            lineY += lineHeight
-          })
-
-          cursorY += cardHeight + 14
+          pdf.setTextColor(17, 24, 39)
+          pdf.text(reportHeader, margin, 22)
+          pdf.setDrawColor(226, 232, 240)
+          pdf.line(margin, 28, pageW - margin, 28)
         }
 
-        pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(22)
-        pdf.setTextColor(15, 23, 42)
-        pdf.text(eventDetails?.name || 'EventWiz Detailed Report', margin, cursorY)
-        cursorY += 18
+        const addPage = () => {
+          pdf.addPage()
+          drawPageHeader()
+          cursorY = topStartY
+        }
 
-        pdf.setFont('helvetica', 'normal')
-        pdf.setFontSize(11)
-        pdf.setTextColor(71, 85, 105)
-        pdf.text(`Generated ${new Date().toLocaleString()} | View ${mapViewMode || 'roadmap'} | Unit ${measurementUnit}`, margin, cursorY)
-        cursorY += 16
+        const ensureSpace = (needed = 24) => {
+          if (cursorY + needed <= bodyBottomY) return
+          addPage()
+        }
 
-        const mapMaxHeight = 220
-        const imageScale = Math.min(contentW / img.naturalWidth, mapMaxHeight / img.naturalHeight)
-        const renderW = img.naturalWidth * imageScale
-        const renderH = img.naturalHeight * imageScale
-        pdf.addImage(dataUrl, 'PNG', margin, cursorY, renderW, renderH)
-        cursorY += renderH + 16
-
-        const uniqueZoneTypes = []
-        const seenIds = new Set()
-        for (const zone of zones) {
-          const zoneType = zone.zoneType
-          if (zoneType?.id && !seenIds.has(zoneType.id)) {
-            seenIds.add(zoneType.id)
-            uniqueZoneTypes.push(zoneType)
+        const sectionTitle = (title, subtitle = '') => {
+          ensureSpace(36)
+          pdf.setFillColor(30, 41, 59)
+          pdf.roundedRect(margin, cursorY, contentW, 24, 6, 6, 'F')
+          pdf.setFont('helvetica', 'bold')
+          pdf.setFontSize(11)
+          pdf.setTextColor(255, 255, 255)
+          pdf.text(title, margin + 10, cursorY + 12)
+          if (subtitle) {
+            pdf.setFont('helvetica', 'normal')
+            pdf.setFontSize(8)
+            pdf.text(subtitle, margin + 10, cursorY + 20)
           }
+          cursorY += 32
         }
 
-        pdf.setFont('helvetica', 'bold')
-        pdf.setFontSize(13)
-        pdf.setTextColor(30, 41, 59)
-        pdf.text('Snapshot Overview', margin, cursorY)
-        cursorY += 14
-        pdf.setFont('helvetica', 'normal')
-        pdf.setFontSize(10)
-        pdf.text(`Zones: ${zones.length}   Assets: ${assets.length}   Routes: ${lines.length}   Notes: ${annotations.length}`, margin, cursorY)
-        cursorY += 12
-
-        if (uniqueZoneTypes.length) {
-          let legendX = margin
-          let legendY = cursorY
-          uniqueZoneTypes.forEach((zoneType, index) => {
-            const hex = zoneType.color || '#3d8ef8'
-            const normalizedHex = /^#([0-9a-f]{6})$/i.test(hex) ? hex : '#3d8ef8'
-            const r = parseInt(normalizedHex.slice(1, 3), 16)
-            const g = parseInt(normalizedHex.slice(3, 5), 16)
-            const b = parseInt(normalizedHex.slice(5, 7), 16)
-            if (index > 0 && legendX > pageW - 150) {
-              legendX = margin
-              legendY += 16
-            }
-            pdf.setFillColor(r, g, b)
-            pdf.rect(legendX, legendY - 8, 10, 10, 'F')
-            pdf.setTextColor(55, 65, 81)
-            pdf.text(zoneType.name || zoneType.id, legendX + 16, legendY)
-            legendX += 120
+        const drawSimpleRows = (rows = []) => {
+          rows.forEach((row) => {
+            const key = text(row?.key)
+            const value = text(row?.value)
+            const wrapped = pdf.splitTextToSize(value, contentW - 130)
+            const h = Math.max(20, 8 + wrapped.length * 8)
+            ensureSpace(h + 2)
+            pdf.setDrawColor(226, 232, 240)
+            pdf.rect(margin, cursorY, contentW, h)
+            pdf.setFont('helvetica', 'bold')
+            pdf.setFontSize(9)
+            pdf.setTextColor(30, 41, 59)
+            pdf.text(key, margin + 8, cursorY + 13)
+            pdf.setFont('helvetica', 'normal')
+            pdf.setTextColor(51, 65, 85)
+            let vy = cursorY + 13
+            wrapped.forEach((line) => {
+              pdf.text(line, margin + 120, vy)
+              vy += 8
+            })
+            cursorY += h
           })
-          cursorY = legendY + 18
-        } else {
           cursorY += 6
         }
 
-        pdf.addPage()
-        cursorY = margin
+        const drawTable = (columns = [], rows = []) => {
+          const totalWeight = columns.reduce((sum, col) => sum + (col.width || 1), 0) || 1
+          const widths = columns.map(col => ((col.width || 1) / totalWeight) * contentW)
+          const lefts = []
+          let x = margin
+          widths.forEach((w) => {
+            lefts.push(x)
+            x += w
+          })
 
-        addSectionTitle('Event Summary')
-        addCard('Event Details', [
-          `Name: ${toText(eventDetails?.name, 'Untitled Event')}`,
-          `Type: ${toText(eventDetails?.eventType, 'general')}`,
-          `Location Query: ${toText(eventDetails?.locationQuery)}`,
-          `Resolved Address: ${toText(eventDetails?.resolvedLocation?.formattedAddress)}`,
-          `Coordinates: ${eventDetails?.resolvedLocation?.lat != null && eventDetails?.resolvedLocation?.lng != null
-            ? `${Number(eventDetails.resolvedLocation.lat).toFixed(5)}, ${Number(eventDetails.resolvedLocation.lng).toFixed(5)}`
-            : '—'}`,
+          const drawHeaderRow = () => {
+            ensureSpace(24)
+            pdf.setFillColor(241, 245, 249)
+            pdf.setDrawColor(203, 213, 225)
+            pdf.rect(margin, cursorY, contentW, 20, 'FD')
+            columns.forEach((col, i) => {
+              pdf.setFont('helvetica', 'bold')
+              pdf.setFontSize(7)
+              pdf.setTextColor(30, 41, 59)
+              pdf.text(text(col.label), lefts[i] + 4, cursorY + 12)
+            })
+            cursorY += 20
+          }
+
+          drawHeaderRow()
+
+          if (!rows.length) {
+            ensureSpace(22)
+            pdf.setDrawColor(226, 232, 240)
+            pdf.rect(margin, cursorY, contentW, 20)
+            pdf.setFont('helvetica', 'italic')
+            pdf.setFontSize(8)
+            pdf.setTextColor(100, 116, 139)
+            pdf.text('No records available.', margin + 6, cursorY + 12)
+            cursorY += 26
+            return
+          }
+
+          rows.forEach((row) => {
+            const wrappedCells = columns.map((col, i) => pdf.splitTextToSize(text(row[col.key]), Math.max(18, widths[i] - 6)))
+            const maxLines = wrappedCells.reduce((maxCount, linesInCell) => Math.max(maxCount, Math.min(linesInCell.length, 4)), 1)
+            const rowHeight = Math.max(18, 6 + maxLines * 8)
+            ensureSpace(rowHeight + 2)
+            if (cursorY + rowHeight > bodyBottomY) drawHeaderRow()
+
+            pdf.setDrawColor(226, 232, 240)
+            pdf.rect(margin, cursorY, contentW, rowHeight)
+            for (let i = 1; i < columns.length; i += 1) {
+              pdf.line(lefts[i], cursorY, lefts[i], cursorY + rowHeight)
+            }
+
+            wrappedCells.forEach((linesInCell, i) => {
+              pdf.setFont('helvetica', 'normal')
+              pdf.setFontSize(7)
+              pdf.setTextColor(30, 41, 59)
+              let ty = cursorY + 10
+              linesInCell.slice(0, 4).forEach((line) => {
+                pdf.text(line, lefts[i] + 3, ty)
+                ty += 7
+              })
+            })
+
+            cursorY += rowHeight
+          })
+
+          cursorY += 8
+        }
+
+        const zoneRows = zones.map((zone, index) => {
+          const routeDistance = lines
+            .filter(line => line?.parentId === zone?.id)
+            .reduce((sum, line) => sum + (Number(line?.lengthM) || 0), 0)
+
+          return {
+            index: String(index + 1),
+            zone: zoneName(zone),
+            type: text(zone?.zoneType?.name, zone?.zoneType?.id || 'zone'),
+            layout: text(zone?.layoutType, 'free'),
+            area: formatArea(zone?.areaM2, measurementUnit),
+            perimeter: formatDistance(zone?.perimeterM, measurementUnit),
+            distance: formatDistance(routeDistance, measurementUnit),
+            radius: zone?.radiusM != null ? formatDistance(zone.radiusM, measurementUnit) : 'N/A',
+            capacity: zone?.capacity != null ? Number(zone.capacity).toLocaleString() : 'N/A',
+            notes: text(zone?.notes, 'No notes'),
+          }
+        })
+
+        const assetRows = assets.map((asset, index) => ({
+          index: String(index + 1),
+          name: assetName(asset),
+          type: text(asset?.assetDef?.name, asset?.assetDef?.id || 'asset'),
+          status: text(asset?.status, 'planned'),
+          supplier: text(asset?.supplier, 'Not set'),
+          footprint: `${formatDistance(asset?.widthM || asset?.assetDef?.defaultWidth || 0, measurementUnit)} x ${formatDistance(asset?.lengthM || asset?.assetDef?.defaultLength || 0, measurementUnit)}`,
+          power: asset?.powerNeed != null && asset?.powerNeed !== '' ? `${asset.powerNeed}A` : 'None',
+          water: asset?.waterNeed != null && asset?.waterNeed !== '' ? `${asset.waterNeed}` : 'None',
+          coordinates: toPoint(asset?.lat, asset?.lng),
+          areaZone: text(zoneLookup.get(asset?.parentId), 'Outside planned zone'),
+        }))
+
+        const assetSummaryMap = new Map()
+        assets.forEach((asset) => {
+          const name = assetName(asset)
+          const normalizedStatus = String(asset?.status || 'planned').toLowerCase()
+          const safeStatus = ['planned', 'confirmed', 'installed', 'removed'].includes(normalizedStatus)
+            ? normalizedStatus
+            : 'planned'
+
+          const current = assetSummaryMap.get(name) || {
+            assetName: name,
+            planned: 0,
+            confirmed: 0,
+            installed: 0,
+            removed: 0,
+            total: 0,
+          }
+
+          current[safeStatus] += 1
+          current.total += 1
+          assetSummaryMap.set(name, current)
+        })
+        const assetSummaryRows = Array.from(assetSummaryMap.values())
+
+        const annotationRows = annotations.length
+          ? annotations.map((annotation, index) => ({
+            index: String(index + 1),
+            note: text(annotation?.text, text(annotation?.label, text(annotation?.notes, 'No note'))),
+            coordinates: toPoint(annotation?.lat, annotation?.lng),
+          }))
+          : [{ index: '-', note: 'No operational notes added', coordinates: '-' }]
+
+        drawPageHeader()
+
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(18)
+        pdf.setTextColor(15, 23, 42)
+        pdf.text(text(eventDetails?.name, 'EventWiz Demo Event'), margin, cursorY)
+        cursorY += 18
+
+        sectionTitle('Event Details')
+        drawSimpleRows([
+          { key: 'Location', value: eventLocation },
+          { key: 'Date', value: eventDate },
+          { key: 'Layout Type', value: layoutType },
+          { key: 'Units', value: unitsLabel },
         ])
-        addCard('Plan Totals', [
-          `Zones: ${zones.length}`,
-          `Assets: ${assets.length}`,
-          `Routes / Lines: ${lines.length}`,
-          `Annotations: ${annotations.length}`,
-          `Floor Plan Added: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
-        ])
 
-        addSectionTitle('Zone Details')
-        if (zones.length) {
-          zones.forEach((zone, index) => {
-            const centroid = zone.path?.length
-              ? zone.path.reduce((acc, point) => ({ lat: acc.lat + point.lat, lng: acc.lng + point.lng }), { lat: 0, lng: 0 })
-              : null
-            const zoneCenter = centroid
-              ? `${(centroid.lat / zone.path.length).toFixed(5)}, ${(centroid.lng / zone.path.length).toFixed(5)}`
-              : '—'
+        sectionTitle('Operational Summary')
+        drawTable(
+          [
+            { key: 'kpi', label: 'KPI', width: 0.36 },
+            { key: 'value', label: 'Value', width: 0.64 },
+          ],
+          [
+            { kpi: 'ZONES', value: String(zones.length) },
+            { kpi: 'ASSETS', value: String(assets.length) },
+            { kpi: 'CAPACITY', value: totalCapacity.toLocaleString() },
+            { kpi: 'AREA', value: `${totalAreaM2.toFixed(1)} m2` },
+          ],
+        )
 
-            addCard(`${index + 1}. ${getZoneName(zone)}`, [
-              `Type: ${toText(zone.zoneType?.name, zone.zoneType?.id || 'Zone')}`,
-              `Status: ${toText(zone.status, 'planned')}`,
-              `Layout: ${toText(zone.layoutType, 'free')}`,
-              `Parent: ${toText(zoneLookup.get(zone.parentId))}`,
-              `Area: ${formatArea(zone.areaM2, measurementUnit)}`,
-              `Perimeter: ${formatDistance(zone.perimeterM, measurementUnit)}`,
-              `Capacity: ${zone.capacity != null ? Number(zone.capacity).toLocaleString() : '—'}`,
-              `Center: ${zoneCenter}`,
-            ])
-          })
-        } else {
-          addCard('No Zones', ['No zones have been created in this plan yet.'])
+        sectionTitle('Site Overview', 'Visual plan view showing the current area, drawn zones, and where operational assets are positioned.')
+        const mapScale = Math.min(contentW / img.naturalWidth, 190 / img.naturalHeight)
+        const mapW = img.naturalWidth * mapScale
+        const mapH = img.naturalHeight * mapScale
+        const mapX = margin + (contentW - mapW) / 2
+        ensureSpace(mapH + 20)
+        pdf.setDrawColor(203, 213, 225)
+        pdf.roundedRect(margin, cursorY, contentW, mapH + 10, 8, 8, 'S')
+        pdf.addImage(dataUrl, 'PNG', mapX, cursorY + 5, mapW, mapH)
+        cursorY += mapH + 18
+
+        addPage()
+        sectionTitle('Layout Details', 'Current map setup, units, grid configuration, and map centre used for this plan.')
+        drawTable(
+          [
+            { key: 'mapType', label: 'Map Type', width: 0.15 },
+            { key: 'units', label: 'Units', width: 0.12 },
+            { key: 'grid', label: 'Grid', width: 0.12 },
+            { key: 'snap', label: 'Snap To Grid', width: 0.16 },
+            { key: 'version', label: 'Version', width: 0.1 },
+            { key: 'center', label: 'Map Centre', width: 0.35 },
+          ],
+          [{ mapType: mapTypeLabel, units: unitsLabel, grid: gridLabel, snap: snapLabel, version: versionLabel, center: centerText }],
+        )
+
+        sectionTitle('Zone Metrics', 'Area, perimeter, radius, route distance, and estimated person capacity for each zone.')
+        drawTable(
+          [
+            { key: 'index', label: '#', width: 0.05 },
+            { key: 'zone', label: 'Zone', width: 0.12 },
+            { key: 'type', label: 'Type', width: 0.11 },
+            { key: 'layout', label: 'Layout', width: 0.08 },
+            { key: 'area', label: 'Area', width: 0.11 },
+            { key: 'perimeter', label: 'Perim.', width: 0.09 },
+            { key: 'distance', label: 'Dist.', width: 0.09 },
+            { key: 'radius', label: 'Radius', width: 0.08 },
+            { key: 'capacity', label: 'Capacity', width: 0.09 },
+            { key: 'notes', label: 'Notes', width: 0.18 },
+          ],
+          zoneRows,
+        )
+
+        sectionTitle('Assets Summary Table', 'Dynamic summary by asset name and status.')
+        drawTable(
+          [
+            { key: 'assetName', label: 'Asset Name', width: 0.4 },
+            { key: 'planned', label: 'Planned', width: 0.12 },
+            { key: 'confirmed', label: 'Confirmed', width: 0.12 },
+            { key: 'installed', label: 'Installed', width: 0.12 },
+            { key: 'removed', label: 'Removed', width: 0.12 },
+            { key: 'total', label: 'Total', width: 0.12 },
+          ],
+          assetSummaryRows,
+        )
+
+        sectionTitle('Placed Assets', 'Placed operational objects with status, footprint, utilities, coordinates, and location references.')
+        drawTable(
+          [
+            { key: 'index', label: '#', width: 0.03 },
+            { key: 'name', label: 'Name', width: 0.09 },
+            { key: 'type', label: 'Type', width: 0.09 },
+            { key: 'status', label: 'Status', width: 0.06 },
+            { key: 'supplier', label: 'Supplier', width: 0.07 },
+            { key: 'footprint', label: 'Footprint', width: 0.08 },
+            { key: 'power', label: 'Power', width: 0.05 },
+            { key: 'water', label: 'Water', width: 0.05 },
+            { key: 'coordinates', label: 'Coordinates', width: 0.1 },
+            { key: 'areaZone', label: 'Area / Zone', width: 0.1 },
+          ],
+          assetRows,
+        )
+
+        sectionTitle('Annotations', 'Operational notes pinned on the layout.')
+        drawTable(
+          [
+            { key: 'index', label: '#', width: 0.08 },
+            { key: 'note', label: 'Note', width: 0.64 },
+            { key: 'coordinates', label: 'Coordinates', width: 0.28 },
+          ],
+          annotationRows,
+        )
+
+        const totalPages = pdf.getNumberOfPages()
+        const footerName = text(eventDetails?.name, 'eventwiz').split('|')[0].trim() || 'eventwiz'
+        for (let page = 1; page <= totalPages; page += 1) {
+          pdf.setPage(page)
+          pdf.setDrawColor(226, 232, 240)
+          pdf.line(margin, pageH - 26, pageW - margin, pageH - 26)
+          pdf.setFont('helvetica', 'normal')
+          pdf.setFontSize(8)
+          pdf.setTextColor(100, 116, 139)
+          pdf.text(`${footerName} | Page ${page} of ${totalPages}`, margin, pageH - 12)
         }
 
-        addSectionTitle('Asset Placement Details')
-        if (assets.length) {
-          assets.forEach((asset, index) => {
-            addCard(`${index + 1}. ${getAssetLabel(asset)}`, [
-              `Type: ${toText(asset.assetDef?.category, asset.assetDef?.id || 'asset')}`,
-              `Parent Zone: ${toText(zoneLookup.get(asset.parentId))}`,
-              `Position: ${Number(asset.lat || 0).toFixed(5)}, ${Number(asset.lng || 0).toFixed(5)}`,
-              `Size: ${formatDistance(asset.widthM || asset.assetDef?.defaultWidth || 0, measurementUnit)} × ${formatDistance(asset.lengthM || asset.assetDef?.defaultLength || 0, measurementUnit)}`,
-              `Rotation: ${Number(asset.rotationDeg || 0).toFixed(0)}°`,
-            ])
-          })
-        } else {
-          addCard('No Assets', ['No assets have been placed on the map yet.'])
-        }
-
-        addSectionTitle('Routes and Line Details')
-        if (lines.length) {
-          lines.forEach((line, index) => {
-            addCard(`${index + 1}. ${toText(line.label, 'Route')}`, [
-              `Route Type: ${toText(line.routeType, 'custom')}`,
-              `Parent Zone: ${toText(zoneLookup.get(line.parentId))}`,
-              `Length: ${formatDistance(line.lengthM, measurementUnit)}`,
-              `Segments: ${Math.max(0, (line.path?.length || 1) - 1)}`,
-              `Style: ${toText(line.pattern, 'solid')}`,
-              `Weight: ${toText(line.strokeWeight, 4)}`,
-              `Color: ${toText(line.color, '#f59e0b')}`,
-            ])
-          })
-        } else {
-          addCard('No Routes', ['No route or line data has been added yet.'])
-        }
-
-        addSectionTitle('Notes and Overlays')
-        if (annotations.length) {
-          annotations.forEach((annotation, index) => {
-            addCard(`${index + 1}. Annotation`, [
-              `Text: ${toText(annotation.text, '—')}`,
-              `Position: ${Number(annotation.lat || 0).toFixed(5)}, ${Number(annotation.lng || 0).toFixed(5)}`,
-            ])
-          })
-        } else {
-          addCard('Annotations', ['No annotation notes have been added.'])
-        }
-
-        addCard('Floor Plan', [
-          `Attached: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
-          `Opacity: ${floorPlan?.opacity != null ? `${Math.round(floorPlan.opacity * 100)}%` : '—'}`,
-          `Rotation: ${floorPlan?.rotation != null ? `${floorPlan.rotation}°` : '—'}`,
-        ])
-
-        pdf.save(`eventwiz-detailed-report-${Date.now()}.pdf`)
+        pdf.save(`eventwiz-operational-report-${Date.now()}.pdf`)
         return
       }
     } catch (err) {
       console.error('Export failed:', err)
       window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
     }
-  }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, measurementUnit, selectedZoneType, textStyle, zones])
+  }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, mapViewport, measurementUnit, selectedZoneType, textStyle, zones])
 
   const updateEventMeta = useCallback((id, patch = null) => {
     if (!id) return
@@ -2515,6 +3126,10 @@ export default function App() {
             onAssetDragEnd={handleAssetDragEnd}
             pendingAssetDef={pendingAssetDef}
             onAssetClickPlace={handleAssetClickPlace}
+            zoneTemplates={zoneTemplates}
+            pendingZoneTemplate={pendingZoneTemplate}
+            onZoneTemplateClickPlace={handleZoneTemplateClickPlace}
+            onDeleteZoneTemplate={handleDeleteZoneTemplate}
             onImportAssets={handleImportAssets}
             onImportProject={handleImportProject}
             onDownloadAssetList={handleDownloadAssetList}
@@ -2574,6 +3189,8 @@ export default function App() {
           onAssetUpdate={handleUpdate}
           pendingAssetDef={pendingAssetDef}
           onPendingAssetClear={() => setPendingAssetDef(null)}
+          pendingZoneTemplate={pendingZoneTemplate}
+          onPendingZoneTemplateClear={() => setPendingZoneTemplate(null)}
           onFloorPlanChange={handleFloorPlanChange}
           onFloorPlacementChange={setPlacingFloor}
           eventDetails={eventDetails}
@@ -2602,6 +3219,8 @@ export default function App() {
             onUpdate={handleUpdate}
             onDuplicate={handleDuplicate}
             onDelete={handleDelete}
+            onSaveZoneTemplate={handleSaveZoneTemplate}
+            zoneTemplates={zoneTemplates}
             onClose={() => setSelectedId(null)}
             measurementUnit={measurementUnit}
             crowdDensityOptions={assetData.crowdDensityOptions}

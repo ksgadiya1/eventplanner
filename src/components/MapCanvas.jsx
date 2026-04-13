@@ -24,6 +24,7 @@ import {
   buildSquarePath,
   getLinePatternIcons,
   getBoundsPreviewPath,
+  instantiateZoneFromTemplate,
 } from '../utils/mapGeometry'
 import { formatDistance, formatArea } from '../utils/units'
 import { AssetOverlay, FloorPlanOverlay, AnnotationOverlay, MeasurementOverlay } from './MapOverlays'
@@ -51,7 +52,15 @@ const CircleDot = React.memo(function CircleDot({ position, scale = 4, fillColor
 const MIN_ASSET_SIZE_M = 0.5
 const MIN_ASSET_SIZE_PX = 28
 const MIN_FLOOR_SIZE_PX = 80
+const MIN_ZONE_SIZE_M = 1
+const MIN_ZONE_SIZE_PX = 24
 const WHAT3WORDS_PATTERN = /^\s*([a-zA-Z]+\.[a-zA-Z]+\.[a-zA-Z]+)\s*$/
+const ZONE_RESIZE_HANDLES = [
+  { key: 'nw', left: '-8px', top: '-8px', cursor: 'nwse-resize', xSign: -1, ySign: -1 },
+  { key: 'ne', right: '-8px', top: '-8px', cursor: 'nesw-resize', xSign: 1, ySign: -1 },
+  { key: 'sw', left: '-8px', bottom: '-8px', cursor: 'nesw-resize', xSign: -1, ySign: 1 },
+  { key: 'se', right: '-8px', bottom: '-8px', cursor: 'nwse-resize', xSign: 1, ySign: 1 },
+]
 
 function getMapLabelStyle(accentColor = '#64748b', compact = false) {
   return {
@@ -109,6 +118,34 @@ function getPathCenter(path = []) {
   return {
     lat: totals.lat / path.length,
     lng: totals.lng / path.length,
+  }
+}
+
+function getRectangleZoneDimensions(zone, google) {
+  const widthM = Number(zone?.widthM)
+  const lengthM = Number(zone?.lengthM)
+  if (Number.isFinite(widthM) && widthM > 0 && Number.isFinite(lengthM) && lengthM > 0) {
+    return { widthM, lengthM }
+  }
+
+  if (!google?.maps?.geometry?.spherical || !Array.isArray(zone?.path) || zone.path.length < 4) {
+    return { widthM: null, lengthM: null }
+  }
+
+  const p0 = zone.path[0]
+  const p1 = zone.path[1]
+  const p2 = zone.path[2]
+  if (!p0 || !p1 || !p2) return { widthM: null, lengthM: null }
+
+  return {
+    widthM: google.maps.geometry.spherical.computeDistanceBetween(
+      new google.maps.LatLng(p0.lat, p0.lng),
+      new google.maps.LatLng(p1.lat, p1.lng)
+    ),
+    lengthM: google.maps.geometry.spherical.computeDistanceBetween(
+      new google.maps.LatLng(p1.lat, p1.lng),
+      new google.maps.LatLng(p2.lat, p2.lng)
+    ),
   }
 }
 
@@ -183,6 +220,8 @@ export default function MapCanvas({
   onAssetUpdate,
   pendingAssetDef,
   onPendingAssetClear,
+  pendingZoneTemplate,
+  onPendingZoneTemplateClear,
   onFloorPlanChange,
   onFloorPlacementChange,
   eventDetails,
@@ -655,18 +694,60 @@ export default function MapCanvas({
         const sin = Math.sin(delta)
 
         const rotatedPath = interaction.startPath.map((point) => {
-          const dx = Number(point.lng || 0) - center.lng
-          const dy = Number(point.lat || 0) - center.lat
-          return {
-            lat: center.lat + (dy * cos - dx * sin),
-            lng: center.lng + (dx * cos + dy * sin),
-          }
+          // const dx = Number(point.lng || 0) - center.lng
+          // const dy = Number(point.lat || 0) - center.lat
+          // return {
+          //   lat: center.lat + (dy * cos - dx * sin),
+          //   lng: center.lng + (dx * cos + dy * sin),
+          // }
+          const screenPoint = latLngToContainerPoint(map, point)
+          if (!screenPoint) return point
+          const localX = screenPoint.x - centerPoint.x
+          const localY = screenPoint.y - centerPoint.y
+          const rotatedX = localX * cos - localY * sin
+          const rotatedY = localX * sin + localY * cos
+          const nextClientX = rect.left + centerPoint.x + rotatedX
+          const nextClientY = rect.top + centerPoint.y + rotatedY
+          const nextLatLng = clientPointToLatLng(map, nextClientX, nextClientY)
+          return nextLatLng ? { lat: nextLatLng.lat(), lng: nextLatLng.lng() } : point
         })
 
         onAssetUpdate({
           ...interaction.object,
           path: rotatedPath,
           rotation: Number(normalizeAngle((interaction.startRotation || 0) + (delta * 180) / Math.PI).toFixed(1)),
+        })
+        return
+      }
+
+      if (interaction.objectType === 'zone' && interaction.type === 'resize') {
+        const dx = event.clientX - interaction.startX
+        const dy = event.clientY - interaction.startY
+        const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotation)
+        const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
+        const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
+        const rawLength = interaction.startLengthPx + (localY * handle.ySign)
+        const widthPx = Math.max(MIN_ZONE_SIZE_PX, rawWidth)
+        const lengthPx = Math.max(MIN_ZONE_SIZE_PX, rawLength)
+        const appliedWidthDelta = widthPx - interaction.startWidthPx
+        const appliedLengthDelta = lengthPx - interaction.startLengthPx
+        const localCenterShift = {
+          x: (appliedWidthDelta / 2) * handle.xSign,
+          y: (appliedLengthDelta / 2) * handle.ySign,
+        }
+        const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
+        const nextCenter = clientPointToLatLng(
+          map,
+          interaction.center.x + screenShift.x,
+          interaction.center.y + screenShift.y
+        )
+        if (!nextCenter) return
+
+        onAssetUpdate({
+          ...interaction.object,
+          center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
+          widthM: Number(Math.max(MIN_ZONE_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2)),
+          lengthM: Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2)),
         })
         return
       }
@@ -875,7 +956,7 @@ export default function MapCanvas({
     cursorLatLngRef.current = { lat: event.latLng.lat(), lng: event.latLng.lng() }
     // Only trigger re-render when we actually need the cursor tooltip
     // (drawing modes, pending asset placement, or measure mode)
-    if (drawMode !== 'select' || pendingAssetDef) {
+    if (drawMode !== 'select' || pendingAssetDef || pendingZoneTemplate) {
       setCursorTick(t => t + 1)
     }
 
@@ -916,7 +997,7 @@ export default function MapCanvas({
       const previewPath = [...measurePointsRef.current, hoverPoint]
       setLineMeasurement(computeLineLength(previewPath, window.google))
     }
-  }, [drawMode, layers.lines, placingFloor, tempFloorPoints])
+  }, [drawMode, layers.lines, pendingAssetDef, pendingZoneTemplate, placingFloor, tempFloorPoints])
 
   const placePendingAssetAtLatLng = useCallback((latLng) => {
     if (!latLng) return false
@@ -943,9 +1024,38 @@ export default function MapCanvas({
     return true
   }, [buildAssetPlacement, drawMode, layers.assets, onAssetDrop, onPendingAssetClear, pendingAssetDef])
 
+  const placePendingZoneTemplateAtLatLng = useCallback((latLng) => {
+    if (!latLng || !window.google) return false
+    if (drawMode !== 'select' || !pendingZoneTemplate || layers.zones?.locked || layers.zones?.visible === false) return false
+
+    const placedZone = instantiateZoneFromTemplate(
+      pendingZoneTemplate,
+      { lat: latLng.lat(), lng: latLng.lng() },
+      window.google
+    )
+
+    if (!placedZone) {
+      window.alert('Could not place this saved area.')
+      onPendingZoneTemplateClear?.()
+      return true
+    }
+
+    const isInsideExistingZone = placedZone.path.some(point => getDeepestParentZone(point, zones, window.google))
+    if (isInsideExistingZone) {
+      window.alert('Saved areas cannot be placed inside another zone.')
+      return true
+    }
+
+    onZoneCreate(placedZone)
+    onPendingZoneTemplateClear?.()
+    return true
+  }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate, zones])
+
   const handleMapClick = useCallback((event) => {
     if (!event.latLng) return
     if (event?.domEvent?.detail > 1) return
+
+    if (placePendingZoneTemplateAtLatLng(event.latLng)) return
 
     if ((drawMode === 'square' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
@@ -981,7 +1091,8 @@ export default function MapCanvas({
           id: `zone_${Date.now()}`,
           type: 'zone',
           shapeType: drawMode,
-          center: drawMode === 'circle' ? currentDraft.center : undefined,
+          // center: drawMode === 'circle' ? currentDraft.center : undefined,
+          center: currentDraft.center,
           radiusM: drawMode === 'circle' ? radiusM : undefined,
           zoneType,
           layoutType: 'free',
@@ -999,6 +1110,8 @@ export default function MapCanvas({
           contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
+          widthM: drawMode === 'square' ? radiusM * 2 : undefined,
+          lengthM: drawMode === 'square' ? radiusM * 2 : undefined,
         })
       }
 
@@ -1119,7 +1232,7 @@ export default function MapCanvas({
     if (drawMode === 'select') {
       onClearSelection?.()
     }
-  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlan, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placingFloor, tempFloorPoints, textStyle])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlan, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, tempFloorPoints, textStyle])
 
   const handleMapDoubleClick = useCallback((event) => {
     if (drawMode === 'select') {
@@ -1322,6 +1435,35 @@ export default function MapCanvas({
       return
     }
 
+    if (object.type === 'zone' && type === 'resize') {
+      if (layers.zones?.locked || object.shapeType !== 'square') return
+      const rect = map.getDiv().getBoundingClientRect()
+      const center = getPathCenter(object.path)
+      const centerPoint = center ? latLngToContainerPoint(map, center.lat, center.lng) : null
+      const zoneSize = getRectangleZoneDimensions(object, window.google)
+      const widthM = Number(zoneSize.widthM)
+      const lengthM = Number(zoneSize.lengthM)
+      const scale = center ? metersPerPixel(center.lat, map.getZoom()) : null
+      if (!center || !centerPoint || !Number.isFinite(widthM) || !Number.isFinite(lengthM) || !Number.isFinite(scale)) return
+
+      interactionRef.current = {
+        objectType: 'zone',
+        type,
+        object,
+        startX: event.clientX,
+        startY: event.clientY,
+        center: { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y },
+        startWidthPx: widthM / scale,
+        startLengthPx: lengthM / scale,
+        startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
+        metersPerPixel: scale,
+        resizeHandle,
+      }
+      document.body.style.userSelect = 'none'
+      onSelect(object)
+      return
+    }
+
     if (object.type === 'annotation') {
       if (layers.annotations?.locked) return
 
@@ -1475,9 +1617,29 @@ export default function MapCanvas({
           // Skip rendering zone if it or any parent zone is hidden
           if (isZoneOrParentHidden(zone)) return null
 
+          const derivedCircleCenter = zone.shapeType === 'circle'
+            ? (zone.center || getPathCenter(zone.path))
+            : null
+          const derivedCircleRadius = zone.shapeType === 'circle'
+            ? (
+              Number(zone.radiusM)
+              || (
+                derivedCircleCenter
+                && Array.isArray(zone.path)
+                && zone.path.length > 0
+                && window.google?.maps?.geometry?.spherical
+                  ? window.google.maps.geometry.spherical.computeDistanceBetween(
+                    new window.google.maps.LatLng(derivedCircleCenter.lat, derivedCircleCenter.lng),
+                    new window.google.maps.LatLng(zone.path[0].lat, zone.path[0].lng)
+                  )
+                  : null
+              )
+            )
+            : null
+
           // Calculate zone center and on-screen size for label positioning
-          const zoneCenter = zone.shapeType === 'circle' && zone.center
-            ? zone.center
+          const zoneCenter = zone.shapeType === 'circle' && derivedCircleCenter
+            ? derivedCircleCenter
             : zone.path && zone.path.length > 0
               ? {
                 lat: zone.path.reduce((sum, p) => sum + p.lat, 0) / zone.path.length,
@@ -1515,6 +1677,12 @@ export default function MapCanvas({
             : null
 
           const zoneDisplayName = getZoneDisplayName(zone)
+          const isRectangularZone = zone.shapeType === 'square'
+          const zoneRectCenter = isRectangularZone ? getPathCenter(zone.path) : null
+          const zoneRectSize = isRectangularZone ? getRectangleZoneDimensions(zone, window.google) : { widthM: null, lengthM: null }
+          const zoneRectScale = isRectangularZone && zoneRectCenter ? metersPerPixel(zoneRectCenter.lat, mapZoom || mapRef.current?.getZoom?.() || 15) : null
+          const zoneRectWidthPx = zoneRectScale && Number.isFinite(zoneRectSize.widthM) ? Math.max(MIN_ZONE_SIZE_PX, zoneRectSize.widthM / zoneRectScale) : null
+          const zoneRectLengthPx = zoneRectScale && Number.isFinite(zoneRectSize.lengthM) ? Math.max(MIN_ZONE_SIZE_PX, zoneRectSize.lengthM / zoneRectScale) : null
           const zoneLabelMaxWidthPx = Math.min(180, Math.max(64, zoneLabelWidthPx - 14))
           const canShowZoneLabel = !!zoneCenter
             && !!zoneDisplayName
@@ -1531,10 +1699,10 @@ export default function MapCanvas({
 
           return (
             <React.Fragment key={zone.id}>
-              {zone.shapeType === 'circle' && zone.center && zone.radiusM ? (
+              {zone.shapeType === 'circle' && derivedCircleCenter && derivedCircleRadius ? (
                 <Circle
-                  center={zone.center}
-                  radius={zone.radiusM}
+                  center={derivedCircleCenter}
+                  radius={derivedCircleRadius}
                   options={{
                     fillColor: zone.fillColor || zone.zoneType?.color || '#3d8ef8',
                     fillOpacity: selectedId === zone.id
@@ -1542,12 +1710,13 @@ export default function MapCanvas({
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
                     strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked,
+                    editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'square',
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
                   }}
                   onClick={(event) => {
+                    if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
                     if (placePendingAssetAtLatLng(event?.latLng)) return
                     if (drawMode === 'erase') {
                       onEraseAsset(zone, 'zone')
@@ -1588,12 +1757,13 @@ export default function MapCanvas({
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
                     strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked,
+                    editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'square',
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
                   }}
                   onClick={(event) => {
+                    if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
                     if (placePendingAssetAtLatLng(event?.latLng)) return
                     if (drawMode === 'erase') {
                       onEraseAsset(zone, 'zone')
@@ -1625,6 +1795,58 @@ export default function MapCanvas({
                     delete zoneOverlayRefs.current[zone.id]
                   }}
                 />
+              )}
+              {isRectangularZone && selectedId === zone.id && drawMode === 'select' && !layers.zones?.locked && zoneRectCenter && zoneRectWidthPx && zoneRectLengthPx && (
+                <OverlayView
+                  position={zoneRectCenter}
+                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                  getPixelPositionOffset={() => ({
+                    x: -(zoneRectWidthPx / 2),
+                    y: -(zoneRectLengthPx / 2),
+                  })}
+                >
+                  <div
+                    style={{
+                      width: `${zoneRectWidthPx}px`,
+                      height: `${zoneRectLengthPx}px`,
+                      position: 'relative',
+                      pointerEvents: 'none',
+                      transformOrigin: 'center center',
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        transform: `rotate(${Number(zone.rotation || 0)}deg)`,
+                        transformOrigin: 'center center',
+                      }}
+                    >
+                      {ZONE_RESIZE_HANDLES.map((handle) => (
+                        <button
+                          key={`${zone.id}-${handle.key}`}
+                          type="button"
+                          onMouseDown={(event) => handleStartInteraction(event, zone, 'resize', handle)}
+                          style={{
+                            position: 'absolute',
+                            width: '16px',
+                            height: '16px',
+                            borderRadius: '4px',
+                            border: '2px solid #38bdf8',
+                            background: '#ffffff',
+                            cursor: handle.cursor,
+                            padding: 0,
+                            pointerEvents: 'auto',
+                            boxShadow: '0 6px 14px rgba(15,23,42,0.18)',
+                            ...handle,
+                          }}
+                          title="Resize zone"
+                          aria-label="Resize zone"
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </OverlayView>
               )}
               {canShowZoneLabel && (
                 <OverlayView
@@ -2194,6 +2416,33 @@ export default function MapCanvas({
         >
           <AssetGlyph asset={pendingAssetDef} size={16} color={pendingAssetDef.iconColor || pendingAssetDef.color} />
           <span>Click map to place {pendingAssetDef.name}</span>
+        </div>
+      )}
+
+      {pendingZoneTemplate && drawMode === 'select' && cursorScreenPositionRef.current && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${cursorScreenPositionRef.current.x + 14}px`,
+            top: `${cursorScreenPositionRef.current.y + 14}px`,
+            background: 'rgba(15,23,42,0.94)',
+            color: '#ffffff',
+            border: `1px solid ${pendingZoneTemplate.strokeColor || pendingZoneTemplate.fillColor || pendingZoneTemplate.zoneType?.color || '#3d8ef8'}`,
+            borderRadius: '12px',
+            padding: '6px 10px',
+            fontSize: '12px',
+            fontWeight: 700,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            pointerEvents: 'none',
+            zIndex: 22,
+            boxShadow: '0 12px 24px rgba(2,6,23,0.35)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ width: '10px', height: '10px', borderRadius: '999px', background: pendingZoneTemplate.strokeColor || pendingZoneTemplate.fillColor || pendingZoneTemplate.zoneType?.color || '#3d8ef8' }} />
+          <span>Click map to place {pendingZoneTemplate.name}</span>
         </div>
       )}
 

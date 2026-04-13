@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { X, Users, Ruler, ChevronLeft, Trash2 } from 'lucide-react'
 import { computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZoneAllowedAssetTypes, getZoneCapacityLabel } from '../data/assets'
 import { ROUTE_TYPE_OPTIONS, getRouteStylePreset } from '../data/routeTypes'
@@ -193,7 +193,7 @@ const styles = {
   },
 }
 
-export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], zoneTypes = [], onUpdate, onClose, onDuplicate, onDelete, measurementUnit = 'meters', crowdDensityOptions = [] }) {
+export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], zoneTypes = [], onUpdate, onClose, onDuplicate, onDelete, onSaveZoneTemplate, zoneTemplates = [], measurementUnit = 'meters', crowdDensityOptions = [] }) {
 
   const selectedId = selected?.id
   const selectedParentId = selected?.parentId
@@ -203,6 +203,34 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const routeTypePreset = isLine ? getRouteStylePreset(selected?.routeType || 'custom') : null
   const isFloor = selected?.type === 'floor'
   const isAnnotation = selected?.type === 'annotation'
+  const [widthInput, setWidthInput] = useState('')
+  const [lengthInput, setLengthInput] = useState('')
+  const [radiusInput, setRadiusInput] = useState('')
+  const [rotationInput, setRotationInput] = useState('')
+
+  useEffect(() => {
+    if (selected?.shapeType === 'square') {
+      setWidthInput(selected.widthM !== undefined && selected.widthM !== null ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : '')
+      setLengthInput(selected.lengthM !== undefined && selected.lengthM !== null ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : '')
+    } else {
+      setWidthInput('')
+      setLengthInput('')
+    }
+  }, [selected?.id, selected?.shapeType, selected?.widthM, selected?.lengthM, measurementUnit])
+
+  useEffect(() => {
+    if (selected?.shapeType === 'circle') {
+      setRadiusInput(selected.radiusM !== undefined && selected.radiusM !== null ? convertDistance(selected.radiusM, measurementUnit).toFixed(2) : '')
+    } else {
+      setRadiusInput('')
+    }
+  }, [measurementUnit, selected?.id, selected?.radiusM, selected?.shapeType])
+
+  useEffect(() => {
+    if (isZone && selected.shapeType !== 'circle') {
+      setRotationInput(Number.isFinite(selected.rotation) ? selected.rotation.toString() : '0')
+    }
+  }, [selected?.id, selected?.rotation, isZone, selected?.shapeType])
   const isCarPark = isZone && (selected?.zoneType?.id === 'car_park' || selected?.zoneType?.name === 'Car Park')
   const subTypes = selected?.zoneType?.subTypes || []
   const childZones = useMemo(() => (isZone ? zones.filter(zone => zone.parentId === selectedId) : []), [isZone, selectedId, zones])
@@ -212,6 +240,16 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const parentZone = useMemo(() => (
     selectedParentId ? zones.find(zone => zone.id === selectedParentId) : null
   ), [selectedParentId, zones])
+  const [replaceTemplateId, setReplaceTemplateId] = useState('')
+
+  useEffect(() => {
+    if (!zoneTemplates.length) {
+      setReplaceTemplateId('')
+      return
+    }
+    if (replaceTemplateId && zoneTemplates.some(template => template.id === replaceTemplateId)) return
+    setReplaceTemplateId(zoneTemplates[0]?.id || '')
+  }, [replaceTemplateId, zoneTemplates])
 
   if (collapsed) {
     return null
@@ -298,7 +336,198 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 
         {isZone && (
           <>
+
+
+{selected.shapeType === 'square' && (
+  <div style={styles.statCard}>
+    <div style={styles.blockTitle}>Zone Size</div>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+      <div style={styles.field}>
+        <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
+        <input
+          type="number"
+          min="0.5"
+          step="0.1"
+          style={styles.input}
+          value={widthInput}
+          onChange={e => {
+            const nextValue = e.target.value
+            setWidthInput(nextValue)
+            const parsed = parseFloat(nextValue)
+            if (!Number.isNaN(parsed)) {
+              onUpdate({ ...selected, widthM: convertToMeters(parsed, measurementUnit) })
+            }
+          }}
+          onBlur={() => {
+            if (widthInput.trim() === '') {
+              setWidthInput(
+                selected.widthM !== undefined && selected.widthM !== null
+                  ? convertDistance(selected.widthM, measurementUnit).toFixed(2)
+                  : ''
+              )
+            }
+          }}
+        />
+      </div>
+
+      <div style={styles.field}>
+        <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
+        <input
+          type="number"
+          min="0.5"
+          step="0.1"
+          style={styles.input}
+          value={lengthInput}
+          onChange={e => {
+            const nextValue = e.target.value
+            setLengthInput(nextValue)
+            const parsed = parseFloat(nextValue)
+            if (!Number.isNaN(parsed)) {
+              onUpdate({ ...selected, lengthM: convertToMeters(parsed, measurementUnit) })
+            }
+          }}
+          onBlur={() => {
+            if (lengthInput.trim() === '') {
+              setLengthInput(
+                selected.lengthM !== undefined && selected.lengthM !== null
+                  ? convertDistance(selected.lengthM, measurementUnit).toFixed(2)
+                  : ''
+              )
+            }
+          }}
+        />
+      </div>
+    </div>
+  </div>
+)}
+
+{selected.shapeType === 'circle' && (
+  <div style={styles.statCard}>
+    <div style={styles.blockTitle}>Zone Size</div>
+    <div style={styles.field}>
+      <label style={styles.label}>Radius ({getUnitLabel(measurementUnit)})</label>
+      <input
+        type="number"
+        min="0.5"
+        step="0.1"
+        style={styles.input}
+        value={radiusInput}
+        onChange={e => {
+          const nextValue = e.target.value
+          setRadiusInput(nextValue)
+          const parsed = parseFloat(nextValue)
+          if (!Number.isNaN(parsed)) {
+            onUpdate({ ...selected, radiusM: convertToMeters(parsed, measurementUnit) })
+          }
+        }}
+        onBlur={() => {
+          if (radiusInput.trim() === '') {
+            setRadiusInput(
+              selected.radiusM !== undefined && selected.radiusM !== null
+                ? convertDistance(selected.radiusM, measurementUnit).toFixed(2)
+                : ''
+            )
+          }
+        }}
+      />
+    </div>
+  </div>
+)}
+
+{/* Zone Rotation (NOT for circle) */}
+{selected.shapeType !== 'circle' && (
+  <div style={styles.statCard}>
+    <div style={styles.blockTitle}>Zone Rotation</div>
+    <div style={styles.field}>
+      <label style={styles.label}>Angle (0°-360°)</label>
+      <input
+        type="number"
+        min="0"
+        max="360"
+        step="1"
+        style={styles.input}
+        value={rotationInput}
+        onChange={e => {
+          const nextValue = e.target.value
+          const parsed = parseFloat(nextValue)
+
+          if (nextValue === '' || nextValue === '-') {
+            setRotationInput(nextValue)
+            return
+          }
+
+          if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
+            setRotationInput(nextValue)
+            onUpdate({ ...selected, rotation: parsed })
+          }
+        }}
+        onBlur={() => {
+          const parsed = parseFloat(rotationInput)
+
+          if (rotationInput === '' || Number.isNaN(parsed)) {
+            setRotationInput(
+              Number.isFinite(selected.rotation)
+                ? selected.rotation.toString()
+                : '0'
+            )
+          } else if (parsed < 0) {
+            setRotationInput('0')
+            onUpdate({ ...selected, rotation: 0 })
+          } else if (parsed > 360) {
+            setRotationInput('360')
+            onUpdate({ ...selected, rotation: 360 })
+          }
+        }}
+      />
+    </div>
+  </div>
+)}
             <div style={styles.sectionDivider} />
+
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Template Actions</div>
+              <button
+                type="button"
+                style={styles.actionBtn}
+                onClick={() => onSaveZoneTemplate?.(selected, { mode: 'new' })}
+              >
+                Save As New
+              </button>
+
+              <div style={{ ...styles.field, marginBottom: '8px' }}>
+                <label style={styles.label}>Replace Existing</label>
+                <select
+                  style={styles.select}
+                  value={replaceTemplateId}
+                  onChange={e => setReplaceTemplateId(e.target.value)}
+                  disabled={!zoneTemplates.length}
+                >
+                  {!zoneTemplates.length && <option value="">No saved templates</option>}
+                  {zoneTemplates.map(template => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                type="button"
+                style={{
+                  ...styles.actionBtn,
+                  marginBottom: 0,
+                  opacity: zoneTemplates.length ? 1 : 0.55,
+                  cursor: zoneTemplates.length ? 'pointer' : 'not-allowed',
+                }}
+                onClick={() => {
+                  if (!zoneTemplates.length || !replaceTemplateId) return
+                  onSaveZoneTemplate?.(selected, { mode: 'replace', templateId: replaceTemplateId })
+                }}
+                disabled={!zoneTemplates.length || !replaceTemplateId}
+              >
+                Replace
+              </button>
+            </div>
 
             <div style={styles.statCard}>
               <div style={styles.blockTitle}>Zone Type</div>
@@ -1130,3 +1359,5 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
     </div>
   )
 }
+
+
