@@ -100,12 +100,4 @@ src/
 - Google Maps Drawing Library
 - Google Maps Geometry Library (for area/perimeter)
 
-## Next Steps (Per Spec)
 
-- [ ] what3words integration
-- [ ] PDF/PNG export
-- [ ] Layout versioning (save multiple layouts per event)
-- [ ] Multi-user collaboration
-- [ ] AI-assisted planning prompts
-- [ ] Supplier/vendor data links
-- [ ] Mobile viewing mode
