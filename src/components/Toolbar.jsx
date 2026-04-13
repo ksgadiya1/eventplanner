@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye } from 'lucide-react'
+import { Pentagon, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye } from 'lucide-react'
 
 const styles = {
   toolbar: {
@@ -106,17 +106,6 @@ const styles = {
     gap: '4px',
     cursor: 'pointer',
     border: '1px solid var(--border)',
-    transition: 'all 0.15s',
-  },
-  unitOption: {
-    padding: '6px 10px',
-    borderRadius: 'var(--radius-sm)',
-    background: 'transparent',
-    color: 'var(--text-secondary)',
-    fontSize: '12px',
-    fontWeight: '500',
-    cursor: 'pointer',
-    border: '1px solid transparent',
     transition: 'all 0.15s',
   },
   exportBtn: {
@@ -277,8 +266,6 @@ export default function Toolbar({
     return () => window.removeEventListener('mousedown', handleOutsideClick)
   }, [])
 
-  const tools = TOOLS
-
   return (
     <div style={styles.toolbar}>
       <div
@@ -307,7 +294,7 @@ export default function Toolbar({
         </>
       ) : (
         <>
-          {tools.map(t => (
+          {TOOLS.map(t => (
             <button
               key={t.id}
               style={{ ...styles.toolBtn, ...(drawMode === t.id ? styles.activeToolBtn : {}) }}

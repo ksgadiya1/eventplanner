@@ -36,7 +36,6 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
     const [isCreating, setIsCreating] = useState(false);
     const [showArchived, setShowArchived] = useState(false);
     const [newName, setNewName] = useState('');
-    const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
     const [newType, setNewType] = useState('festival');
     const [editingEventId, setEditingEventId] = useState(null);
     const [renameDraft, setRenameDraft] = useState('');
@@ -170,16 +169,6 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
                                             value={newName}
                                             onChange={e => setNewName(e.target.value)}
                                             placeholder="Name..."
-                                            style={inputStyle}
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label style={{ fontSize: 12, color: '#64748b', fontWeight: 600, display: 'block', marginBottom: 6 }}>Event Date</label>
-                                        <input
-                                            type="date"
-                                            value={newDate}
-                                            onChange={e => setNewDate(e.target.value)}
                                             style={inputStyle}
                                         />
                                     </div>

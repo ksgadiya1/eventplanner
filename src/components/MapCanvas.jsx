@@ -27,7 +27,6 @@ import {
 } from '../utils/mapGeometry'
 import { formatDistance, formatArea } from '../utils/units'
 import { AssetOverlay, FloorPlanOverlay, AnnotationOverlay, MeasurementOverlay } from './MapOverlays'
-import MapLayers from './MapLayers'
 import GridLayer from './GridLayer'
 import AssetGlyph from './AssetGlyph'
 

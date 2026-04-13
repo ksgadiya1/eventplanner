@@ -1483,52 +1483,6 @@ export default function App() {
     if (selectedId === id) setSelectedId(null)
   }, [annotations, assets, buildCascadeDeleteState, lines, pushHistory, selectedId, zones])
 
-  useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (isViewOnly) return
-
-      const target = event.target
-      const tagName = target?.tagName?.toLowerCase?.()
-      const isTypingField = tagName === 'input' || tagName === 'textarea' || target?.isContentEditable
-      if (isTypingField) return
-
-      const isMac = navigator.platform.toUpperCase().includes('MAC')
-      const ctrl = isMac ? event.metaKey : event.ctrlKey
-
-      if (ctrl && event.key === 'z' && !event.shiftKey) {
-        event.preventDefault()
-        handleUndo()
-        return
-      }
-      if (ctrl && (event.key === 'y' || (event.key === 'z' && event.shiftKey))) {
-        event.preventDefault()
-        handleRedo()
-        return
-      }
-
-      if (!selectedId) return
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setSelectedId(null)
-        return
-      }
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        event.preventDefault()
-        handleDelete()
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleDelete, handleRedo, handleUndo, isViewOnly, selectedId])
-
-  const handleToggleVisibility = useCallback((layerId) => {
-    setLayers(prev => ({
-      ...prev,
-      [layerId]: { ...prev[layerId], visible: !prev[layerId].visible }
-    }))
-  }, [])
-
   const handleToggleLock = useCallback((layerId) => {
     setLayers(prev => ({
       ...prev,
@@ -2148,9 +2102,9 @@ export default function App() {
     const requestBody = {
       name: patch.name ?? currentData.name ?? 'Untitled Event',
       eventType: patch.eventType ?? currentData.eventType ?? currentData.event_type ?? 'festival',
-      center_lat: patch.center_lat ?? currentData.center_lat ?? 51.505,
-      center_lng: patch.center_lng ?? currentData.center_lng ?? -0.09,
-      zoom: normalizePersistedZoom(patch.zoom ?? currentData.zoom ?? 13),
+      center_lat: patch.center_lat ?? currentData.center_lat ?? DEFAULT_MAP_VIEWPORT.center.lat,
+      center_lng: patch.center_lng ?? currentData.center_lng ?? DEFAULT_MAP_VIEWPORT.center.lng,
+      zoom: normalizePersistedZoom(patch.zoom ?? currentData.zoom ?? DEFAULT_MAP_VIEWPORT.zoom),
       measurementUnit: patch.measurementUnit ?? currentData.measurementUnit ?? 'meters',
       layers: patch.layers ?? currentData.layers ?? DEFAULT_LAYERS,
       settings: nextSettings,
@@ -2207,9 +2161,9 @@ export default function App() {
         body: JSON.stringify({
           name: name || 'New Event',
           eventType: eventType || 'festival',
-          center_lat: 51.505,
-          center_lng: -0.09,
-          zoom: 13,
+          center_lat: DEFAULT_MAP_VIEWPORT.center.lat,
+          center_lng: DEFAULT_MAP_VIEWPORT.center.lng,
+          zoom: DEFAULT_MAP_VIEWPORT.zoom,
           archived: false,
         })
       })
@@ -2227,10 +2181,7 @@ export default function App() {
           eventType: eventType || 'festival',
           isArchived: false,
         }))
-        setMapViewport({
-          center: { lat: 51.505, lng: -0.09 },
-          zoom: 13,
-        })
+        setMapViewport(DEFAULT_MAP_VIEWPORT)
         setCurrentView('editor')
       }
     } catch (err) {
@@ -2357,9 +2308,9 @@ export default function App() {
         body: JSON.stringify({
           name: copyName,
           eventType: sourceEvent.eventType || sourceEvent.event_type || 'festival',
-          center_lat: sourceEvent.center_lat ?? 51.505,
-          center_lng: sourceEvent.center_lng ?? -0.09,
-          zoom: sourceEvent.zoom ?? 13,
+          center_lat: sourceEvent.center_lat ?? DEFAULT_MAP_VIEWPORT.center.lat,
+          center_lng: sourceEvent.center_lng ?? DEFAULT_MAP_VIEWPORT.center.lng,
+          zoom: sourceEvent.zoom ?? DEFAULT_MAP_VIEWPORT.zoom,
           archived: false,
         })
       })
@@ -2371,9 +2322,9 @@ export default function App() {
       await persistEventPatch(createData.id, {
         name: copyName,
         eventType: sourceEvent.eventType || sourceEvent.event_type || 'festival',
-        center_lat: sourceEvent.center_lat ?? 51.505,
-        center_lng: sourceEvent.center_lng ?? -0.09,
-        zoom: sourceEvent.zoom ?? 13,
+        center_lat: sourceEvent.center_lat ?? DEFAULT_MAP_VIEWPORT.center.lat,
+        center_lng: sourceEvent.center_lng ?? DEFAULT_MAP_VIEWPORT.center.lng,
+        zoom: sourceEvent.zoom ?? DEFAULT_MAP_VIEWPORT.zoom,
         measurementUnit: sourceEvent.measurementUnit ?? 'meters',
         layers: sourceEvent.layers ?? DEFAULT_LAYERS,
         zones: sourceEvent.zones ?? [],

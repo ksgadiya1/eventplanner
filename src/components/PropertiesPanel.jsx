@@ -339,23 +339,6 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             </div>
 
             <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Zone Status</div>
-              <div style={styles.field}>
-                <label style={styles.label}>Status</label>
-                <select
-                  style={styles.select}
-                  value={selected.status || 'planned'}
-                  onChange={e => onUpdate({ ...selected, status: e.target.value })}
-                >
-                  <option value="planned">Planned</option>
-                  <option value="confirmed">Confirmed</option>
-                  <option value="installed">Installed</option>
-                  <option value="removed">Removed</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={styles.statCard}>
               <div style={styles.blockTitle}>Zone Appearance</div>
 
               {/* Fill Color & Opacity */}
