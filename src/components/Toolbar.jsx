@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye } from 'lucide-react'
+import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye, Ruler } from 'lucide-react'
 
 const styles = {
   toolbar: {
@@ -235,6 +235,7 @@ const TOOLS = [
   { id: 'circle', icon: <Circle size={14} />, label: 'Circle' },
   { id: 'text', icon: <MapPin size={14} />, label: 'Pin' },
   { id: 'route', icon: <Route size={14} />, label: 'Route' },
+  { id: 'measure', icon: <Ruler size={14} />, label: 'Measure' },
 ]
 
 export default function Toolbar({
@@ -464,48 +465,48 @@ export default function Toolbar({
           {isExportMenuOpen && (
             <div style={styles.exportMenu} onClick={(event) => event.stopPropagation()}>
               <div style={styles.exportMenuHeader}>
-                  <div style={styles.exportMenuTitle}>
-                    <Download size={16} /> Export Project
-                  </div>
-                  <button
-                    type="button"
-                    style={styles.exportCloseBtn}
-                    onClick={() => setIsExportMenuOpen(false)}
-                  >
-                    <X size={16} />
-                  </button>
+                <div style={styles.exportMenuTitle}>
+                  <Download size={16} /> Export Project
                 </div>
+                <button
+                  type="button"
+                  style={styles.exportCloseBtn}
+                  onClick={() => setIsExportMenuOpen(false)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
 
-                {[
-                  { id: 'pdf', label: 'Export as PDF', desc: 'Map + full event summary (zones, routes, assets)', icon: <FileText size={18} />, color: '#ef4444' },
-                  { id: 'png', label: 'Export as PNG', desc: 'High-resolution map image', icon: <ImageIcon size={18} />, color: '#f59e0b' },
-                  { id: 'json', label: 'Export as JSON', desc: 'Full project data', icon: <Braces size={18} />, color: '#3b82f6' },
-                ].map(item => (
-                  <button
-                    key={item.id}
-                    style={styles.exportMenuBtn}
-                    onClick={() => {
-                      onExport?.(item.id)
-                      setIsExportMenuOpen(false)
-                    }}
-                    onMouseEnter={(event) => {
-                      event.currentTarget.style.background = 'var(--bg-hover)'
-                      event.currentTarget.style.borderColor = 'var(--border-light)'
-                    }}
-                    onMouseLeave={(event) => {
-                      event.currentTarget.style.background = 'var(--bg-secondary)'
-                      event.currentTarget.style.borderColor = 'var(--border)'
-                    }}
-                  >
-                    <span style={{ ...styles.exportMenuIcon, background: item.color }}>
-                      {item.icon}
-                    </span>
-                    <span style={styles.exportMenuText}>
-                      <span style={styles.exportMenuLabel}>{item.label}</span>
-                      <span style={styles.exportMenuDesc}>{item.desc}</span>
-                    </span>
-                  </button>
-                ))}
+              {[
+                { id: 'pdf', label: 'Export as PDF', desc: 'Map + full event summary (zones, routes, assets)', icon: <FileText size={18} />, color: '#ef4444' },
+                { id: 'png', label: 'Export as PNG', desc: 'High-resolution map image', icon: <ImageIcon size={18} />, color: '#f59e0b' },
+                { id: 'json', label: 'Export as JSON', desc: 'Full project data', icon: <Braces size={18} />, color: '#3b82f6' },
+              ].map(item => (
+                <button
+                  key={item.id}
+                  style={styles.exportMenuBtn}
+                  onClick={() => {
+                    onExport?.(item.id)
+                    setIsExportMenuOpen(false)
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.background = 'var(--bg-hover)'
+                    event.currentTarget.style.borderColor = 'var(--border-light)'
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.background = 'var(--bg-secondary)'
+                    event.currentTarget.style.borderColor = 'var(--border)'
+                  }}
+                >
+                  <span style={{ ...styles.exportMenuIcon, background: item.color }}>
+                    {item.icon}
+                  </span>
+                  <span style={styles.exportMenuText}>
+                    <span style={styles.exportMenuLabel}>{item.label}</span>
+                    <span style={styles.exportMenuDesc}>{item.desc}</span>
+                  </span>
+                </button>
+              ))}
             </div>
           )}
         </div>

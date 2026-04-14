@@ -17,7 +17,8 @@ export function computeArea(polygon, google) {
 
 export function metersPerPixel(lat, zoom) {
   const clampedLat = Math.max(-85, Math.min(85, lat || 0))
-  return 156543.03392 * Math.cos(clampedLat * Math.PI / 180) / Math.pow(2, zoom || 0)
+  // Using the precise Earth radius used by Google Maps (WGS84)
+  return 156543.033928 * Math.cos(clampedLat * Math.PI / 180) / Math.pow(2, zoom || 0)
 }
 
 export function normalizeAngle(angle) {
@@ -59,40 +60,64 @@ export function getAssetSize(asset, zoom) {
   }
 }
 
-export function latLngToContainerPoint(map, lat, lng) {
+export function latLngToContainerPoint(map, lat, lng, passedZoom = null) {
   const projection = map?.getProjection?.()
-  const bounds = map?.getBounds?.()
+  const center = map?.getCenter?.()
+  const mapDiv = map?.getDiv?.()
   const googleApi = window.google
+  if (!projection || !center || !mapDiv || !googleApi) return null
 
-  if (!projection || !bounds || !googleApi) return null
+  let resolvedLat = lat
+  let resolvedLng = lng
+  if (lat && typeof lat === 'object' && Number.isFinite(Number(lat.lat)) && Number.isFinite(Number(lat.lng)) && lng === undefined) {
+    resolvedLat = lat.lat
+    resolvedLng = lat.lng
+  }
+  if (!Number.isFinite(Number(resolvedLat)) || !Number.isFinite(Number(resolvedLng))) return null
 
-  const scale = Math.pow(2, map.getZoom())
-  const worldPoint = projection.fromLatLngToPoint(new googleApi.maps.LatLng(lat, lng))
-  const topRight = projection.fromLatLngToPoint(bounds.getNorthEast())
-  const bottomLeft = projection.fromLatLngToPoint(bounds.getSouthWest())
+  const zoom = passedZoom !== null ? Number(passedZoom) : Number(map.getZoom?.() || 0)
+  if (!Number.isFinite(zoom)) return null
+
+  const scale = Math.pow(2, zoom)
+  const worldPoint = projection.fromLatLngToPoint(new googleApi.maps.LatLng(Number(resolvedLat), Number(resolvedLng)))
+  const centerWorldPoint = projection.fromLatLngToPoint(center)
+  if (!worldPoint || !centerWorldPoint) return null
+
+  const width = mapDiv.clientWidth || mapDiv.offsetWidth || 0
+  const height = mapDiv.clientHeight || mapDiv.offsetHeight || 0
+  if (width <= 0 || height <= 0) return null
 
   return {
-    x: (worldPoint.x - bottomLeft.x) * scale,
-    y: (worldPoint.y - topRight.y) * scale,
+    x: (worldPoint.x - centerWorldPoint.x) * scale + width / 2,
+    y: (worldPoint.y - centerWorldPoint.y) * scale + height / 2,
   }
 }
 
 export function clientPointToLatLng(map, clientX, clientY) {
   const projection = map?.getProjection?.()
-  const bounds = map?.getBounds?.()
+  const center = map?.getCenter?.()
+  const mapDiv = map?.getDiv?.()
   const googleApi = window.google
+  if (!projection || !center || !mapDiv || !googleApi) return null
 
-  if (!projection || !bounds || !googleApi) return null
-
-  const rect = map.getDiv().getBoundingClientRect()
+  const rect = mapDiv.getBoundingClientRect()
   const x = clientX - rect.left
   const y = clientY - rect.top
-  const scale = Math.pow(2, map.getZoom())
-  const topRight = projection.fromLatLngToPoint(bounds.getNorthEast())
-  const bottomLeft = projection.fromLatLngToPoint(bounds.getSouthWest())
+
+  const zoom = Number(map.getZoom?.())
+  if (!Number.isFinite(zoom)) return null
+  const scale = Math.pow(2, zoom)
+
+  const width = mapDiv.clientWidth || mapDiv.offsetWidth || 0
+  const height = mapDiv.clientHeight || mapDiv.offsetHeight || 0
+  if (width <= 0 || height <= 0) return null
+
+  const centerWorldPoint = projection.fromLatLngToPoint(center)
+  if (!centerWorldPoint) return null
+
   const worldPoint = new googleApi.maps.Point(
-    x / scale + bottomLeft.x,
-    y / scale + topRight.y
+    centerWorldPoint.x + (x - width / 2) / scale,
+    centerWorldPoint.y + (y - height / 2) / scale
   )
 
   return projection.fromPointToLatLng(worldPoint)
@@ -595,20 +620,8 @@ export function buildRectanglePath(center, halfWidthM, halfHeightM, google, rota
   })
 }
 
-export function buildSquarePath(center, halfSideM, google) {
-  if (!google || !center) return []
-  const origin = new google.maps.LatLng(center.lat, center.lng)
-  const cornerDistance = halfSideM * Math.sqrt(2)
-  const ne = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 45)
-  const nw = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 135)
-  const sw = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 225)
-  const se = google.maps.geometry.spherical.computeOffset(origin, cornerDistance, 315)
-  return [
-    { lat: ne.lat(), lng: ne.lng() },
-    { lat: nw.lat(), lng: nw.lng() },
-    { lat: sw.lat(), lng: sw.lng() },
-    { lat: se.lat(), lng: se.lng() },
-  ]
+export function buildSquarePath(center, halfSideM, google, rotationDeg = 0) {
+  return buildRectanglePath(center, halfSideM, halfSideM, google, rotationDeg)
 }
 
 export function getPathCenter(path) {
