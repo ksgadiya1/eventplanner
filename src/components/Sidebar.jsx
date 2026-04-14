@@ -451,6 +451,9 @@ export default function Sidebar({
   const [customAssetName, setCustomAssetName] = useState('')
   const [customAssetCategory, setCustomAssetCategory] = useState('Custom Assets')
   const [customAssetType, setCustomAssetType] = useState('icon')
+  const [customAssetWidth, setCustomAssetWidth] = useState('4')
+  const [customAssetLength, setCustomAssetLength] = useState('4')
+  const [customAssetColor, setCustomAssetColor] = useState('#3d8ef8')
   const [expandedFolders, setExpandedFolders] = useState({
     zones: true,
     assets: true,
@@ -976,6 +979,9 @@ export default function Sidebar({
                       name: customAssetName.trim() || file.name.replace(/\.[^.]+$/, ''),
                       category: customAssetCategory.trim() || 'Custom Assets',
                       assetType: customAssetType,
+                      defaultWidth: Number(customAssetWidth) || 4,
+                      defaultLength: Number(customAssetLength) || 4,
+                      color: customAssetColor,
                     })
                     event.target.value = ''
                   }
@@ -1028,6 +1034,41 @@ export default function Sidebar({
                   <option value="utility">Utility</option>
                   <option value="other">Other</option>
                 </select>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.1"
+                    value={customAssetWidth}
+                    onChange={(event) => setCustomAssetWidth(event.target.value)}
+                    placeholder="Width (m)"
+                    style={{ ...styles.floorInput, marginTop: 0 }}
+                  />
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.1"
+                    value={customAssetLength}
+                    onChange={(event) => setCustomAssetLength(event.target.value)}
+                    placeholder="Length (m)"
+                    style={{ ...styles.floorInput, marginTop: 0 }}
+                  />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={customAssetColor}
+                    onChange={(event) => setCustomAssetColor(event.target.value)}
+                    style={{ ...styles.floorInput, padding: '4px', height: '36px', width: '100%' }}
+                  />
+                  <input
+                    type="text"
+                    value={customAssetColor}
+                    onChange={(event) => setCustomAssetColor(event.target.value)}
+                    placeholder="#3d8ef8"
+                    style={{ ...styles.floorInput, marginTop: 0 }}
+                  />
+                </div>
               </div>
               <div style={{ ...styles.floorMeta, marginTop: '6px' }}>
                 Supports JSON layout import plus PNG / JPG / SVG / WebP icon assets.
@@ -1280,6 +1321,17 @@ export default function Sidebar({
                       onChange={e => onToggleLayer('grid', { visible: true, opacity: Number(e.target.value) / 100 })}
                       style={{ width: '100%' }}
                     />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
+                    <input
+                      id="baseSnapToGridToggle"
+                      type="checkbox"
+                      checked={Boolean(layers.grid?.snap)}
+                      onChange={e => onToggleLayer('grid', { visible: true, snap: e.target.checked })}
+                    />
+                    <label htmlFor="baseSnapToGridToggle" style={{ fontSize: '12px', color: 'var(--text)', cursor: 'pointer' }}>
+                      Snap assets to base map grid
+                    </label>
                   </div>
                 </div>
               )}

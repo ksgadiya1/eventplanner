@@ -629,12 +629,109 @@ export function limitGridSlots(slots, maxPoints = 450) {
   return slots.filter((_, index) => index % step === 0)
 }
 
-export function snapToGrid(lat, lng, gridSizeMeters) {
+export function computeVisibleGridSpacing(gridSizeMeters, latitude, zoom, minPixelSize = 14, maxPixelSize = 160) {
+  const rawSize = Math.max(1, Number(gridSizeMeters) || 1)
+  const mpp = metersPerPixel(latitude, zoom || 15)
+  let spacingM = rawSize
+  let cellPx = spacingM / Math.max(0.0001, mpp)
+
+  while (cellPx < minPixelSize) {
+    spacingM *= 2
+    cellPx = spacingM / Math.max(0.0001, mpp)
+    if (spacingM > 5000 || cellPx >= maxPixelSize) break
+  }
+
+  return spacingM
+}
+
+export function computeRenderedGridSpacing(gridSizeMeters, latitude, zoom, bounds, limit = 300) {
+  let spacingM = computeVisibleGridSpacing(gridSizeMeters, latitude, zoom)
+  if (!bounds) return spacingM
+
+  const north = bounds.getNorthEast?.()?.lat?.()
+  const south = bounds.getSouthWest?.()?.lat?.()
+  const east = bounds.getNorthEast?.()?.lng?.()
+  const west = bounds.getSouthWest?.()?.lng?.()
+
+  if (![north, south, east, west].every(Number.isFinite)) {
+    return spacingM
+  }
+
+  const midLat = (north + south) / 2
+  let latStep = spacingM / 111111.0
+  let lngStep = spacingM / (111111.0 * Math.max(0.000001, Math.cos(midLat * Math.PI / 180)))
+  let latCount = Math.ceil((north - south) / latStep)
+  let lngCount = Math.ceil((east - west) / lngStep)
+
+  while (latCount + lngCount > limit) {
+    spacingM *= 2
+    latStep *= 2
+    lngStep *= 2
+    latCount = Math.ceil((north - south) / latStep)
+    lngCount = Math.ceil((east - west) / lngStep)
+    if (spacingM > 5000) break
+  }
+
+  return spacingM
+}
+
+export function snapToGrid(lat, lng, gridSizeMeters, referenceLat = lat, widthM = 0, lengthM = 0) {
   const latStep = gridSizeMeters / 111111.0
-  const lngStep = gridSizeMeters / (111111.0 * Math.cos(lat * Math.PI / 180))
+  const gridLat = Number.isFinite(referenceLat) ? referenceLat : lat
+  const lngStep = gridSizeMeters / (111111.0 * Math.cos(gridLat * Math.PI / 180))
+
+  const halfLatStep = (lengthM / 2) / 111111.0;
+  const halfLngStep = (widthM / 2) / (111111.0 * Math.cos(gridLat * Math.PI / 180));
+
   return {
-    lat: Math.round(lat / latStep) * latStep,
-    lng: Math.round(lng / lngStep) * lngStep,
+    lat: Math.round((lat - halfLatStep) / latStep) * latStep + halfLatStep,
+    lng: Math.round((lng - halfLngStep) / lngStep) * lngStep + halfLngStep,
+  }
+}
+
+export function snapToZoneGrid(lat, lng, zone, zoom, widthM = 0, lengthM = 0) {
+  if (!zone || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { lat, lng }
+  }
+
+  const rawGridSizeMeters = Number(zone.gridSize || zone.rowSpacing || 3)
+  if (!Number.isFinite(rawGridSizeMeters) || rawGridSizeMeters <= 0) {
+    return { lat, lng }
+  }
+
+  const anchor = getZoneAnchor(zone)
+  if (!isValidLatLng(anchor)) {
+    return snapToGrid(lat, lng, rawGridSizeMeters, undefined, widthM, lengthM)
+  }
+
+  const gridSizeMeters = Number.isFinite(zoom)
+    ? computeVisibleGridSpacing(rawGridSizeMeters, anchor.lat, zoom)
+    : rawGridSizeMeters
+
+  const centerLat = anchor.lat
+  const centerLng = anchor.lng
+  const latMetersPerDegree = 111111.0
+  const lngMetersPerDegree = 111111.0 * Math.cos(centerLat * Math.PI / 180)
+
+  const deltaX = (lng - centerLng) * lngMetersPerDegree
+  const deltaY = (lat - centerLat) * latMetersPerDegree
+  const rotationRad = (Number(zone.gridRotation) || 0) * Math.PI / 180
+
+  const alignedX = deltaX * Math.cos(rotationRad) + deltaY * Math.sin(rotationRad)
+  const alignedY = -deltaX * Math.sin(rotationRad) + deltaY * Math.cos(rotationRad)
+
+  const halfWidth = widthM / 2;
+  const halfLength = lengthM / 2;
+
+  const snappedX = Math.round((alignedX - halfWidth) / gridSizeMeters) * gridSizeMeters + halfWidth;
+  const snappedY = Math.round((alignedY - halfLength) / gridSizeMeters) * gridSizeMeters + halfLength;
+
+  const worldX = snappedX * Math.cos(rotationRad) - snappedY * Math.sin(rotationRad)
+  const worldY = snappedX * Math.sin(rotationRad) + snappedY * Math.cos(rotationRad)
+
+  return {
+    lat: centerLat + worldY / latMetersPerDegree,
+    lng: centerLng + worldX / lngMetersPerDegree,
   }
 }
 

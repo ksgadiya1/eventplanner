@@ -193,7 +193,7 @@ const styles = {
   },
 }
 
-export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], zoneTypes = [], onUpdate, onClose, onDuplicate, onDelete, onSaveZoneTemplate, zoneTemplates = [], measurementUnit = 'meters', crowdDensityOptions = [] }) {
+export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], zoneTypes = [], assetCategories = {}, onUpdate, onClose, onDuplicate, onDelete, onSaveZoneTemplate, onSaveCustomAsset, zoneTemplates = [], measurementUnit = 'meters', crowdDensityOptions = [] }) {
 
   const selectedId = selected?.id
   const selectedParentId = selected?.parentId
@@ -207,6 +207,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const [lengthInput, setLengthInput] = useState('')
   const [radiusInput, setRadiusInput] = useState('')
   const [rotationInput, setRotationInput] = useState('')
+  const [replaceCustomAssetId, setReplaceCustomAssetId] = useState('')
 
   useEffect(() => {
     if (selected?.shapeType === 'square') {
@@ -241,6 +242,9 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
     selectedParentId ? zones.find(zone => zone.id === selectedParentId) : null
   ), [selectedParentId, zones])
   const [replaceTemplateId, setReplaceTemplateId] = useState('')
+  const customAssetDefs = useMemo(() => (
+    Object.values(assetCategories || {}).flat().filter(asset => Array.isArray(asset.libraryTags) && asset.libraryTags.includes('custom'))
+  ), [assetCategories])
 
   useEffect(() => {
     if (!zoneTemplates.length) {
@@ -250,6 +254,15 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
     if (replaceTemplateId && zoneTemplates.some(template => template.id === replaceTemplateId)) return
     setReplaceTemplateId(zoneTemplates[0]?.id || '')
   }, [replaceTemplateId, zoneTemplates])
+
+  useEffect(() => {
+    if (!customAssetDefs.length) {
+      setReplaceCustomAssetId('')
+      return
+    }
+    if (replaceCustomAssetId && customAssetDefs.some(asset => asset.id === replaceCustomAssetId)) return
+    setReplaceCustomAssetId(customAssetDefs[0]?.id || '')
+  }, [customAssetDefs, replaceCustomAssetId])
 
   if (collapsed) {
     return null
@@ -746,6 +759,22 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                       Rotates only this zone’s internal grid, not the main map grid.
                     </div>
                   </div>
+
+                  <div style={{ ...styles.field, marginTop: '10px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px', color: 'var(--text-primary)' }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selected.snapToGrid)}
+                        onChange={e => onUpdate({
+                          ...selected,
+                          showGrid: true,
+                          layoutType: 'grid',
+                          snapToGrid: e.target.checked,
+                        })}
+                      />
+                      Snap assets to this zone grid
+                    </label>
+                  </div>
                 </div>
               )}
             </div>
@@ -933,6 +962,48 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
         {isAsset && (
           <>
             <div style={styles.sectionDivider} />
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Custom Asset Actions</div>
+              <button
+                type="button"
+                style={styles.actionBtn}
+                onClick={() => onSaveCustomAsset?.(selected, { mode: 'new' })}
+              >
+                Save As New
+              </button>
+              <div style={{ ...styles.field, marginBottom: '8px' }}>
+                <label style={styles.label}>Replace Existing</label>
+                <select
+                  style={styles.select}
+                  value={replaceCustomAssetId}
+                  onChange={e => setReplaceCustomAssetId(e.target.value)}
+                  disabled={!customAssetDefs.length}
+                >
+                  {!customAssetDefs.length && <option value="">No saved custom assets</option>}
+                  {customAssetDefs.map(asset => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                style={{
+                  ...styles.actionBtn,
+                  marginBottom: 0,
+                  opacity: customAssetDefs.length ? 1 : 0.55,
+                  cursor: customAssetDefs.length ? 'pointer' : 'not-allowed',
+                }}
+                onClick={() => {
+                  if (!customAssetDefs.length || !replaceCustomAssetId) return
+                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId })
+                }}
+                disabled={!customAssetDefs.length || !replaceCustomAssetId}
+              >
+                Replace
+              </button>
+            </div>
             <button
               type="button"
               style={styles.actionBtn}

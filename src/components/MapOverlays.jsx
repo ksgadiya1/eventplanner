@@ -10,6 +10,8 @@ import {
   latLngToContainerPoint,
   normalizeAngle,
   shortestAngleDelta,
+  snapToGrid,
+  snapToZoneGrid,
 } from '../utils/mapGeometry'
 
 const MIN_ASSET_SIZE_PX = 28
@@ -49,7 +51,7 @@ function hexToRgba(hex, opacity) {
   }
 }
 
-export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate }) {
+export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate, gridSnap, gridSize, gridZone, gridReferenceLat }) {
   const ASSET_MIN_ZOOM = 11
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   if (liveZoom < ASSET_MIN_ZOOM) return null
@@ -169,10 +171,21 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
     } else if (ds.type === 'move') {
       const latLng = clientPointToLatLng(m, e.clientX, e.clientY)
       if (!latLng) return
-      onAssetUpdateRef.current({
-        ...assetRef.current,
+      const target = {
         lat: latLng.lat() - (ds.latOffset || 0),
         lng: latLng.lng() - (ds.lngOffset || 0),
+      }
+      const assetWidthM = assetRef.current.widthM ?? assetRef.current.assetDef?.defaultWidth ?? 4;
+      const assetLengthM = assetRef.current.lengthM ?? assetRef.current.assetDef?.defaultLength ?? assetWidthM;
+      const snapped = ds.gridSnap
+        ? ds.gridZone
+          ? snapToZoneGrid(target.lat, target.lng, ds.gridZone, undefined, assetWidthM, assetLengthM)
+          : snapToGrid(target.lat, target.lng, Number(ds.gridSize || 3), ds.gridReferenceLat, assetWidthM, assetLengthM)
+        : target
+      onAssetUpdateRef.current({
+        ...assetRef.current,
+        lat: snapped.lat,
+        lng: snapped.lng,
       })
     }
   }, [])
@@ -254,11 +267,15 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
     dragState.current = {
       type: 'move',
       latOffset,
-      lngOffset
+      lngOffset,
+      gridSnap,
+      gridSize,
+      gridZone,
+      gridReferenceLat,
     }
     startCapture(e.target, e.pointerId)
     onSelect(asset)
-  }, [interactive, locked, drawMode, asset, onSelect, startCapture])
+  }, [interactive, locked, drawMode, asset, onSelect, startCapture, gridSnap, gridSize, gridZone])
 
   return (
     <OverlayView

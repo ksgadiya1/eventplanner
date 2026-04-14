@@ -15,6 +15,7 @@ import {
   extractPathFromOverlay,
   getDeepestParentZone,
   getFloorGeometry,
+  getZoneAnchor,
   clientRectToBounds,
   localDeltaToScreen,
   buildViewportBounds,
@@ -25,6 +26,10 @@ import {
   getLinePatternIcons,
   getBoundsPreviewPath,
   instantiateZoneFromTemplate,
+  snapToGrid,
+  snapToZoneGrid,
+  computeVisibleGridSpacing,
+  computeRenderedGridSpacing,
 } from '../utils/mapGeometry'
 import { formatDistance, formatArea } from '../utils/units'
 import { AssetOverlay, FloorPlanOverlay, AnnotationOverlay, MeasurementOverlay } from './MapOverlays'
@@ -165,19 +170,15 @@ function buildZoneGridOverlay(zone, map, zoom) {
   const width = Math.max(24, Math.ceil(maxX - minX))
   const height = Math.max(24, Math.ceil(maxY - minY))
 
-  const center = getPathCenter(zone.path)
+  const center = getZoneAnchor(zone)
   if (!center) return null
 
   const centerPoint = latLngToContainerPoint(map, center.lat, center.lng)
   if (!centerPoint) return null
 
-  const spacingM = Math.max(1, Number(zone.gridSize || zone.rowSpacing || 3) || 3)
-  let cellPx = spacingM / Math.max(0.0001, metersPerPixel(center.lat, zoom || map.getZoom?.() || 15))
-
-  while (cellPx < 14) {
-    cellPx *= 2
-    if (cellPx > 160) break
-  }
+  const rawSpacingM = Math.max(1, Number(zone.gridSize || zone.rowSpacing || 3) || 3)
+  const visibleSpacingM = computeVisibleGridSpacing(rawSpacingM, center.lat, zoom || map.getZoom?.() || 15)
+  const cellPx = visibleSpacingM / Math.max(0.0001, metersPerPixel(center.lat, zoom || map.getZoom?.() || 15))
 
   const clipPoints = screenPoints
     .map(point => `${(((point.x - minX) / width) * 100).toFixed(2)}% ${(((point.y - minY) / height) * 100).toFixed(2)}%`)
@@ -191,9 +192,12 @@ function buildZoneGridOverlay(zone, map, zoom) {
     width,
     height,
     cellPx: Math.max(12, Math.round(cellPx)),
+    gridSizeM: visibleSpacingM,
     color: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
     opacity: zone.gridOpacity ?? 0.22,
     rotationDeg: Number(zone.gridRotation || 0),
+    anchorX: Math.round(centerPoint.x - minX),
+    anchorY: Math.round(centerPoint.y - minY),
     clipPath: `polygon(${clipPoints})`,
   }
 }
@@ -584,10 +588,41 @@ export default function MapCanvas({
       return null
     }
 
-    return {
+    const placement = {
       ...assetBase,
       parentId: parentZone?.id || null,
     }
+
+    const baseGridSnap = Boolean(layers.grid?.visible && layers.grid?.snap)
+    const baseGridSizeRaw = Number(layers.grid?.size || 3)
+    const baseCenterLat = mapRef.current?.getCenter?.()?.lat?.() ?? assetBase.lat
+    const baseGridSize = computeRenderedGridSpacing(baseGridSizeRaw, baseCenterLat, mapZoom, mapRef.current?.getBounds?.())
+    const zoneGridEnabled = Boolean(parentZone?.showGrid ?? ['grid', 'rows'].includes(parentZone?.layoutType))
+    const zoneGridSnap = Boolean(parentZone?.snapToGrid && zoneGridEnabled)
+    const rawZoneGridSize = Number(parentZone?.gridSize || parentZone?.rowSpacing || 3)
+    const zoneAnchor = parentZone ? getZoneAnchor(parentZone) : null
+    const zoneAnchorLat = zoneAnchor?.lat ?? assetBase.lat
+    const zoneGridSize = computeVisibleGridSpacing(rawZoneGridSize, zoneAnchorLat, mapZoom)
+
+    if (zoneGridSnap && Number.isFinite(assetBase.lat) && Number.isFinite(assetBase.lng)) {
+      const snapped = snapToZoneGrid(assetBase.lat, assetBase.lng, parentZone, mapZoom, assetBase.widthM, assetBase.lengthM)
+      return {
+        ...placement,
+        lat: snapped.lat,
+        lng: snapped.lng,
+      }
+    }
+
+    if (baseGridSnap && Number.isFinite(assetBase.lat) && Number.isFinite(assetBase.lng)) {
+      const snapped = snapToGrid(assetBase.lat, assetBase.lng, baseGridSize, baseCenterLat, assetBase.widthM, assetBase.lengthM)
+      return {
+        ...placement,
+        lat: snapped.lat,
+        lng: snapped.lng,
+      }
+    }
+
+    return placement
   }
 
   const buildAnnotationPlacement = useCallback((annotationBase) => {
@@ -1625,9 +1660,9 @@ export default function MapCanvas({
               Number(zone.radiusM)
               || (
                 derivedCircleCenter
-                && Array.isArray(zone.path)
-                && zone.path.length > 0
-                && window.google?.maps?.geometry?.spherical
+                  && Array.isArray(zone.path)
+                  && zone.path.length > 0
+                  && window.google?.maps?.geometry?.spherical
                   ? window.google.maps.geometry.spherical.computeDistanceBetween(
                     new window.google.maps.LatLng(derivedCircleCenter.lat, derivedCircleCenter.lng),
                     new window.google.maps.LatLng(zone.path[0].lat, zone.path[0].lng)
@@ -1955,9 +1990,9 @@ export default function MapCanvas({
                     opacity: overlay.opacity,
                     backgroundImage: `linear-gradient(to right, ${overlay.color} 1px, transparent 1px), linear-gradient(to bottom, ${overlay.color} 1px, transparent 1px)`,
                     backgroundSize: `${overlay.cellPx}px ${overlay.cellPx}px`,
-                    backgroundPosition: 'center center',
+                    backgroundPosition: `calc(60% + ${overlay.anchorX}px) calc(60% + ${overlay.anchorY}px)`,
                     transform: `rotate(${overlay.rotationDeg || 0}deg)`,
-                    transformOrigin: 'center center',
+                    transformOrigin: `calc(60% + ${overlay.anchorX}px) calc(60% + ${overlay.anchorY}px)`,
                     willChange: 'transform',
                   }}
                 />
@@ -2284,24 +2319,48 @@ export default function MapCanvas({
           color={layers.grid?.color}
         />
 
-        {visibleAssets.map(asset => (
-          <AssetOverlay
-            key={`${asset.id}-${asset.fillColor}-${asset.strokeColor}-${asset.strokeWeight}`}
-            asset={asset}
-            zoom={mapZoom}
-            selected={selectedId === asset.id}
-            locked={!!layers.assets?.locked}
-            interactive={drawMode === 'select' || drawMode === 'erase'}
-            drawMode={drawMode}
-            onEraseAsset={onEraseAsset}
-            onSelect={onSelect}
-            onStartInteraction={handleStartInteraction}
-            onHover={setHoveredItem}
-            map={mapRef.current}
-            onAssetUpdate={onAssetUpdate}
-          />
-        ))
-        }
+        {visibleAssets.map(asset => {
+          const baseGridSnap = Boolean(layers.grid?.visible && layers.grid?.snap)
+          const baseGridSizeRaw = Number(layers.grid?.size || 3)
+          const baseCenterLat = mapRef.current?.getCenter?.()?.lat?.() ?? asset.lat
+          const baseGridSize = computeRenderedGridSpacing(baseGridSizeRaw, baseCenterLat, mapZoom, mapRef.current?.getBounds?.())
+          const parentZone = getDeepestParentZone({ lat: asset.lat, lng: asset.lng }, zones, window.google)
+          const zoneGridEnabled = Boolean(parentZone?.showGrid ?? ['grid', 'rows'].includes(parentZone?.layoutType))
+          const zoneGridSnap = Boolean(parentZone?.snapToGrid && zoneGridEnabled)
+          const zoneGridSizeRaw = Number(parentZone?.gridSize || parentZone?.rowSpacing || 3)
+          const zoneAnchor = parentZone ? getZoneAnchor(parentZone) : null
+          const zoneAnchorLat = zoneAnchor?.lat ?? asset.lat
+          const zoneGridSize = computeVisibleGridSpacing(zoneGridSizeRaw, zoneAnchorLat, mapZoom)
+          const resolvedGridZone = zoneGridSnap && parentZone
+            ? {
+              ...parentZone,
+              gridSize: zoneGridSize,
+              rowSpacing: zoneGridSize,
+            }
+            : null
+
+          return (
+            <AssetOverlay
+              key={`${asset.id}-${asset.fillColor}-${asset.strokeColor}-${asset.strokeWeight}`}
+              asset={asset}
+              zoom={mapZoom}
+              selected={selectedId === asset.id}
+              locked={!!layers.assets?.locked}
+              interactive={drawMode === 'select' || drawMode === 'erase'}
+              drawMode={drawMode}
+              onEraseAsset={onEraseAsset}
+              onSelect={onSelect}
+              onStartInteraction={handleStartInteraction}
+              onHover={setHoveredItem}
+              map={mapRef.current}
+              onAssetUpdate={onAssetUpdate}
+              gridSnap={baseGridSnap || zoneGridSnap}
+              gridSize={baseGridSnap ? baseGridSize : zoneGridSize}
+              gridZone={resolvedGridZone}
+              gridReferenceLat={baseCenterLat}
+            />
+          )
+        })}
 
         {visibleAnnotations.map(annotation => (
           <AnnotationOverlay

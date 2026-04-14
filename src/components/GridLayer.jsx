@@ -1,4 +1,5 @@
 import { useEffect, useRef, memo } from 'react'
+import { computeRenderedGridSpacing, metersPerPixel } from '../utils/mapGeometry'
 
 /**
  * GridLayer renders a lightweight canvas-based grid overlay on the map.
@@ -55,25 +56,18 @@ function GridLayer({ map, visible, size = 3, opacity = 0.15, color = '#3d8ef8' }
       const zoom = map.getZoom()
       if (!bounds || typeof zoom !== 'number') return
 
-      // Compute cell size in pixels and adapt when zoomed out so the grid remains visible.
       const centerLat = (bounds.getNorthEast().lat() + bounds.getSouthWest().lat()) / 2
-      const mpp = 156543.03392 * Math.cos(centerLat * Math.PI / 180) / Math.pow(2, zoom)
-      let cellM = Math.max(1, Number(rawCellM) || 10)
-      let cellPx = cellM / mpp
-
-      while (cellPx < 14) {
-        cellM *= 2
-        cellPx = cellM / mpp
-        if (cellM > 5000) break
-      }
+      const cellM = computeRenderedGridSpacing(Number(rawCellM) || 10, centerLat, zoom, bounds)
+      const mpp = metersPerPixel(centerLat, zoom)
+      const cellPx = cellM / Math.max(0.0001, mpp)
 
       const north = bounds.getNorthEast().lat()
       const south = bounds.getSouthWest().lat()
       const east = bounds.getNorthEast().lng()
       const west = bounds.getSouthWest().lng()
       const midLat = (north + south) / 2
-      let latStep = cellM / 111111.0
-      let lngStep = cellM / (111111.0 * Math.cos(midLat * Math.PI / 180))
+      const latStep = cellM / 111111.0
+      const lngStep = cellM / (111111.0 * Math.cos(midLat * Math.PI / 180))
 
       // Pixel coordinates of viewport corners (div-pixel space)
       const sw = projection.fromLatLngToDivPixel(new window.google.maps.LatLng(south, west))
@@ -84,17 +78,6 @@ function GridLayer({ map, visible, size = 3, opacity = 0.15, color = '#3d8ef8' }
       const top = Math.floor(Math.min(sw.y, ne.y))
       const width = Math.ceil(Math.abs(ne.x - sw.x))
       const height = Math.ceil(Math.abs(ne.y - sw.y))
-
-      // Limit total lines to prevent hanging, but prefer coarsening instead of disappearing.
-      let latCount = Math.ceil((north - south) / latStep)
-      let lngCount = Math.ceil((east - west) / lngStep)
-      while (latCount + lngCount > 300) {
-        latStep *= 2
-        lngStep *= 2
-        latCount = Math.ceil((north - south) / latStep)
-        lngCount = Math.ceil((east - west) / lngStep)
-        if (latStep > 10 || lngStep > 10) break
-      }
 
       // Size and position the canvas to exactly cover the viewport
       canvas.width = width

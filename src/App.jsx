@@ -147,7 +147,7 @@ const DEFAULT_LAYERS = {
   annotations: { visible: true, locked: false },
   lines: { visible: true, locked: false },
   floor: { visible: true, locked: false },
-  grid: { visible: false, locked: false },
+  grid: { visible: false, locked: false, snap: false },
 }
 
 function getExportStatusColor(status) {
@@ -942,6 +942,43 @@ export default function App() {
     window.alert(`${importedAssets.length} asset(s) imported successfully.`)
   }, [pushHistory, zones])
 
+  const handleSaveCustomAsset = useCallback((asset, options = {}) => {
+    const categoryLabel = String(asset?.assetDef?.category || asset?.category || 'Custom Assets').trim() || 'Custom Assets'
+    const baseName = String(asset?.label || asset?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
+    const assetType = String(asset?.assetDef?.assetType || asset?.assetType || 'custom').trim() || 'custom'
+
+    const assetDefinition = {
+      id: options.mode === 'replace' && options.assetId ? options.assetId : `custom_asset_${Date.now()}`,
+      name: baseName,
+      category: categoryLabel,
+      assetType,
+      icon: asset?.assetDef?.icon,
+      iconType: asset?.assetDef?.iconType || 'icon',
+      imageUrl: asset?.assetDef?.imageUrl,
+      color: asset?.assetDef?.color || asset?.fillColor || '#3d8ef8',
+      iconColor: asset?.assetDef?.iconColor || asset?.assetDef?.color || asset?.fillColor || '#3d8ef8',
+      defaultWidth: Number(asset?.widthM ?? asset?.assetDef?.defaultWidth ?? 4),
+      defaultLength: Number(asset?.lengthM ?? asset?.assetDef?.defaultLength ?? asset?.widthM ?? 4),
+      keywords: [assetType, 'custom', categoryLabel.toLowerCase(), asset?.assetDef?.name, asset?.label]
+        .filter(Boolean)
+        .map(value => String(value).toLowerCase()),
+      libraryTags: ['custom'],
+    }
+
+    setAssetData(prev => {
+      const nextCategories = mergeAssetCategoryMaps(prev.categories, {
+        [categoryLabel]: [assetDefinition],
+      })
+      writeCustomAssetCategories(nextCategories)
+      return { ...prev, categories: nextCategories }
+    })
+
+    window.alert(options.mode === 'replace'
+      ? `Custom asset "${baseName}" updated in ${categoryLabel}.`
+      : `Custom asset "${baseName}" added to ${categoryLabel}.`
+    )
+  }, [])
+
   const handleImportProject = useCallback((payload) => {
     const isSupportedPayload = payload && typeof payload === 'object' && (
       'zones' in payload
@@ -1305,7 +1342,7 @@ export default function App() {
         const oldRotation = Number(previousZone?.rotation || 0)
         const newRotation = Number(updated.rotation || 0)
         const deltaRotation = newRotation - oldRotation
-        const radians = (deltaRotation * Math.PI) / 180
+        const radians = -(deltaRotation * Math.PI) / 180
         const cos = Math.cos(radians)
         const sin = Math.sin(radians)
 
@@ -1329,7 +1366,7 @@ export default function App() {
         const newRotation = Number(updated.rotation || 0)
 
         if (center && nextZoneRecord.widthM && nextZoneRecord.lengthM && window.google?.maps?.geometry?.spherical) {
-          const rotatedPath = buildRectanglePath(center, nextZoneRecord.widthM / 2, nextZoneRecord.lengthM / 2, window.google, newRotation)
+          const rotatedPath = buildRectanglePath(center, nextZoneRecord.widthM / 2, nextZoneRecord.lengthM / 2, window.google, -newRotation)
           if (rotatedPath.length >= 3) {
             const metrics = computePolygonMetrics(rotatedPath, window.google)
             nextZoneRecord = {
@@ -1357,6 +1394,13 @@ export default function App() {
         setLayers(prev => ({
           ...prev,
           grid: { ...prev.grid, visible: false },
+        }))
+      }
+
+      if (nextZoneRecord.snapToGrid) {
+        setLayers(prev => ({
+          ...prev,
+          grid: { ...prev.grid, snap: false },
         }))
       }
 
@@ -1679,6 +1723,12 @@ export default function App() {
         nextLayer = { ...layer, ...options }
       } else {
         nextLayer = { ...layer, visible: !layer.visible }
+      }
+
+      if (layerId === 'grid' && options?.snap) {
+        setZones(prevZones => prevZones.map(zone => (
+          zone.snapToGrid ? { ...zone, snapToGrid: false } : zone
+        )))
       }
 
       if (nextLayer.visible === false) {
@@ -3220,6 +3270,8 @@ const pageW = pdf.internal.pageSize.getWidth()
             onDuplicate={handleDuplicate}
             onDelete={handleDelete}
             onSaveZoneTemplate={handleSaveZoneTemplate}
+            onSaveCustomAsset={handleSaveCustomAsset}
+            assetCategories={assetData.categories}
             zoneTemplates={zoneTemplates}
             onClose={() => setSelectedId(null)}
             measurementUnit={measurementUnit}
