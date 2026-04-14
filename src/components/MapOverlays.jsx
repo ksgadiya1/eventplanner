@@ -10,6 +10,7 @@ import {
   latLngToContainerPoint,
   normalizeAngle,
   shortestAngleDelta,
+  buildRectanglePath,
 } from '../utils/mapGeometry'
 
 const MIN_ASSET_SIZE_PX = 28
@@ -54,22 +55,19 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   if (liveZoom < ASSET_MIN_ZOOM) return null
 
-  const baseZoom = 18
-  const { widthPx, lengthPx, metersPerPixel: mpp } = getAssetSize(asset, liveZoom)
-  const { widthPx: baseWidthPx, lengthPx: baseLengthPx } = getAssetSize(asset, baseZoom)
-  const scale = Math.max(0.01, widthPx / Math.max(1, baseWidthPx))
+  const { widthPx, lengthPx, metersPerPixel: mpp, widthM, lengthM } = getAssetSize(asset, liveZoom)
+
   const rotationDeg = asset.rotationDeg || 0
   const fillColor = asset.fillColor || asset.assetDef?.color || '#3d8ef8'
   const fillOpacity = asset.fillOpacity !== undefined ? asset.fillOpacity : 0.85
   const strokeColor = asset.strokeColor || asset.assetDef?.color || '#3d8ef8'
   const strokeWeight = asset.strokeWeight || 2
   const color = asset.assetDef?.color || '#3d8ef8'
-  const baseAssetPx = Math.max(20, Math.min(baseWidthPx, baseLengthPx))
   const renderedShortSidePx = Math.max(18, Math.min(widthPx, lengthPx))
   const assetBorderWidth = Math.max(1, Math.min(2, Number(strokeWeight || 2)))
   const selectedBorderWidth = Math.max(1.5, Math.min(2.5, assetBorderWidth + 0.5))
   const assetCornerRadius = Math.max(6, Math.min(10, Math.round(renderedShortSidePx * 0.14)))
-  const statusDotSize = Math.max(8, Math.min(16, Math.round(baseAssetPx * 0.24)))
+  const statusDotSize = Math.max(8, Math.min(16, Math.round(renderedShortSidePx * 0.24)))
   const statusDotInset = Math.max(2, Math.round(statusDotSize * 0.24))
   const statusDotBorder = Math.max(1.5, Math.round(statusDotSize * 0.16))
   const useMarkerMode = !selected && liveZoom <= 13.5 && !!window.google?.maps
@@ -265,18 +263,16 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
       position={{ lat: asset.lat, lng: asset.lng }}
       mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
       getPixelPositionOffset={() => ({
-        x: -(baseWidthPx / 2),
-        y: -(baseLengthPx / 2),
+        x: -(widthPx / 2),
+        y: -(lengthPx / 2),
       })}
     >
       <div style={{
-        width: `${baseWidthPx}px`,
-        height: `${baseLengthPx}px`,
+        width: `${widthPx}px`,
+        height: `${lengthPx}px`,
         position: 'relative',
         pointerEvents: 'auto',
         zIndex: 12,
-        transform: `scale(${scale})`,
-        transformOrigin: 'center center',
       }}>
         <div style={{ position: 'absolute', inset: 0, transform: `translateZ(0) rotate(${rotationDeg}deg)`, transformOrigin: 'center center', transition: 'transform 120ms linear', willChange: 'transform' }}>
           <button
@@ -316,23 +312,23 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
           >
             <div
               style={{
-                width: `${Math.min(baseWidthPx, baseLengthPx) * 0.56}px`,
-                height: `${Math.min(baseWidthPx, baseLengthPx) * 0.56}px`,
+                width: `${Math.min(widthPx, lengthPx) * 0.56}px`,
+                height: `${Math.min(widthPx, lengthPx) * 0.56}px`,
                 borderRadius: '999px',
                 background: '#ffffff',
                 border: `2px solid ${color}`,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: `${Math.max(8, Math.min(baseWidthPx, baseLengthPx) * 0.28)}px`,
+                fontSize: `${Math.max(8, Math.min(widthPx, lengthPx) * 0.28)}px`,
                 boxShadow: '0 8px 24px rgba(15, 23, 42, 0.18)',
                 pointerEvents: 'none',
               }}
             >
-              {baseWidthPx > 6 && (
+              {widthPx > 6 && (
                 <AssetGlyph
                   asset={asset.assetDef}
-                  size={Math.max(8, Math.min(baseWidthPx, baseLengthPx) * 0.28)}
+                  size={Math.max(8, Math.min(widthPx, lengthPx) * 0.28)}
                   color={asset.assetDef?.iconColor || color}
                 />
               )}
@@ -341,71 +337,135 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
 
           {selected && interactive && !locked && (
             <>
-              <div style={{ position: 'absolute', top: '-34px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)' }} />
-              <button
-                type="button"
-                onPointerDown={handleRotatePointerDown}
-                style={{
-                  position: 'absolute',
-                  top: '-52px',
-                  left: '50%',
-                  width: '26px',
-                  height: '26px',
-                  borderRadius: '999px',
-                  border: '2px solid #38bdf8',
-                  background: '#ffffff',
-                  color: '#0f172a',
-                  transform: 'translateX(-50%)',
-                  fontSize: '14px',
-                  fontWeight: 700,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'grab',
-                  padding: 0,
-                  touchAction: 'none',
-                }}
-              >
-                R
-              </button>
-              {resizeHandles.map((handle) => (
-                <button
-                  key={handle.key}
-                  type="button"
-                  onPointerDown={(e) => handleResizePointerDown(e, handle)}
-                  style={{
-                    position: 'absolute',
-                    width: '14px',
-                    height: '14px',
-                    borderRadius: '3px',
-                    border: '2px solid #38bdf8',
-                    background: '#ffffff',
-                    cursor: handle.cursor,
-                    padding: 0,
-                    touchAction: 'none',
-                    ...handle,
-                  }}
-                />
-              ))}
+              {/* Rotation Handle - Anchored relative to asset center with LatLng offset for stability */}
+              {(() => {
+                if (!window.google) return null
+                const origin = new window.google.maps.LatLng(asset.lat, asset.lng)
+                const centerRotation = rotationDeg
+                const renderedLengthPx = Math.max(1, lengthPx)
+                const rotateHandleOffsetPx = (renderedLengthPx / 2) + 22
+                const offsetMeters = rotateHandleOffsetPx * (mpp || 0.5)
+                const rotationPos = window.google.maps.geometry.spherical.computeOffset(origin, Math.max(2, offsetMeters), centerRotation)
+
+                return (
+                  <OverlayView
+                    position={{ lat: rotationPos.lat(), lng: rotationPos.lng() }}
+                    mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                    getPixelPositionOffset={() => ({ x: -13, y: -13 })}
+                  >
+                    <div style={{ width: '26px', height: '26px', position: 'relative' }}>
+                      <button
+                        type="button"
+                        onPointerDown={handleRotatePointerDown}
+                        style={{
+                          width: '26px',
+                          height: '26px',
+                          borderRadius: '999px',
+                          border: '2px solid #38bdf8',
+                          background: '#ffffff',
+                          color: '#0f172a',
+                          fontSize: '14px',
+                          fontWeight: 700,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'grab',
+                          padding: 0,
+                          touchAction: 'none',
+                          boxShadow: '0 4px 10px rgba(15,23,42,0.18)',
+                        }}
+                      >
+                        R
+                      </button>
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: '50%',
+                          top: '26px',
+                          width: '2px',
+                          height: '14px',
+                          transform: 'translateX(-50%)',
+                          background: '#38bdf8',
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    </div>
+                  </OverlayView>
+                )
+              })()}
+
+              {/* Resize Handles - Anchored directly to corner LatLngs */}
+              {(() => {
+                if (!window.google) return null
+                // Keep handles anchored to the exact rendered rectangle footprint,
+                // including min on-screen size at lower zoom levels.
+                const corners = buildRectanglePath(
+                  { lat: asset.lat, lng: asset.lng },
+                  (widthPx * mpp) / 2,
+                  (lengthPx * mpp) / 2,
+                  window.google,
+                  rotationDeg
+                )
+                if (corners.length < 4) return null
+
+                // ne:0, nw:1, sw:2, se:3 based on buildRectanglePath order
+                return RESIZE_HANDLES.map((handle) => {
+                  let pos = null
+                  if (handle.key === 'ne') pos = corners[0]
+                  else if (handle.key === 'nw') pos = corners[1]
+                  else if (handle.key === 'sw') pos = corners[2]
+                  else if (handle.key === 'se') pos = corners[3]
+
+                  if (!pos) return null
+
+                  return (
+                    <OverlayView
+                      key={handle.key}
+                      position={pos}
+                      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                      getPixelPositionOffset={() => ({ x: -7, y: -7 })}
+                    >
+                      <button
+                        type="button"
+                        onPointerDown={(e) => handleResizePointerDown(e, handle)}
+                        style={{
+                          width: '14px',
+                          height: '14px',
+                          borderRadius: '3px',
+                          border: '2px solid #38bdf8',
+                          background: '#ffffff',
+                          cursor: handle.cursor,
+                          padding: 0,
+                          touchAction: 'none',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                          display: 'block',
+                        }}
+                      />
+                    </OverlayView>
+                  )
+                })
+              })()}
             </>
           )}
 
           {/* Status indicator dot — scales with zoom/asset size like native map markers */}
-          <div
-            style={{
-              position: 'absolute',
-              bottom: `${statusDotInset}px`,
-              right: `${statusDotInset}px`,
-              width: `${statusDotSize}px`,
-              height: `${statusDotSize}px`,
-              borderRadius: '50%',
-              backgroundColor: getStatusColor(asset.status || 'planned'),
-              border: `${statusDotBorder}px solid white`,
-              boxShadow: `0 1px ${Math.max(3, Math.round(statusDotSize * 0.32))}px rgba(0,0,0,0.3)`,
-              pointerEvents: 'none',
-              zIndex: 13,
-            }}
-          />
+          {!selected && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: `${statusDotInset}px`,
+                right: `${statusDotInset}px`,
+                width: `${statusDotSize}px`,
+                height: `${statusDotSize}px`,
+                borderRadius: '50%',
+                backgroundColor: getStatusColor(asset.status || 'planned'),
+                border: `${statusDotBorder}px solid white`,
+                boxShadow: `0 1px ${Math.max(3, Math.round(statusDotSize * 0.32))}px rgba(0,0,0,0.3)`,
+                pointerEvents: 'none',
+                zIndex: 13,
+              }}
+            />
+          )}
         </div>
       </div>
     </OverlayView>
@@ -447,73 +507,54 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
           <img
             src={floorPlan.imageUrl}
             alt="Floor plan"
+            onPointerDown={(e) => onStartInteraction(e, floorPlan, 'move')}
             style={{
               width: '100%',
               height: '100%',
               objectFit: 'fill',
               display: 'block',
               opacity: floorPlan.opacity ?? 0.7,
-              userSelect: 'none',
-              pointerEvents: 'none',
-            }}
-          />
-
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
-            }}
-            onMouseDown={(event) => {
-              if (!selected || locked) return
-              onStartInteraction(event, floorPlan, 'move')
-            }}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              padding: 0,
-              border: selected ? '2px solid #38bdf8' : '2px solid transparent',
-              background: 'transparent',
-              cursor: selected && !locked ? 'move' : 'pointer',
-              borderRadius: '14px',
-              overflow: 'hidden',
-              boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.92)' : 'none',
+              border: selected ? '2px solid #38bdf8' : 'none',
+              boxSizing: 'border-box',
               pointerEvents: 'auto',
+              cursor: locked ? 'default' : 'grab',
+              userSelect: 'none',
+              WebkitUserSelect: 'none',
             }}
           />
+        </div>
+      </div>
 
-          {selected && !locked && (
-            <>
-              <div style={{ position: 'absolute', top: '-32px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)', pointerEvents: 'auto' }} />
-              <button
-                type="button"
-                onMouseDown={(event) => onStartInteraction(event, floorPlan, 'rotate')}
-                style={{
-                  position: 'absolute',
-                  top: '-50px',
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  width: '26px',
-                  height: '26px',
-                  borderRadius: '999px',
-                  border: '2px solid #38bdf8',
-                  background: '#ffffff',
-                  cursor: 'grab',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  padding: 0,
-                  pointerEvents: 'auto',
-                }}
+      {selected && !locked && (
+        <>
+          {/* Floor Plan Resize Handles - Anchored directly to corners for stability */}
+          {(() => {
+            if (!window.google) return null
+            const corners = buildRectanglePath(
+              { lat: geometry.centerLat, lng: geometry.centerLng },
+              geometry.widthM / 2,
+              geometry.heightM / 2,
+              window.google,
+              rotation
+            )
+            if (corners.length < 4) return null
+
+            return [
+              { key: 'ne', pos: corners[0], cursor: 'nesw-resize' },
+              { key: 'nw', pos: corners[1], cursor: 'nwse-resize' },
+              { key: 'sw', pos: corners[2], cursor: 'nesw-resize' },
+              { key: 'se', pos: corners[3], cursor: 'nwse-resize' }
+            ].map((handle) => (
+              <OverlayView
+                key={handle.key}
+                position={handle.pos}
+                mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                getPixelPositionOffset={() => ({ x: -8, y: -8 })}
               >
-                R
-              </button>
-              {resizeHandles.map((handle) => (
                 <button
-                  key={handle.key}
                   type="button"
-                  onMouseDown={(event) => onStartInteraction(event, floorPlan, 'resize', handle)}
+                  onPointerDown={(e) => onStartInteraction(e, floorPlan, 'resize', handle)}
                   style={{
-                    position: 'absolute',
                     width: '16px',
                     height: '16px',
                     borderRadius: '4px',
@@ -521,15 +562,60 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
                     background: '#ffffff',
                     cursor: handle.cursor,
                     padding: 0,
-                    pointerEvents: 'auto',
-                    ...handle,
+                    touchAction: 'none',
+                    boxShadow: '0 4px 10px rgba(15,23,42,0.18)',
+                    display: 'block',
                   }}
                 />
-              ))}
-            </>
-          )}
-        </div>
-      </div>
+              </OverlayView>
+            ))
+          })()}
+
+          {/* Floor Plan Rotation Handle */}
+          {(() => {
+            if (!window.google) return null
+            const origin = new window.google.maps.LatLng(geometry.centerLat, geometry.centerLng)
+            const rotationDeg = rotation
+            const offsetMeters = 50 * (metersPerPixel(geometry.centerLat, liveZoom) || 0.5)
+            const rotationPos = window.google.maps.geometry.spherical.computeOffset(origin, Math.max(10, offsetMeters), rotationDeg)
+
+            return (
+              <OverlayView
+                position={{ lat: rotationPos.lat(), lng: rotationPos.lng() }}
+                mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                getPixelPositionOffset={() => ({ x: -14, y: -14 })}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div style={{ width: '2px', height: '18px', background: '#38bdf8', marginTop: '14px' }} />
+                  <button
+                    type="button"
+                    onPointerDown={(e) => onStartInteraction(e, floorPlan, 'rotate')}
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      borderRadius: '50%',
+                      border: '2px solid #38bdf8',
+                      background: '#ffffff',
+                      color: '#0f172a',
+                      fontSize: '14px',
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'grab',
+                      padding: 0,
+                      touchAction: 'none',
+                      boxShadow: '0 4px 10px rgba(15,23,42,0.18)',
+                    }}
+                  >
+                    ↻
+                  </button>
+                </div>
+              </OverlayView>
+            )
+          })()}
+        </>
+      )}
     </OverlayView>
   )
 })

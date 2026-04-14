@@ -165,10 +165,12 @@ function buildZoneGridOverlay(zone, map, zoom) {
   const width = Math.max(24, Math.ceil(maxX - minX))
   const height = Math.max(24, Math.ceil(maxY - minY))
 
-  const center = getPathCenter(zone.path)
+  const center = (zone.shapeType === 'circle' || zone.shapeType === 'square') && zone.center
+    ? zone.center
+    : getPathCenter(zone.path)
   if (!center) return null
 
-  const centerPoint = latLngToContainerPoint(map, center.lat, center.lng)
+  const centerPoint = latLngToContainerPoint(map, center.lat, center.lng, zoom)
   if (!centerPoint) return null
 
   const spacingM = Math.max(1, Number(zone.gridSize || zone.rowSpacing || 3) || 3)
@@ -349,15 +351,16 @@ export default function MapCanvas({
     const map = mapRef.current
     if (!isLoaded || !map || layers.zones?.visible === false) return []
 
+    const currentZoom = map.getZoom() || mapZoom || 15
     return zones.flatMap(zone => {
       if (isZoneOrParentHidden(zone)) return []
       const gridEnabled = zone.showGrid ?? ['grid', 'rows'].includes(zone.layoutType)
       if (!gridEnabled) return []
 
-      const overlay = buildZoneGridOverlay(zone, map, mapZoom)
+      const overlay = buildZoneGridOverlay(zone, map, currentZoom)
       return overlay ? [overlay] : []
     })
-  }, [isLoaded, layers.zones?.visible, mapZoom, zones])
+  }, [isLoaded, isZoneOrParentHidden, layers.zones?.visible, mapZoom, zones])
   const floorSelected = selectedId === 'floor-plan'
   const visibleAssets = useMemo(() => {
     if (layers.assets?.visible === false) return []
@@ -459,7 +462,7 @@ export default function MapCanvas({
         const z = map.getZoom()
         const center = map.getCenter()
         if (z != null) {
-          setMapZoom((prev) => (Math.abs((prev ?? 0) - z) > 0.001 ? z : prev))
+          setMapZoom((prev) => (prev !== z ? z : prev))
         }
         if (isViewOnly && center && onViewportChange) {
           onViewportChange({
@@ -683,7 +686,7 @@ export default function MapCanvas({
         center.lng /= interaction.startPath.length
 
         const rect = map.getDiv().getBoundingClientRect()
-        const centerPoint = latLngToContainerPoint(map, center)
+        const centerPoint = latLngToContainerPoint(map, center.lat, center.lng)
         if (!centerPoint) return
 
         const centerClient = { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y }
@@ -700,7 +703,7 @@ export default function MapCanvas({
           //   lat: center.lat + (dy * cos - dx * sin),
           //   lng: center.lng + (dx * cos + dy * sin),
           // }
-          const screenPoint = latLngToContainerPoint(map, point)
+          const screenPoint = latLngToContainerPoint(map, point.lat, point.lng)
           if (!screenPoint) return point
           const localX = screenPoint.x - centerPoint.x
           const localY = screenPoint.y - centerPoint.y
@@ -743,11 +746,22 @@ export default function MapCanvas({
         )
         if (!nextCenter) return
 
+        const nextWidthM = Number(Math.max(MIN_ZONE_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2))
+        const nextLengthM = Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2))
+        const nextCenterLatLng = { lat: nextCenter.lat(), lng: nextCenter.lng() }
+
         onAssetUpdate({
           ...interaction.object,
-          center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
-          widthM: Number(Math.max(MIN_ZONE_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2)),
-          lengthM: Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2)),
+          center: nextCenterLatLng,
+          widthM: nextWidthM,
+          lengthM: nextLengthM,
+          path: buildRectanglePath(
+            nextCenterLatLng,
+            nextWidthM / 2,
+            nextLengthM / 2,
+            window.google,
+            interaction.object.rotation || 0
+          ),
         })
         return
       }
@@ -822,14 +836,26 @@ export default function MapCanvas({
     const path = extractPathFromOverlay(overlay)
     if (path.length < 3) return
     const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
-    onAssetUpdate({
+
+    const updateData = {
       ...zone,
       path,
       areaM2,
       perimeterM,
       parentId: zone.parentId || null,
       capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
-    })
+    }
+
+    // For square zones, synchronize center and dimensions with the new path
+    if (zone.shapeType === 'square') {
+      const center = getPathCenter(path)
+      const dimensions = getRectangleZoneDimensions({ path }, window.google)
+      updateData.center = center
+      if (dimensions.widthM) updateData.widthM = Number(dimensions.widthM.toFixed(2))
+      if (dimensions.lengthM) updateData.lengthM = Number(dimensions.lengthM.toFixed(2))
+    }
+
+    onAssetUpdate(updateData)
   }, [onAssetUpdate, zones])
 
   const handleCircleZoneChange = useCallback((zone) => {
@@ -1625,9 +1651,9 @@ export default function MapCanvas({
               Number(zone.radiusM)
               || (
                 derivedCircleCenter
-                && Array.isArray(zone.path)
-                && zone.path.length > 0
-                && window.google?.maps?.geometry?.spherical
+                  && Array.isArray(zone.path)
+                  && zone.path.length > 0
+                  && window.google?.maps?.geometry?.spherical
                   ? window.google.maps.geometry.spherical.computeDistanceBetween(
                     new window.google.maps.LatLng(derivedCircleCenter.lat, derivedCircleCenter.lng),
                     new window.google.maps.LatLng(zone.path[0].lat, zone.path[0].lng)
@@ -1638,13 +1664,10 @@ export default function MapCanvas({
             : null
 
           // Calculate zone center and on-screen size for label positioning
-          const zoneCenter = zone.shapeType === 'circle' && derivedCircleCenter
-            ? derivedCircleCenter
+          const zoneCenter = (zone.shapeType === 'circle' && derivedCircleCenter) || zone.center
+            ? (derivedCircleCenter || zone.center)
             : zone.path && zone.path.length > 0
-              ? {
-                lat: zone.path.reduce((sum, p) => sum + p.lat, 0) / zone.path.length,
-                lng: zone.path.reduce((sum, p) => sum + p.lng, 0) / zone.path.length,
-              }
+              ? getPathCenter(zone.path)
               : null
 
           const zoneScreenPoints = mapRef.current && zone.path?.length
@@ -1661,26 +1684,12 @@ export default function MapCanvas({
             ? Math.max(...zoneScreenPoints.map(point => point.y)) - Math.min(...zoneScreenPoints.map(point => point.y))
             : 0
 
-          const zoneRotateAnchor = mapRef.current && Array.isArray(zone.path) && zone.path.length >= 3
-            ? zone.path.reduce((bestPoint, point) => {
-              const screenPoint = latLngToContainerPoint(mapRef.current, point.lat, point.lng)
-              if (!screenPoint) return bestPoint
-              if (!bestPoint || screenPoint.y < bestPoint.screenY) {
-                return {
-                  lat: point.lat,
-                  lng: point.lng,
-                  screenY: screenPoint.y,
-                }
-              }
-              return bestPoint
-            }, null)
-            : null
-
           const zoneDisplayName = getZoneDisplayName(zone)
           const isRectangularZone = zone.shapeType === 'square'
-          const zoneRectCenter = isRectangularZone ? getPathCenter(zone.path) : null
+          const zoneRectCenter = isRectangularZone ? (zone.center || getPathCenter(zone.path)) : null
           const zoneRectSize = isRectangularZone ? getRectangleZoneDimensions(zone, window.google) : { widthM: null, lengthM: null }
-          const zoneRectScale = isRectangularZone && zoneRectCenter ? metersPerPixel(zoneRectCenter.lat, mapZoom || mapRef.current?.getZoom?.() || 15) : null
+          const currentLiveZoom = mapRef.current?.getZoom?.() || mapZoom || 15
+          const zoneRectScale = isRectangularZone && zoneRectCenter ? metersPerPixel(zoneRectCenter.lat, currentLiveZoom) : null
           const zoneRectWidthPx = zoneRectScale && Number.isFinite(zoneRectSize.widthM) ? Math.max(MIN_ZONE_SIZE_PX, zoneRectSize.widthM / zoneRectScale) : null
           const zoneRectLengthPx = zoneRectScale && Number.isFinite(zoneRectSize.lengthM) ? Math.max(MIN_ZONE_SIZE_PX, zoneRectSize.lengthM / zoneRectScale) : null
           const zoneLabelMaxWidthPx = Math.min(180, Math.max(64, zoneLabelWidthPx - 14))
@@ -1688,14 +1697,7 @@ export default function MapCanvas({
             && !!zoneDisplayName
             && zoneLabelWidthPx >= 36
             && zoneLabelHeightPx >= 14
-            && (mapZoom >= 15 || selectedId === zone.id)
-          const showZoneRotateControl = !!zoneRotateAnchor
-            && selectedId === zone.id
-            && drawMode === 'select'
-            && !layers.zones?.locked
-            && zone.shapeType !== 'circle'
-            && Array.isArray(zone.path)
-            && zone.path.length >= 3
+            && (currentLiveZoom >= 15 || selectedId === zone.id)
 
           return (
             <React.Fragment key={zone.id}>
@@ -1796,57 +1798,48 @@ export default function MapCanvas({
                   }}
                 />
               )}
-              {isRectangularZone && selectedId === zone.id && drawMode === 'select' && !layers.zones?.locked && zoneRectCenter && zoneRectWidthPx && zoneRectLengthPx && (
-                <OverlayView
-                  position={zoneRectCenter}
-                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-                  getPixelPositionOffset={() => ({
-                    x: -(zoneRectWidthPx / 2),
-                    y: -(zoneRectLengthPx / 2),
-                  })}
-                >
-                  <div
-                    style={{
-                      width: `${zoneRectWidthPx}px`,
-                      height: `${zoneRectLengthPx}px`,
-                      position: 'relative',
-                      pointerEvents: 'none',
-                      transformOrigin: 'center center',
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        transform: `rotate(${Number(zone.rotation || 0)}deg)`,
-                        transformOrigin: 'center center',
-                      }}
-                    >
-                      {ZONE_RESIZE_HANDLES.map((handle) => (
+              {isRectangularZone && selectedId === zone.id && drawMode === 'select' && !layers.zones?.locked && Array.isArray(zone.path) && zone.path.length >= 4 && (
+                <>
+                  {/* Anchor handles directly to the LatLng of each vertex for absolute stability */}
+                  {ZONE_RESIZE_HANDLES.map((handle) => {
+                    let position = null
+                    if (handle.key === 'ne') position = zone.path[0]
+                    else if (handle.key === 'nw') position = zone.path[1]
+                    else if (handle.key === 'sw') position = zone.path[2]
+                    else if (handle.key === 'se') position = zone.path[3]
+
+                    if (!position) return null
+
+                    return (
+                      <OverlayView
+                        key={`${zone.id}-handle-${handle.key}`}
+                        position={position}
+                        mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                        getPixelPositionOffset={() => ({ x: -7, y: -7 })}
+                      >
                         <button
-                          key={`${zone.id}-${handle.key}`}
                           type="button"
                           onMouseDown={(event) => handleStartInteraction(event, zone, 'resize', handle)}
                           style={{
-                            position: 'absolute',
-                            width: '16px',
-                            height: '16px',
-                            borderRadius: '4px',
+                            width: '14px',
+                            height: '14px',
+                            borderRadius: '3px',
                             border: '2px solid #38bdf8',
                             background: '#ffffff',
                             cursor: handle.cursor,
                             padding: 0,
                             pointerEvents: 'auto',
-                            boxShadow: '0 6px 14px rgba(15,23,42,0.18)',
-                            ...handle,
+                            boxShadow: '0 4px 10px rgba(15,23,42,0.18)',
+                            display: 'block',
                           }}
                           title="Resize zone"
                           aria-label="Resize zone"
                         />
-                      ))}
-                    </div>
-                  </div>
-                </OverlayView>
+                      </OverlayView>
+                    )
+                  })}
+
+                </>
               )}
               {canShowZoneLabel && (
                 <OverlayView
@@ -1866,59 +1859,7 @@ export default function MapCanvas({
                   </div>
                 </OverlayView>
               )}
-              {showZoneRotateControl && (
-                <OverlayView
-                  position={zoneRotateAnchor}
-                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-                  getPixelPositionOffset={() => ({ x: 0, y: 0 })}
-                >
-                  <div style={{ position: 'relative', width: 0, height: 0, pointerEvents: 'none' }}>
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: '50%',
-                        top: '-44px',
-                        width: '2px',
-                        height: '24px',
-                        background: 'linear-gradient(180deg, #38bdf8 0%, #0ea5e9 100%)',
-                        transform: 'translateX(-50%)',
-                        boxShadow: '0 0 0 1px rgba(255,255,255,0.65)',
-                        pointerEvents: 'auto',
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onMouseDown={(event) => handleStartInteraction(event, zone, 'rotate')}
-                      style={{
-                        position: 'absolute',
-                        left: '50%',
-                        top: '-66px',
-                        transform: 'translateX(-50%)',
-                        width: '30px',
-                        height: '30px',
-                        borderRadius: '999px',
-                        border: '1.5px solid #0ea5e9',
-                        background: 'linear-gradient(180deg, #ffffff 0%, #eff6ff 100%)',
-                        color: '#0369a1',
-                        fontSize: '15px',
-                        fontWeight: 700,
-                        cursor: 'grab',
-                        padding: 0,
-                        pointerEvents: 'auto',
-                        boxShadow: '0 10px 24px rgba(15, 23, 42, 0.18)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        lineHeight: 1,
-                      }}
-                      title="Rotate zone"
-                      aria-label="Rotate zone"
-                    >
-                      ↻
-                    </button>
-                  </div>
-                </OverlayView>
-              )}
+
             </React.Fragment>
           )
         })}
