@@ -147,7 +147,7 @@ const DEFAULT_LAYERS = {
   annotations: { visible: true, locked: false },
   lines: { visible: true, locked: false },
   floor: { visible: true, locked: false },
-  grid: { visible: false, locked: false, snap: false },
+  grid: { visible: false, locked: false, snap: false, size: 3, opacity: 0.15, color: '#3d8ef8' },
 }
 
 function getExportStatusColor(status) {

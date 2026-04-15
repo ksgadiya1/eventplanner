@@ -57,7 +57,7 @@ function GridLayer({ map, visible, size = 3, opacity = 0.15, color = '#3d8ef8' }
       if (!bounds || typeof zoom !== 'number') return
 
       const centerLat = (bounds.getNorthEast().lat() + bounds.getSouthWest().lat()) / 2
-      const cellM = computeRenderedGridSpacing(Number(rawCellM) || 10, centerLat, zoom, bounds)
+      const cellM = computeRenderedGridSpacing(Number(rawCellM) || 3, centerLat, zoom, bounds)
       const mpp = metersPerPixel(centerLat, zoom)
       const cellPx = cellM / Math.max(0.0001, mpp)
 

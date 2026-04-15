@@ -2289,7 +2289,7 @@ export default function MapCanvas({
         <GridLayer
           map={mapRef.current}
           visible={layers.grid?.visible}
-          size={layers.grid?.size || 10}
+          size={layers.grid?.size || 3}
           opacity={layers.grid?.opacity}
           color={layers.grid?.color}
         />
