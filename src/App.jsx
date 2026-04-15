@@ -1464,10 +1464,7 @@ export default function App() {
       const normalizedAnnotation = normalizeAnnotationParent(updated, zones)
       setAnnotations(prev => prev.map(annotation => annotation.id === updated.id ? normalizedAnnotation : annotation))
     } else if (updated.type === 'floor') {
-      setFloorPlan(prev => prev ? {
-        ...prev,
-        ...updated,
-      } : prev)
+      setFloorPlan(prev => prev ? normalizeFloorPlanState({ ...prev, ...updated }) : prev)
     } else {
       const normalizedAsset = normalizeAssetParent(updated, zones)
       setAssets(prev => prev.map(a => a.id === updated.id ? normalizedAsset : a))

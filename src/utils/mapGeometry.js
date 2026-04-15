@@ -624,6 +624,66 @@ export function buildSquarePath(center, halfSideM, google, rotationDeg = 0) {
   return buildRectanglePath(center, halfSideM, halfSideM, google, rotationDeg)
 }
 
+export function snapAssetCenterToZoneVertex(
+  lat,
+  lng,
+  widthM,
+  lengthM,
+  rotationDeg,
+  zone,
+  thresholdM = 2.5,
+  googleApi = null
+) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !zone?.path?.length) {
+    return { lat, lng }
+  }
+
+  const zoneVertices = zone.path.filter(point => (
+    Number.isFinite(Number(point?.lat)) && Number.isFinite(Number(point?.lng))
+  ))
+  if (zoneVertices.length < 3) return { lat, lng }
+
+  const resolvedWidthM = Math.max(0.01, Number(widthM) || 0.01)
+  const resolvedLengthM = Math.max(0.01, Number(lengthM) || 0.01)
+  const g = googleApi || window.google
+  if (!g?.maps?.geometry?.spherical) return { lat, lng }
+
+  const corners = buildRectanglePath(
+    { lat, lng },
+    resolvedWidthM / 2,
+    resolvedLengthM / 2,
+    g,
+    Number(rotationDeg) || 0
+  )
+  if (!corners.length) return { lat, lng }
+
+  const latMetersPerDegree = 111111.0
+  const lngMetersPerDegree = 111111.0 * Math.max(0.000001, Math.cos(lat * Math.PI / 180))
+  const maxSnapDistanceM = Math.max(0.25, Number(thresholdM) || 2.5)
+
+  let bestMatch = null
+
+  for (const corner of corners) {
+    for (const vertex of zoneVertices) {
+      const deltaXM = (Number(vertex.lng) - Number(corner.lng)) * lngMetersPerDegree
+      const deltaYM = (Number(vertex.lat) - Number(corner.lat)) * latMetersPerDegree
+      const distanceM = Math.hypot(deltaXM, deltaYM)
+      if (!bestMatch || distanceM < bestMatch.distanceM) {
+        bestMatch = { deltaXM, deltaYM, distanceM }
+      }
+    }
+  }
+
+  if (!bestMatch || bestMatch.distanceM > maxSnapDistanceM) {
+    return { lat, lng }
+  }
+
+  return {
+    lat: lat + (bestMatch.deltaYM / latMetersPerDegree),
+    lng: lng + (bestMatch.deltaXM / lngMetersPerDegree),
+  }
+}
+
 export function getPathCenter(path) {
   if (!Array.isArray(path) || path.length === 0) return null
   const center = path.reduce((acc, point) => ({

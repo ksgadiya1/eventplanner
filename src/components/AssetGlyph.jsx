@@ -8,18 +8,6 @@ export default function AssetGlyph({ asset, size = 20, color, fallback = 'P' }) 
   const iconValue = asset.icon
   const isIconifyIcon = asset.iconType === 'iconify' || (typeof iconValue === 'string' && iconValue.includes(':'))
 
-  if (asset.imageUrl) {
-    return (
-      <img
-        src={asset.imageUrl}
-        alt={asset.name || 'Asset'}
-        width={size}
-        height={size}
-        style={{ display: 'block', objectFit: 'contain', borderRadius: '4px' }}
-      />
-    )
-  }
-
   if (isIconifyIcon && iconValue) {
     return <Icon icon={iconValue} width={size} height={size} style={{ color: resolvedColor, display: 'block' }} />
   }

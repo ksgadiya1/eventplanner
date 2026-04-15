@@ -23,6 +23,7 @@ import {
   computeContentBounds,
   buildCirclePath,
   buildSquarePath,
+  buildRectanglePath,
   getLinePatternIcons,
   getBoundsPreviewPath,
   instantiateZoneFromTemplate,
@@ -60,13 +61,6 @@ const MIN_FLOOR_SIZE_PX = 80
 const MIN_ZONE_SIZE_M = 1
 const MIN_ZONE_SIZE_PX = 24
 const WHAT3WORDS_PATTERN = /^\s*([a-zA-Z]+\.[a-zA-Z]+\.[a-zA-Z]+)\s*$/
-const ZONE_RESIZE_HANDLES = [
-  { key: 'nw', left: '-8px', top: '-8px', cursor: 'nwse-resize', xSign: -1, ySign: -1 },
-  { key: 'ne', right: '-8px', top: '-8px', cursor: 'nesw-resize', xSign: 1, ySign: -1 },
-  { key: 'sw', left: '-8px', bottom: '-8px', cursor: 'nesw-resize', xSign: -1, ySign: 1 },
-  { key: 'se', right: '-8px', bottom: '-8px', cursor: 'nwse-resize', xSign: 1, ySign: 1 },
-]
-
 function getMapLabelStyle(accentColor = '#64748b', compact = false) {
   return {
     background: 'rgba(255,255,255,0.9)',
@@ -169,11 +163,24 @@ function buildZoneGridOverlay(zone, map, zoom) {
   const maxY = Math.max(...screenPoints.map(point => point.y))
   const width = Math.max(24, Math.ceil(maxX - minX))
   const height = Math.max(24, Math.ceil(maxY - minY))
+  const bboxCenterPoint = {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+  }
 
   const center = (zone.shapeType === 'circle' || zone.shapeType === 'square') && zone.center
     ? zone.center
     : getPathCenter(zone.path)
   if (!center) return null
+
+  const mapRect = map.getDiv?.()?.getBoundingClientRect?.()
+  if (!mapRect) return null
+  const bboxCenterLatLng = clientPointToLatLng(
+    map,
+    mapRect.left + bboxCenterPoint.x,
+    mapRect.top + bboxCenterPoint.y
+  )
+  if (!bboxCenterLatLng) return null
 
   const centerPoint = latLngToContainerPoint(map, center.lat, center.lng, zoom)
   if (!centerPoint) return null
@@ -188,9 +195,9 @@ function buildZoneGridOverlay(zone, map, zoom) {
 
   return {
     id: `${zone.id}-grid-overlay`,
-    position: center,
-    offsetX: Math.round(minX - centerPoint.x),
-    offsetY: Math.round(minY - centerPoint.y),
+    position: { lat: bboxCenterLatLng.lat(), lng: bboxCenterLatLng.lng() },
+    offsetX: 0,
+    offsetY: 0,
     width,
     height,
     cellPx: Math.max(12, Math.round(cellPx)),
@@ -638,10 +645,68 @@ export default function MapCanvas({
   }, [zones])
 
   useEffect(() => {
-    const handleMouseMove = (event) => {
+    const handleInteractionMove = (event) => {
       const interaction = interactionRef.current
       const map = mapRef.current
       if (!interaction || !map || !onAssetUpdate) return
+
+      if (interaction.objectType === 'asset') {
+        if (interaction.type === 'move') {
+          const latLng = clientPointToLatLng(map, event.clientX, event.clientY)
+          if (!latLng) return
+          const movedAsset = buildAssetPlacement({
+            ...interaction.object,
+            lat: latLng.lat() - (interaction.latOffset || 0),
+            lng: latLng.lng() - (interaction.lngOffset || 0),
+          })
+          if (!movedAsset) return
+          onAssetUpdate(movedAsset)
+          return
+        }
+
+        if (interaction.type === 'resize') {
+          const dx = event.clientX - interaction.startX
+          const dy = event.clientY - interaction.startY
+          const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotationDeg)
+          const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
+          const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
+          const rawLength = interaction.startLengthPx + (localY * handle.ySign)
+          const widthPx = Math.max(MIN_ASSET_SIZE_PX, rawWidth)
+          const lengthPx = Math.max(MIN_ASSET_SIZE_PX, rawLength)
+          const appliedWidthDelta = widthPx - interaction.startWidthPx
+          const appliedLengthDelta = lengthPx - interaction.startLengthPx
+          const localCenterShift = {
+            x: (appliedWidthDelta / 2) * handle.xSign,
+            y: (appliedLengthDelta / 2) * handle.ySign,
+          }
+          const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotationDeg)
+          const nextCenterLatLng = clientPointToLatLng(
+            map,
+            interaction.center.x + screenShift.x,
+            interaction.center.y + screenShift.y
+          )
+          if (!nextCenterLatLng) return
+
+          onAssetUpdate({
+            ...interaction.object,
+            lat: nextCenterLatLng.lat(),
+            lng: nextCenterLatLng.lng(),
+            widthM: Number(Math.max(MIN_ASSET_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2)),
+            lengthM: Number(Math.max(MIN_ASSET_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2)),
+          })
+          return
+        }
+
+        if (interaction.type === 'rotate') {
+          const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
+          const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
+          onAssetUpdate({
+            ...interaction.object,
+            rotationDeg: Number(normalizeAngle(interaction.startRotationDeg + delta).toFixed(1)),
+          })
+        }
+        return
+      }
 
       if (interaction.objectType === 'floor') {
         if (interaction.type === 'move') {
@@ -815,18 +880,24 @@ export default function MapCanvas({
       }
     }
 
-    const handleMouseUp = () => {
+    const handleInteractionUp = () => {
       if (!interactionRef.current) return
       interactionRef.current = null
       document.body.style.userSelect = ''
     }
 
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
+    window.addEventListener('mousemove', handleInteractionMove)
+    window.addEventListener('mouseup', handleInteractionUp)
+    window.addEventListener('pointermove', handleInteractionMove)
+    window.addEventListener('pointerup', handleInteractionUp)
+    window.addEventListener('pointercancel', handleInteractionUp)
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('mousemove', handleInteractionMove)
+      window.removeEventListener('mouseup', handleInteractionUp)
+      window.removeEventListener('pointermove', handleInteractionMove)
+      window.removeEventListener('pointerup', handleInteractionUp)
+      window.removeEventListener('pointercancel', handleInteractionUp)
     }
   }, [buildAnnotationPlacement, buildAssetPlacement, onAssetUpdate, onFloorPlanChange])
 
@@ -1171,8 +1242,8 @@ export default function MapCanvas({
           contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
-          widthM: drawMode === 'square' ? radiusM * 2 : undefined,
-          lengthM: drawMode === 'square' ? radiusM * 2 : undefined,
+          widthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
+          lengthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
         })
       }
 
@@ -1445,7 +1516,7 @@ export default function MapCanvas({
 
     if (object.type === 'floor' || object.id === 'floor-plan') {
       if (layers.floor?.locked || !object.bounds) return
-      const floorGeometry = getFloorGeometry(map, object.bounds)
+      const floorGeometry = getFloorGeometry(map, object)
       const rect = map.getDiv().getBoundingClientRect()
       if (!floorGeometry) return
 
@@ -1549,6 +1620,7 @@ export default function MapCanvas({
     const rect = map.getDiv().getBoundingClientRect()
     const center = latLngToContainerPoint(map, object.lat, object.lng)
     const { widthPx, lengthPx, metersPerPixel: scale } = getAssetSize(object, map.getZoom())
+    const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
     if (!center) return
 
     const centerClient = { x: rect.left + center.x, y: rect.top + center.y }
@@ -1563,6 +1635,8 @@ export default function MapCanvas({
       startLengthPx: lengthPx,
       startRotationDeg: object.rotationDeg || 0,
       resizeHandle,
+      latOffset: clickLatLng ? clickLatLng.lat() - object.lat : 0,
+      lngOffset: clickLatLng ? clickLatLng.lng() - object.lng : 0,
       startPointerAngle: Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x) * 180 / Math.PI,
       metersPerPixel: scale,
     }
@@ -1720,13 +1794,7 @@ export default function MapCanvas({
             : 0
 
           const zoneDisplayName = getZoneDisplayName(zone)
-          const isRectangularZone = zone.shapeType === 'square'
-          const zoneRectCenter = isRectangularZone ? (zone.center || getPathCenter(zone.path)) : null
-          const zoneRectSize = isRectangularZone ? getRectangleZoneDimensions(zone, window.google) : { widthM: null, lengthM: null }
           const currentLiveZoom = mapRef.current?.getZoom?.() || mapZoom || 15
-          const zoneRectScale = isRectangularZone && zoneRectCenter ? metersPerPixel(zoneRectCenter.lat, currentLiveZoom) : null
-          const zoneRectWidthPx = zoneRectScale && Number.isFinite(zoneRectSize.widthM) ? Math.max(MIN_ZONE_SIZE_PX, zoneRectSize.widthM / zoneRectScale) : null
-          const zoneRectLengthPx = zoneRectScale && Number.isFinite(zoneRectSize.lengthM) ? Math.max(MIN_ZONE_SIZE_PX, zoneRectSize.lengthM / zoneRectScale) : null
           const zoneLabelMaxWidthPx = Math.min(180, Math.max(64, zoneLabelWidthPx - 14))
           const canShowZoneLabel = !!zoneCenter
             && !!zoneDisplayName
@@ -1747,7 +1815,7 @@ export default function MapCanvas({
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
                     strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'square',
+                    editable: selectedId === zone.id && !layers.zones?.locked,
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
@@ -1794,7 +1862,7 @@ export default function MapCanvas({
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
                     strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'square',
+                    editable: selectedId === zone.id && !layers.zones?.locked,
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
@@ -1833,49 +1901,6 @@ export default function MapCanvas({
                   }}
                 />
               )}
-              {isRectangularZone && selectedId === zone.id && drawMode === 'select' && !layers.zones?.locked && Array.isArray(zone.path) && zone.path.length >= 4 && (
-                <>
-                  {/* Anchor handles directly to the LatLng of each vertex for absolute stability */}
-                  {ZONE_RESIZE_HANDLES.map((handle) => {
-                    let position = null
-                    if (handle.key === 'ne') position = zone.path[0]
-                    else if (handle.key === 'nw') position = zone.path[1]
-                    else if (handle.key === 'sw') position = zone.path[2]
-                    else if (handle.key === 'se') position = zone.path[3]
-
-                    if (!position) return null
-
-                    return (
-                      <OverlayView
-                        key={`${zone.id}-handle-${handle.key}`}
-                        position={position}
-                        mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-                        getPixelPositionOffset={() => ({ x: -7, y: -7 })}
-                      >
-                        <button
-                          type="button"
-                          onMouseDown={(event) => handleStartInteraction(event, zone, 'resize', handle)}
-                          style={{
-                            width: '14px',
-                            height: '14px',
-                            borderRadius: '3px',
-                            border: '2px solid #38bdf8',
-                            background: '#ffffff',
-                            cursor: handle.cursor,
-                            padding: 0,
-                            pointerEvents: 'auto',
-                            boxShadow: '0 4px 10px rgba(15,23,42,0.18)',
-                            display: 'block',
-                          }}
-                          title="Resize zone"
-                          aria-label="Resize zone"
-                        />
-                      </OverlayView>
-                    )
-                  })}
-
-                </>
-              )}
               {canShowZoneLabel && (
                 <OverlayView
                   position={zoneCenter}
@@ -1910,6 +1935,7 @@ export default function MapCanvas({
               style={{
                 width: `${overlay.width}px`,
                 height: `${overlay.height}px`,
+                transform: 'translate(-50%, -50%)',
                 pointerEvents: 'none',
                 clipPath: overlay.clipPath,
                 WebkitClipPath: overlay.clipPath,
@@ -1924,19 +1950,27 @@ export default function MapCanvas({
                   height: '100%',
                 }}
               >
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: '-60%',
-                    opacity: overlay.opacity,
-                    backgroundImage: `linear-gradient(to right, ${overlay.color} 1px, transparent 1px), linear-gradient(to bottom, ${overlay.color} 1px, transparent 1px)`,
-                    backgroundSize: `${overlay.cellPx}px ${overlay.cellPx}px`,
-                    backgroundPosition: `calc(60% + ${overlay.anchorX}px) calc(60% + ${overlay.anchorY}px)`,
-                    transform: `rotate(${overlay.rotationDeg || 0}deg)`,
-                    transformOrigin: `calc(60% + ${overlay.anchorX}px) calc(60% + ${overlay.anchorY}px)`,
-                    willChange: 'transform',
-                  }}
-                />
+                {(() => {
+                  const bleed = Math.ceil(Math.max(overlay.width, overlay.height) * 0.75)
+                  return (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: `${-bleed}px`,
+                        top: `${-bleed}px`,
+                        width: `${overlay.width + bleed * 2}px`,
+                        height: `${overlay.height + bleed * 2}px`,
+                        opacity: overlay.opacity,
+                        backgroundImage: `linear-gradient(to right, ${overlay.color} 1px, transparent 1px), linear-gradient(to bottom, ${overlay.color} 1px, transparent 1px)`,
+                        backgroundSize: `${overlay.cellPx}px ${overlay.cellPx}px`,
+                        backgroundPosition: `${bleed + overlay.anchorX}px ${bleed + overlay.anchorY}px`,
+                        transform: `rotate(${overlay.rotationDeg || 0}deg)`,
+                        transformOrigin: `${bleed + overlay.anchorX}px ${bleed + overlay.anchorY}px`,
+                        willChange: 'transform',
+                      }}
+                    />
+                  )
+                })()}
               </div>
             </div>
           </OverlayView>
@@ -2299,6 +2333,7 @@ export default function MapCanvas({
               gridSize={baseGridSnap ? baseGridSize : zoneGridSize}
               gridZone={resolvedGridZone}
               gridReferenceLat={baseCenterLat}
+              vertexSnapZone={parentZone?.shapeType === 'square' ? parentZone : null}
             />
           )
         })}
