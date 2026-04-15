@@ -1390,6 +1390,13 @@ export default function App() {
         }
       }
 
+      if (updated.showGrid && !previousZone?.showGrid) {
+        setLayers(prev => ({
+          ...prev,
+          grid: { ...prev.grid, visible: false },
+        }))
+      }
+
       if (didLayoutChange) {
         setLayers(prev => ({
           ...prev,
@@ -1569,7 +1576,7 @@ export default function App() {
     if (typeof window === 'undefined') return
 
     const url = new URL(window.location.href)
-    ;['view', 'mode', 'zoom', 'minZoom', 'maxZoom'].forEach((key) => url.searchParams.delete(key))
+      ;['view', 'mode', 'zoom', 'minZoom', 'maxZoom'].forEach((key) => url.searchParams.delete(key))
     window.history.replaceState(null, '', `${url.pathname}${url.search}`)
     setSharedView(readSharedViewState())
   }, [])
@@ -1720,6 +1727,12 @@ export default function App() {
         nextLayer = { ...layer, ...options }
       } else {
         nextLayer = { ...layer, visible: !layer.visible }
+      }
+
+      if (layerId === 'grid' && (options?.visible === true || (options === undefined && !layer.visible))) {
+        setZones(prevZones => prevZones.map(zone => (
+          zone.showGrid ? { ...zone, showGrid: false } : zone
+        )))
       }
 
       if (layerId === 'grid' && options?.snap) {
@@ -2160,239 +2173,239 @@ export default function App() {
           format: 'a4',
         })
 
-  //       const pageW = pdf.internal.pageSize.getWidth()
-  //       const pageH = pdf.internal.pageSize.getHeight()
-  //       const margin = 28
-  //       const contentW = pageW - margin * 2
-  //       let cursorY = margin
+        //       const pageW = pdf.internal.pageSize.getWidth()
+        //       const pageH = pdf.internal.pageSize.getHeight()
+        //       const margin = 28
+        //       const contentW = pageW - margin * 2
+        //       let cursorY = margin
 
-  //       const getZoneName = (zone) => {
-  //         const customLabel = typeof zone?.label === 'string' ? zone.label.trim() : ''
-  //         return customLabel || zone?.zoneType?.name || 'Zone'
-  //       }
-  //       const getAssetLabel = (asset) => asset?.label?.trim() || asset?.assetDef?.label || asset?.assetDef?.name || 'Asset'
-  //       const toText = (value, fallback = '—') => {
-  //         if (value === null || value === undefined) return fallback
-  //         const text = String(value).trim()
-  //         return text || fallback
-  //       }
-  //       const zoneLookup = new Map(zones.map(zone => [zone.id, getZoneName(zone)]))
-  //       const addPageIfNeeded = (needed = 24) => {
-  //         if (cursorY + needed <= pageH - margin) return
-  //         pdf.addPage()
-  //         cursorY = margin
-  //       }
-  //       const addSectionTitle = (title) => {
-  //         addPageIfNeeded(42)
-  //         if (cursorY > margin) cursorY += 4
-  //         pdf.setFont('helvetica', 'bold')
-  //         pdf.setFontSize(16)
-  //         pdf.setTextColor(17, 24, 39)
-  //         pdf.text(title, margin, cursorY)
-  //         pdf.setDrawColor(226, 232, 240)
-  //         pdf.setLineWidth(1)
-  //         pdf.line(margin, cursorY + 8, pageW - margin, cursorY + 8)
-  //         cursorY += 24
-  //       }
-  //       const addCard = (title, lines = []) => {
-  //         const wrapped = lines.flatMap(line => pdf.splitTextToSize(line, contentW - 28))
-  //         const lineHeight = 15
-  //         const headerHeight = 22
-  //         const bodyTop = 38
-  //         const bottomPadding = 12
-  //         const cardHeight = Math.max(62, bodyTop + wrapped.length * lineHeight + bottomPadding)
+        //       const getZoneName = (zone) => {
+        //         const customLabel = typeof zone?.label === 'string' ? zone.label.trim() : ''
+        //         return customLabel || zone?.zoneType?.name || 'Zone'
+        //       }
+        //       const getAssetLabel = (asset) => asset?.label?.trim() || asset?.assetDef?.label || asset?.assetDef?.name || 'Asset'
+        //       const toText = (value, fallback = '—') => {
+        //         if (value === null || value === undefined) return fallback
+        //         const text = String(value).trim()
+        //         return text || fallback
+        //       }
+        //       const zoneLookup = new Map(zones.map(zone => [zone.id, getZoneName(zone)]))
+        //       const addPageIfNeeded = (needed = 24) => {
+        //         if (cursorY + needed <= pageH - margin) return
+        //         pdf.addPage()
+        //         cursorY = margin
+        //       }
+        //       const addSectionTitle = (title) => {
+        //         addPageIfNeeded(42)
+        //         if (cursorY > margin) cursorY += 4
+        //         pdf.setFont('helvetica', 'bold')
+        //         pdf.setFontSize(16)
+        //         pdf.setTextColor(17, 24, 39)
+        //         pdf.text(title, margin, cursorY)
+        //         pdf.setDrawColor(226, 232, 240)
+        //         pdf.setLineWidth(1)
+        //         pdf.line(margin, cursorY + 8, pageW - margin, cursorY + 8)
+        //         cursorY += 24
+        //       }
+        //       const addCard = (title, lines = []) => {
+        //         const wrapped = lines.flatMap(line => pdf.splitTextToSize(line, contentW - 28))
+        //         const lineHeight = 15
+        //         const headerHeight = 22
+        //         const bodyTop = 38
+        //         const bottomPadding = 12
+        //         const cardHeight = Math.max(62, bodyTop + wrapped.length * lineHeight + bottomPadding)
 
-  //         addPageIfNeeded(cardHeight + 14)
-  //         pdf.setDrawColor(218, 223, 232)
-  //         pdf.setFillColor(250, 251, 253)
-  //         pdf.roundedRect(margin, cursorY, contentW, cardHeight, 8, 8, 'FD')
+        //         addPageIfNeeded(cardHeight + 14)
+        //         pdf.setDrawColor(218, 223, 232)
+        //         pdf.setFillColor(250, 251, 253)
+        //         pdf.roundedRect(margin, cursorY, contentW, cardHeight, 8, 8, 'FD')
 
-  //         pdf.setFont('helvetica', 'bold')
-  //         pdf.setFontSize(12)
-  //         pdf.setTextColor(15, 23, 42)
-  //         pdf.text(title, margin + 14, cursorY + headerHeight)
+        //         pdf.setFont('helvetica', 'bold')
+        //         pdf.setFontSize(12)
+        //         pdf.setTextColor(15, 23, 42)
+        //         pdf.text(title, margin + 14, cursorY + headerHeight)
 
-  //         pdf.setFont('helvetica', 'normal')
-  //         pdf.setFontSize(10)
-  //         pdf.setTextColor(71, 85, 105)
+        //         pdf.setFont('helvetica', 'normal')
+        //         pdf.setFontSize(10)
+        //         pdf.setTextColor(71, 85, 105)
 
-  //         let lineY = cursorY + bodyTop
-  //         wrapped.forEach(line => {
-  //           pdf.text(line, margin + 14, lineY)
-  //           lineY += lineHeight
-  //         })
+        //         let lineY = cursorY + bodyTop
+        //         wrapped.forEach(line => {
+        //           pdf.text(line, margin + 14, lineY)
+        //           lineY += lineHeight
+        //         })
 
-  //         cursorY += cardHeight + 14
-  //       }
+        //         cursorY += cardHeight + 14
+        //       }
 
-  //       pdf.setFont('helvetica', 'bold')
-  //       pdf.setFontSize(22)
-  //       pdf.setTextColor(15, 23, 42)
-  //       pdf.text(eventDetails?.name || 'EventWiz Detailed Report', margin, cursorY)
-  //       cursorY += 18
+        //       pdf.setFont('helvetica', 'bold')
+        //       pdf.setFontSize(22)
+        //       pdf.setTextColor(15, 23, 42)
+        //       pdf.text(eventDetails?.name || 'EventWiz Detailed Report', margin, cursorY)
+        //       cursorY += 18
 
-  //       pdf.setFont('helvetica', 'normal')
-  //       pdf.setFontSize(11)
-  //       pdf.setTextColor(71, 85, 105)
-  //       pdf.text(`Generated ${new Date().toLocaleString()} | View ${mapViewMode || 'roadmap'} | Unit ${measurementUnit}`, margin, cursorY)
-  //       cursorY += 16
+        //       pdf.setFont('helvetica', 'normal')
+        //       pdf.setFontSize(11)
+        //       pdf.setTextColor(71, 85, 105)
+        //       pdf.text(`Generated ${new Date().toLocaleString()} | View ${mapViewMode || 'roadmap'} | Unit ${measurementUnit}`, margin, cursorY)
+        //       cursorY += 16
 
-  //       const mapMaxHeight = 220
-  //       const imageScale = Math.min(contentW / img.naturalWidth, mapMaxHeight / img.naturalHeight)
-  //       const renderW = img.naturalWidth * imageScale
-  //       const renderH = img.naturalHeight * imageScale
-  //       pdf.addImage(dataUrl, 'PNG', margin, cursorY, renderW, renderH)
-  //       cursorY += renderH + 16
+        //       const mapMaxHeight = 220
+        //       const imageScale = Math.min(contentW / img.naturalWidth, mapMaxHeight / img.naturalHeight)
+        //       const renderW = img.naturalWidth * imageScale
+        //       const renderH = img.naturalHeight * imageScale
+        //       pdf.addImage(dataUrl, 'PNG', margin, cursorY, renderW, renderH)
+        //       cursorY += renderH + 16
 
-  //       const uniqueZoneTypes = []
-  //       const seenIds = new Set()
-  //       for (const zone of zones) {
-  //         const zoneType = zone.zoneType
-  //         if (zoneType?.id && !seenIds.has(zoneType.id)) {
-  //           seenIds.add(zoneType.id)
-  //           uniqueZoneTypes.push(zoneType)
-  //         }
-  //       }
+        //       const uniqueZoneTypes = []
+        //       const seenIds = new Set()
+        //       for (const zone of zones) {
+        //         const zoneType = zone.zoneType
+        //         if (zoneType?.id && !seenIds.has(zoneType.id)) {
+        //           seenIds.add(zoneType.id)
+        //           uniqueZoneTypes.push(zoneType)
+        //         }
+        //       }
 
-  //       pdf.setFont('helvetica', 'bold')
-  //       pdf.setFontSize(13)
-  //       pdf.setTextColor(30, 41, 59)
-  //       pdf.text('Snapshot Overview', margin, cursorY)
-  //       cursorY += 14
-  //       pdf.setFont('helvetica', 'normal')
-  //       pdf.setFontSize(10)
-  //       pdf.text(`Zones: ${zones.length}   Assets: ${assets.length}   Routes: ${lines.length}   Notes: ${annotations.length}`, margin, cursorY)
-  //       cursorY += 12
+        //       pdf.setFont('helvetica', 'bold')
+        //       pdf.setFontSize(13)
+        //       pdf.setTextColor(30, 41, 59)
+        //       pdf.text('Snapshot Overview', margin, cursorY)
+        //       cursorY += 14
+        //       pdf.setFont('helvetica', 'normal')
+        //       pdf.setFontSize(10)
+        //       pdf.text(`Zones: ${zones.length}   Assets: ${assets.length}   Routes: ${lines.length}   Notes: ${annotations.length}`, margin, cursorY)
+        //       cursorY += 12
 
-  //       if (uniqueZoneTypes.length) {
-  //         let legendX = margin
-  //         let legendY = cursorY
-  //         uniqueZoneTypes.forEach((zoneType, index) => {
-  //           const hex = zoneType.color || '#3d8ef8'
-  //           const normalizedHex = /^#([0-9a-f]{6})$/i.test(hex) ? hex : '#3d8ef8'
-  //           const r = parseInt(normalizedHex.slice(1, 3), 16)
-  //           const g = parseInt(normalizedHex.slice(3, 5), 16)
-  //           const b = parseInt(normalizedHex.slice(5, 7), 16)
-  //           if (index > 0 && legendX > pageW - 150) {
-  //             legendX = margin
-  //             legendY += 16
-  //           }
-  //           pdf.setFillColor(r, g, b)
-  //           pdf.rect(legendX, legendY - 8, 10, 10, 'F')
-  //           pdf.setTextColor(55, 65, 81)
-  //           pdf.text(zoneType.name || zoneType.id, legendX + 16, legendY)
-  //           legendX += 120
-  //         })
-  //         cursorY = legendY + 18
-  //       } else {
-  //         cursorY += 6
-  //       }
+        //       if (uniqueZoneTypes.length) {
+        //         let legendX = margin
+        //         let legendY = cursorY
+        //         uniqueZoneTypes.forEach((zoneType, index) => {
+        //           const hex = zoneType.color || '#3d8ef8'
+        //           const normalizedHex = /^#([0-9a-f]{6})$/i.test(hex) ? hex : '#3d8ef8'
+        //           const r = parseInt(normalizedHex.slice(1, 3), 16)
+        //           const g = parseInt(normalizedHex.slice(3, 5), 16)
+        //           const b = parseInt(normalizedHex.slice(5, 7), 16)
+        //           if (index > 0 && legendX > pageW - 150) {
+        //             legendX = margin
+        //             legendY += 16
+        //           }
+        //           pdf.setFillColor(r, g, b)
+        //           pdf.rect(legendX, legendY - 8, 10, 10, 'F')
+        //           pdf.setTextColor(55, 65, 81)
+        //           pdf.text(zoneType.name || zoneType.id, legendX + 16, legendY)
+        //           legendX += 120
+        //         })
+        //         cursorY = legendY + 18
+        //       } else {
+        //         cursorY += 6
+        //       }
 
-  //       pdf.addPage()
-  //       cursorY = margin
+        //       pdf.addPage()
+        //       cursorY = margin
 
-  //       addSectionTitle('Event Summary')
-  //       addCard('Event Details', [
-  //         `Name: ${toText(eventDetails?.name, 'Untitled Event')}`,
-  //         `Type: ${toText(eventDetails?.eventType, 'general')}`,
-  //         `Location Query: ${toText(eventDetails?.locationQuery)}`,
-  //         `Resolved Address: ${toText(eventDetails?.resolvedLocation?.formattedAddress)}`,
-  //         `Coordinates: ${eventDetails?.resolvedLocation?.lat != null && eventDetails?.resolvedLocation?.lng != null
-  //           ? `${Number(eventDetails.resolvedLocation.lat).toFixed(5)}, ${Number(eventDetails.resolvedLocation.lng).toFixed(5)}`
-  //           : '—'}`,
-  //       ])
-  //       addCard('Plan Totals', [
-  //         `Zones: ${zones.length}`,
-  //         `Assets: ${assets.length}`,
-  //         `Routes / Lines: ${lines.length}`,
-  //         `Annotations: ${annotations.length}`,
-  //         `Floor Plan Added: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
-  //       ])
+        //       addSectionTitle('Event Summary')
+        //       addCard('Event Details', [
+        //         `Name: ${toText(eventDetails?.name, 'Untitled Event')}`,
+        //         `Type: ${toText(eventDetails?.eventType, 'general')}`,
+        //         `Location Query: ${toText(eventDetails?.locationQuery)}`,
+        //         `Resolved Address: ${toText(eventDetails?.resolvedLocation?.formattedAddress)}`,
+        //         `Coordinates: ${eventDetails?.resolvedLocation?.lat != null && eventDetails?.resolvedLocation?.lng != null
+        //           ? `${Number(eventDetails.resolvedLocation.lat).toFixed(5)}, ${Number(eventDetails.resolvedLocation.lng).toFixed(5)}`
+        //           : '—'}`,
+        //       ])
+        //       addCard('Plan Totals', [
+        //         `Zones: ${zones.length}`,
+        //         `Assets: ${assets.length}`,
+        //         `Routes / Lines: ${lines.length}`,
+        //         `Annotations: ${annotations.length}`,
+        //         `Floor Plan Added: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
+        //       ])
 
-  //       addSectionTitle('Zone Details')
-  //       if (zones.length) {
-  //         zones.forEach((zone, index) => {
-  //           const centroid = zone.path?.length
-  //             ? zone.path.reduce((acc, point) => ({ lat: acc.lat + point.lat, lng: acc.lng + point.lng }), { lat: 0, lng: 0 })
-  //             : null
-  //           const zoneCenter = centroid
-  //             ? `${(centroid.lat / zone.path.length).toFixed(5)}, ${(centroid.lng / zone.path.length).toFixed(5)}`
-  //             : '—'
+        //       addSectionTitle('Zone Details')
+        //       if (zones.length) {
+        //         zones.forEach((zone, index) => {
+        //           const centroid = zone.path?.length
+        //             ? zone.path.reduce((acc, point) => ({ lat: acc.lat + point.lat, lng: acc.lng + point.lng }), { lat: 0, lng: 0 })
+        //             : null
+        //           const zoneCenter = centroid
+        //             ? `${(centroid.lat / zone.path.length).toFixed(5)}, ${(centroid.lng / zone.path.length).toFixed(5)}`
+        //             : '—'
 
-  //           addCard(`${index + 1}. ${getZoneName(zone)}`, [
-  //             `Type: ${toText(zone.zoneType?.name, zone.zoneType?.id || 'Zone')}`,
-  //             `Status: ${toText(zone.status, 'planned')}`,
-  //             `Layout: ${toText(zone.layoutType, 'free')}`,
-  //             `Parent: ${toText(zoneLookup.get(zone.parentId))}`,
-  //             `Area: ${formatArea(zone.areaM2, measurementUnit)}`,
-  //             `Perimeter: ${formatDistance(zone.perimeterM, measurementUnit)}`,
-  //             `Capacity: ${zone.capacity != null ? Number(zone.capacity).toLocaleString() : '—'}`,
-  //             `Center: ${zoneCenter}`,
-  //           ])
-  //         })
-  //       } else {
-  //         addCard('No Zones', ['No zones have been created in this plan yet.'])
-  //       }
+        //           addCard(`${index + 1}. ${getZoneName(zone)}`, [
+        //             `Type: ${toText(zone.zoneType?.name, zone.zoneType?.id || 'Zone')}`,
+        //             `Status: ${toText(zone.status, 'planned')}`,
+        //             `Layout: ${toText(zone.layoutType, 'free')}`,
+        //             `Parent: ${toText(zoneLookup.get(zone.parentId))}`,
+        //             `Area: ${formatArea(zone.areaM2, measurementUnit)}`,
+        //             `Perimeter: ${formatDistance(zone.perimeterM, measurementUnit)}`,
+        //             `Capacity: ${zone.capacity != null ? Number(zone.capacity).toLocaleString() : '—'}`,
+        //             `Center: ${zoneCenter}`,
+        //           ])
+        //         })
+        //       } else {
+        //         addCard('No Zones', ['No zones have been created in this plan yet.'])
+        //       }
 
-  //       addSectionTitle('Asset Placement Details')
-  //       if (assets.length) {
-  //         assets.forEach((asset, index) => {
-  //           addCard(`${index + 1}. ${getAssetLabel(asset)}`, [
-  //             `Type: ${toText(asset.assetDef?.category, asset.assetDef?.id || 'asset')}`,
-  //             `Parent Zone: ${toText(zoneLookup.get(asset.parentId))}`,
-  //             `Position: ${Number(asset.lat || 0).toFixed(5)}, ${Number(asset.lng || 0).toFixed(5)}`,
-  //             `Size: ${formatDistance(asset.widthM || asset.assetDef?.defaultWidth || 0, measurementUnit)} × ${formatDistance(asset.lengthM || asset.assetDef?.defaultLength || 0, measurementUnit)}`,
-  //             `Rotation: ${Number(asset.rotationDeg || 0).toFixed(0)}°`,
-  //           ])
-  //         })
-  //       } else {
-  //         addCard('No Assets', ['No assets have been placed on the map yet.'])
-  //       }
+        //       addSectionTitle('Asset Placement Details')
+        //       if (assets.length) {
+        //         assets.forEach((asset, index) => {
+        //           addCard(`${index + 1}. ${getAssetLabel(asset)}`, [
+        //             `Type: ${toText(asset.assetDef?.category, asset.assetDef?.id || 'asset')}`,
+        //             `Parent Zone: ${toText(zoneLookup.get(asset.parentId))}`,
+        //             `Position: ${Number(asset.lat || 0).toFixed(5)}, ${Number(asset.lng || 0).toFixed(5)}`,
+        //             `Size: ${formatDistance(asset.widthM || asset.assetDef?.defaultWidth || 0, measurementUnit)} × ${formatDistance(asset.lengthM || asset.assetDef?.defaultLength || 0, measurementUnit)}`,
+        //             `Rotation: ${Number(asset.rotationDeg || 0).toFixed(0)}°`,
+        //           ])
+        //         })
+        //       } else {
+        //         addCard('No Assets', ['No assets have been placed on the map yet.'])
+        //       }
 
-  //       addSectionTitle('Routes and Line Details')
-  //       if (lines.length) {
-  //         lines.forEach((line, index) => {
-  //           addCard(`${index + 1}. ${toText(line.label, 'Route')}`, [
-  //             `Route Type: ${toText(line.routeType, 'custom')}`,
-  //             `Parent Zone: ${toText(zoneLookup.get(line.parentId))}`,
-  //             `Length: ${formatDistance(line.lengthM, measurementUnit)}`,
-  //             `Segments: ${Math.max(0, (line.path?.length || 1) - 1)}`,
-  //             `Style: ${toText(line.pattern, 'solid')}`,
-  //             `Weight: ${toText(line.strokeWeight, 4)}`,
-  //             `Color: ${toText(line.color, '#f59e0b')}`,
-  //           ])
-  //         })
-  //       } else {
-  //         addCard('No Routes', ['No route or line data has been added yet.'])
-  //       }
+        //       addSectionTitle('Routes and Line Details')
+        //       if (lines.length) {
+        //         lines.forEach((line, index) => {
+        //           addCard(`${index + 1}. ${toText(line.label, 'Route')}`, [
+        //             `Route Type: ${toText(line.routeType, 'custom')}`,
+        //             `Parent Zone: ${toText(zoneLookup.get(line.parentId))}`,
+        //             `Length: ${formatDistance(line.lengthM, measurementUnit)}`,
+        //             `Segments: ${Math.max(0, (line.path?.length || 1) - 1)}`,
+        //             `Style: ${toText(line.pattern, 'solid')}`,
+        //             `Weight: ${toText(line.strokeWeight, 4)}`,
+        //             `Color: ${toText(line.color, '#f59e0b')}`,
+        //           ])
+        //         })
+        //       } else {
+        //         addCard('No Routes', ['No route or line data has been added yet.'])
+        //       }
 
-  //       addSectionTitle('Notes and Overlays')
-  //       if (annotations.length) {
-  //         annotations.forEach((annotation, index) => {
-  //           addCard(`${index + 1}. Annotation`, [
-  //             `Text: ${toText(annotation.text, '—')}`,
-  //             `Position: ${Number(annotation.lat || 0).toFixed(5)}, ${Number(annotation.lng || 0).toFixed(5)}`,
-  //           ])
-  //         })
-  //       } else {
-  //         addCard('Annotations', ['No annotation notes have been added.'])
-  //       }
+        //       addSectionTitle('Notes and Overlays')
+        //       if (annotations.length) {
+        //         annotations.forEach((annotation, index) => {
+        //           addCard(`${index + 1}. Annotation`, [
+        //             `Text: ${toText(annotation.text, '—')}`,
+        //             `Position: ${Number(annotation.lat || 0).toFixed(5)}, ${Number(annotation.lng || 0).toFixed(5)}`,
+        //           ])
+        //         })
+        //       } else {
+        //         addCard('Annotations', ['No annotation notes have been added.'])
+        //       }
 
-  //       addCard('Floor Plan', [
-  //         `Attached: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
-  //         `Opacity: ${floorPlan?.opacity != null ? `${Math.round(floorPlan.opacity * 100)}%` : '—'}`,
-  //         `Rotation: ${floorPlan?.rotation != null ? `${floorPlan.rotation}°` : '—'}`,
-  //       ])
+        //       addCard('Floor Plan', [
+        //         `Attached: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
+        //         `Opacity: ${floorPlan?.opacity != null ? `${Math.round(floorPlan.opacity * 100)}%` : '—'}`,
+        //         `Rotation: ${floorPlan?.rotation != null ? `${floorPlan.rotation}°` : '—'}`,
+        //       ])
 
-  //       pdf.save(`eventwiz-detailed-report-${Date.now()}.pdf`)
-  //       return
-  //     }
-  //   } catch (err) {
-  //     console.error('Export failed:', err)
-  //     window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
-  //   }
-  // }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, measurementUnit, selectedZoneType, textStyle, zones])
-const pageW = pdf.internal.pageSize.getWidth()
+        //       pdf.save(`eventwiz-detailed-report-${Date.now()}.pdf`)
+        //       return
+        //     }
+        //   } catch (err) {
+        //     console.error('Export failed:', err)
+        //     window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
+        //   }
+        // }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, measurementUnit, selectedZoneType, textStyle, zones])
+        const pageW = pdf.internal.pageSize.getWidth()
         const pageH = pdf.internal.pageSize.getHeight()
         const margin = 24
         const contentW = pageW - margin * 2

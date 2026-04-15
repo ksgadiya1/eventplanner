@@ -753,12 +753,9 @@ export function snapToGrid(lat, lng, gridSizeMeters, referenceLat = lat, widthM 
   const gridLat = Number.isFinite(referenceLat) ? referenceLat : lat
   const lngStep = gridSizeMeters / (111111.0 * Math.cos(gridLat * Math.PI / 180))
 
-  const halfLatStep = (lengthM / 2) / 111111.0;
-  const halfLngStep = (widthM / 2) / (111111.0 * Math.cos(gridLat * Math.PI / 180));
-
   return {
-    lat: Math.round((lat - halfLatStep) / latStep) * latStep + halfLatStep,
-    lng: Math.round((lng - halfLngStep) / lngStep) * lngStep + halfLngStep,
+    lat: Math.round(lat / latStep) * latStep,
+    lng: Math.round(lng / lngStep) * lngStep,
   }
 }
 
@@ -793,11 +790,8 @@ export function snapToZoneGrid(lat, lng, zone, zoom, widthM = 0, lengthM = 0) {
   const alignedX = deltaX * Math.cos(rotationRad) + deltaY * Math.sin(rotationRad)
   const alignedY = -deltaX * Math.sin(rotationRad) + deltaY * Math.cos(rotationRad)
 
-  const halfWidth = widthM / 2;
-  const halfLength = lengthM / 2;
-
-  const snappedX = Math.round((alignedX - halfWidth) / gridSizeMeters) * gridSizeMeters + halfWidth;
-  const snappedY = Math.round((alignedY - halfLength) / gridSizeMeters) * gridSizeMeters + halfLength;
+  const snappedX = Math.round(alignedX / gridSizeMeters) * gridSizeMeters
+  const snappedY = Math.round(alignedY / gridSizeMeters) * gridSizeMeters
 
   const worldX = snappedX * Math.cos(rotationRad) - snappedY * Math.sin(rotationRad)
   const worldY = snappedX * Math.sin(rotationRad) + snappedY * Math.cos(rotationRad)
