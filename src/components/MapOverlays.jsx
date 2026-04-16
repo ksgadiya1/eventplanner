@@ -811,8 +811,17 @@ export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotat
   )
 })
 
-export const ZoneOverlay = React.memo(function ZoneOverlay({ zone, selected, locked, onStartInteraction, map, zoom }) {
-  if (!zone?.path?.length || !map) return null
+const ZONE_RESIZE_HANDLES = [
+  { key: 'nw', pathIndex: 0, cursor: 'nwse-resize', xSign: -1, ySign: -1 },
+  { key: 'ne', pathIndex: 1, cursor: 'nesw-resize', xSign: 1, ySign: -1 },
+  { key: 'se', pathIndex: 2, cursor: 'nwse-resize', xSign: 1, ySign: 1 },
+  { key: 'sw', pathIndex: 3, cursor: 'nesw-resize', xSign: -1, ySign: 1 },
+]
+
+export const ZoneOverlay = React.memo(function ZoneOverlay({ zone, selected, locked, onStartInteraction, map, zoom, refreshTick }) {
+  if (!zone?.path?.length || !map || !selected) return null
+
+  const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
 
   const center = zone.center || (() => {
     const lats = zone.path.map(p => p.lat)
@@ -823,48 +832,92 @@ export const ZoneOverlay = React.memo(function ZoneOverlay({ zone, selected, loc
     }
   })()
 
+  // Compute center pixel position
+  const centerPx = latLngToContainerPoint(map, center.lat, center.lng)
+  if (!centerPx) return null
+
+  // Compute each corner's pixel offset relative to center
+  const corners = zone.path.slice(0, 4).map(p => {
+    const px = latLngToContainerPoint(map, p.lat, p.lng)
+    if (!px) return null
+    return { x: px.x - centerPx.x, y: px.y - centerPx.y }
+  })
+
+  if (corners.some(c => !c)) return null
+
+  // Bounding box of corners to size the container
+  const xs = corners.map(c => c.x)
+  const ys = corners.map(c => c.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  const width = maxX - minX
+  const height = maxY - minY
+
   return (
     <OverlayView
+      key={`zone-overlay-${zone.id}-${liveZoom}-${refreshTick}`}
       position={center}
       mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-      getPixelPositionOffset={() => ({ x: -20, y: -20 })}
+      getPixelPositionOffset={() => ({ x: minX, y: minY })}
     >
-      <div
-        style={{
-          width: '40px',
-          height: '40px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          pointerEvents: selected && !locked ? 'auto' : 'none',
-        }}
-      >
-        {selected && !locked && (
-          <button
-            type="button"
+      <div style={{ position: 'relative', width: `${width}px`, height: `${height}px`, pointerEvents: 'none' }}>
+
+        {/* Corner vertex handles */}
+        {!locked && ZONE_RESIZE_HANDLES.map((handle) => {
+          const corner = corners[handle.pathIndex]
+          if (!corner) return null
+          return (
+            <div
+              key={handle.key}
+              onPointerDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onStartInteraction?.(e, zone, 'resize', handle)
+              }}
+              style={{
+                position: 'absolute',
+                left: `${corner.x - minX - 8}px`,
+                top: `${corner.y - minY - 8}px`,
+                width: '16px',
+                height: '16px',
+                borderRadius: '3px',
+                border: '2px solid #38bdf8',
+                background: '#ffffff',
+                cursor: handle.cursor,
+                touchAction: 'none',
+                pointerEvents: 'auto',
+                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                zIndex: 10,
+              }}
+            />
+          )
+        })}
+
+        {/* Center move handle - invisible drag target */}
+        {!locked && (
+          <div
             onPointerDown={(e) => {
+              e.preventDefault()
               e.stopPropagation()
               onStartInteraction?.(e, zone, 'move')
             }}
             style={{
+              position: 'absolute',
+              left: `${-minX - 14}px`,
+              top: `${-minY - 14}px`,
               width: '28px',
               height: '28px',
               borderRadius: '999px',
-              border: '2px solid #38bdf8',
-              background: 'rgba(255,255,255,0.92)',
+              border: '2px solid rgba(56,189,248,0.5)',
+              background: 'rgba(255,255,255,0.01)',
               cursor: 'move',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '14px',
-              padding: 0,
               touchAction: 'none',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+              pointerEvents: 'auto',
+              zIndex: 11,
             }}
-            title="Move zone"
-          >
-            ✥
-          </button>
+          />
         )}
       </div>
     </OverlayView>
