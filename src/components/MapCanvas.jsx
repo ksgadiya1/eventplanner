@@ -1159,35 +1159,31 @@ export default function MapCanvas({
         return
       }
 
-      const path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
+      const radius = lineMeasurement || 0
+      const path = buildCirclePath(currentDraft.center, radius, window.google, 72)
 
       if (path.length >= 3) {
         const zoneType = selectedZoneType || { id: 'generic', name: 'Zone', color: '#3d8ef8', fillOpacity: 0.2, layoutType: 'free' }
-        const defaultSubType = zoneType?.defaultSubTypeId
-          ? zoneType.subTypes?.find(subType => subType.id === zoneType.defaultSubTypeId) || null
-          : null
-        const metrics = { areaM2: Math.PI * radiusM * radiusM, perimeterM: 2 * Math.PI * radiusM }
+        const metrics = { areaM2: Math.PI * radius * radius, perimeterM: 2 * Math.PI * radius }
 
         onZoneCreate({
           id: `zone_${Date.now()}`,
           type: 'zone',
           shapeType: drawMode,
           center: currentDraft.center,
-          radiusM: radiusM,
+          radiusM: radius,
           zoneType,
           layoutType: 'free',
           showGrid: false,
           gridSize: 3,
           gridRotation: 0,
-          subType: defaultSubType,
+          subType: zoneType?.subTypes?.[0] || null, // Simplified subType fallback
           parentId: null,
           path,
           areaM2: metrics.areaM2,
           perimeterM: metrics.perimeterM,
-          capacity: null,
           label: zoneType?.name || 'Zone',
           allowedAssetTypes: zoneType?.allowedAssetTypes || [],
-          contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
         })
@@ -1419,7 +1415,7 @@ export default function MapCanvas({
     finalizePolygon(finalPath)
     setPolygonDraft(null)
     setLineMeasurement(null)
-  }, [drawMode, finalizePolygon, layers.lines, lineStyle, onClearSelection, onLineCreate])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, lineMeasurement, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, tempFloorPoints, textStyle, onZoneCreate, selectedZoneType, zones])
 
   const handleMapRightClick = useCallback((event) => {
     if (drawMode === 'line' || drawMode === 'route') {
@@ -1482,7 +1478,7 @@ export default function MapCanvas({
     clickableIcons: false,
     isFractionalZoomEnabled: true,
     keyboardShortcuts: true,
-    mapTypeControl: true,
+    mapTypeControl: false,
     mapTypeControlOptions: {
       style: window.google?.maps?.MapTypeControlStyle?.HORIZONTAL_BAR,
       position: window.google?.maps?.ControlPosition?.TOP_RIGHT,
@@ -1490,13 +1486,13 @@ export default function MapCanvas({
     },
     streetViewControl: false,
     fullscreenControl: false,
-    rotateControl: true,
-    zoomControl: true,
+    rotateControl: false,
+    zoomControl: false,
     zoomControlOptions: {
       position: window.google?.maps?.ControlPosition?.RIGHT_BOTTOM,
     },
     scaleControl: false,
-    draggable: true,
+    draggable: !isInteracting,
     minZoom: isViewOnly && Number.isFinite(viewOnlyMinZoom) ? viewOnlyMinZoom : undefined,
     maxZoom: isViewOnly && Number.isFinite(viewOnlyMaxZoom) ? Math.max(viewOnlyMinZoom ?? 0, viewOnlyMaxZoom) : undefined,
     restriction: isViewOnly && viewOnlyRestrictionBounds
@@ -1510,7 +1506,7 @@ export default function MapCanvas({
     draggingCursor: isViewOnly
       ? 'grabbing'
       : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
-  }), [drawMode, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
+  }), [drawMode, isInteracting, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
 
   if (!apiKey) {
     return (
@@ -2115,7 +2111,6 @@ export default function MapCanvas({
         <GridLayer
           map={mapRef.current}
           visible={layers.grid?.visible}
-          size={layers.grid?.size || 3}
           size={layers.grid?.size || 3}
           opacity={layers.grid?.opacity}
           color={layers.grid?.color}

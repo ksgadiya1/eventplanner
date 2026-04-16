@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useState } from 'react'
 import {
     clientPointToLatLng,
     latLngToContainerPoint,
@@ -21,6 +21,7 @@ export function useMapInteraction({
     onUpdate,
     onComplete
 }) {
+    const [isInteracting, setIsInteracting] = useState(false)
     const stateRef = useRef(null)
     const rafRef = useRef(null)
 
@@ -78,6 +79,7 @@ export function useMapInteraction({
             snap: snapEnabled,
         }
 
+        setIsInteracting(true)
         document.body.style.userSelect = 'none'
     }, [map, snapEnabled])
 
@@ -181,8 +183,9 @@ export function useMapInteraction({
         const ds = stateRef.current
         if (ds && onComplete) onComplete(ds.object)
         stateRef.current = null
+        setIsInteracting(false)
         document.body.style.userSelect = ''
     }, [onComplete])
 
-    return { startInteraction, move, end, isInteracting: !!stateRef.current }
+    return { startInteraction, move, end, isInteracting }
 }

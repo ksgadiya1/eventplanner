@@ -202,6 +202,174 @@ export const AssetOverlay = React.memo(function AssetOverlay({
     </OverlayView>
   )
 })
+/**
+ * High-performance interaction layer for floor plans.
+ * Provides a native-synced selection border, move area, and resize handles.
+ */
+const FloorPlanNativeInteraction = React.memo(function FloorPlanNativeInteraction({
+  floorPlan, locked, onSelect, onStartInteraction, map, geometry
+}) {
+  useEffect(() => {
+    if (!map || !floorPlan || !window.google) return
+
+    const overlay = new window.google.maps.OverlayView()
+    const container = document.createElement('div')
+    container.style.position = 'absolute'
+    container.style.pointerEvents = 'none'
+    container.style.zIndex = '1000'
+
+    // Selection border and move area
+    const selection = document.createElement('button')
+    selection.type = 'button'
+    selection.style.position = 'absolute'
+    selection.style.border = '2px solid #38bdf8'
+    selection.style.background = 'transparent'
+    selection.style.cursor = locked ? 'default' : 'move'
+    selection.style.borderRadius = '14px'
+    selection.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.92)'
+    selection.style.pointerEvents = 'auto'
+    selection.style.padding = '0'
+    selection.style.outline = 'none'
+
+    selection.addEventListener('mousedown', (e) => {
+      e.stopPropagation()
+      if (!locked) onStartInteraction(e, floorPlan, 'move')
+    })
+    selection.addEventListener('click', (e) => {
+      e.stopPropagation()
+      onSelect({ ...floorPlan, type: 'floor' })
+    })
+
+    container.appendChild(selection)
+
+    // Rotate handle
+    const rotateLine = document.createElement('div')
+    rotateLine.style.position = 'absolute'
+    rotateLine.style.width = '2px'
+    rotateLine.style.height = '24px'
+    rotateLine.style.background = '#111827'
+    rotateLine.style.transform = 'translateX(-50%)'
+
+    const rotateBtn = document.createElement('button')
+    rotateBtn.type = 'button'
+    rotateBtn.innerText = 'R'
+    rotateBtn.style.position = 'absolute'
+    rotateBtn.style.transform = 'translateX(-50%)'
+    rotateBtn.style.width = '26px'
+    rotateBtn.style.height = '26px'
+    rotateBtn.style.borderRadius = '50%'
+    rotateBtn.style.border = '2px solid #38bdf8'
+    rotateBtn.style.background = '#ffffff'
+    rotateBtn.style.color = '#0f172a'
+    rotateBtn.style.fontSize = '13px'
+    rotateBtn.style.fontWeight = '700'
+    rotateBtn.style.cursor = 'grab'
+    rotateBtn.style.pointerEvents = 'auto'
+    rotateBtn.style.padding = '0'
+
+    rotateBtn.addEventListener('mousedown', (e) => {
+      e.stopPropagation()
+      onStartInteraction(e, floorPlan, 'rotate')
+    })
+
+    container.appendChild(rotateLine)
+    container.appendChild(rotateBtn)
+
+    // Resize handles
+    const handleKeys = ['nw', 'ne', 'se', 'sw']
+    const signs = [{ x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 }]
+    const cursors = ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize']
+
+    const handles = handleKeys.map((key, i) => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.style.position = 'absolute'
+      btn.style.width = '16px'
+      btn.style.height = '16px'
+      btn.style.borderRadius = '4px'
+      btn.style.border = '2px solid #38bdf8'
+      btn.style.background = '#ffffff'
+      btn.style.boxShadow = '0 1px 3px rgba(0,0,0,0.2)'
+      btn.style.cursor = cursors[i]
+      btn.style.pointerEvents = 'auto'
+      btn.style.padding = '0'
+
+      btn.addEventListener('mousedown', (e) => {
+        e.stopPropagation()
+        onStartInteraction(e, floorPlan, 'resize', {
+          key,
+          xSign: signs[i].x,
+          ySign: signs[i].y
+        })
+      })
+
+      container.appendChild(btn)
+      return btn
+    })
+
+    overlay.onAdd = function () {
+      this.getPanes().overlayMouseTarget.appendChild(container)
+    }
+
+    overlay.draw = function () {
+      const projection = this.getProjection()
+      if (!projection) return
+
+      const rotation = floorPlan.rotation || 0
+      const center = projection.fromLatLngToDivPixel(new window.google.maps.LatLng(geometry.centerLat, geometry.centerLng))
+      if (!center) return
+
+      // Update main selection area
+      selection.style.width = `${geometry.widthPx}px`
+      selection.style.height = `${geometry.heightPx}px`
+      selection.style.left = `${center.x - geometry.widthPx / 2}px`
+      selection.style.top = `${center.y - geometry.heightPx / 2}px`
+      selection.style.transform = `rotate(${rotation}deg)`
+
+      // Calculate path vertices locally to position handles accurately
+      const path = buildRectanglePath(
+        { lat: geometry.centerLat, lng: geometry.centerLng },
+        (floorPlan.widthM || 10) / 2,
+        (floorPlan.lengthM || floorPlan.heightM || 10) / 2,
+        window.google,
+        rotation
+      )
+
+      path.forEach((vertex, i) => {
+        const p = projection.fromLatLngToDivPixel(new window.google.maps.LatLng(vertex.lat, vertex.lng))
+        if (p) {
+          handles[i].style.left = `${p.x - 8}px`
+          handles[i].style.top = `${p.y - 8}px`
+        }
+      })
+
+      // Position rotation handle above center
+      const angleRad = (rotation - 90) * Math.PI / 180
+      const distPx = (geometry.heightPx / 2) + 40
+      const rotX = center.x + Math.cos(angleRad) * distPx
+      const rotY = center.y + Math.sin(angleRad) * distPx
+
+      rotateLine.style.left = `${center.x + Math.cos(angleRad) * (geometry.heightPx / 2)}px`
+      rotateLine.style.top = `${center.y + Math.sin(angleRad) * (geometry.heightPx / 2)}px`
+      rotateLine.style.height = `40px`
+      rotateLine.style.transform = `rotate(${rotation}deg)`
+      rotateLine.style.transformOrigin = 'top center'
+
+      rotateBtn.style.left = `${rotX}px`
+      rotateBtn.style.top = `${rotY}px`
+    }
+
+    overlay.onRemove = function () {
+      if (container.parentNode) container.parentNode.removeChild(container)
+    }
+
+    overlay.setMap(map)
+    return () => overlay.setMap(null)
+  }, [floorPlan, locked, onSelect, onStartInteraction, map, geometry])
+
+  return null
+})
+
 export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom, refreshTick = 0 }) {
   const geometry = getFloorGeometry(map, floorPlan, zoom)
   if (!geometry) return null
@@ -248,86 +416,14 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
       </OverlayView>
 
       {selected && (
-        <OverlayView
-          key={`floor-selection-${floorPlan.id}-${refreshTick}`}
-          position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
-          mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-          getPixelPositionOffset={() => ({ x: -Math.round(geometry.widthPx / 2), y: -Math.round(geometry.heightPx / 2) })}
-        >
-          <div style={{ width: `${geometry.widthPx}px`, height: `${geometry.heightPx}px`, position: 'relative', pointerEvents: 'auto' }}>
-            <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onSelect({ ...floorPlan, type: 'floor' })
-                }}
-                onPointerDown={(event) => !locked && onStartInteraction(event, floorPlan, 'move')}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  padding: 0,
-                  border: '2px solid #38bdf8',
-                  background: 'transparent',
-                  cursor: locked ? 'default' : 'move',
-                  borderRadius: '14px',
-                  overflow: 'hidden',
-                  boxShadow: '0 0 0 1px rgba(255,255,255,0.92)',
-                  pointerEvents: 'auto',
-                }}
-              >
-                <div style={{ width: '100%', height: '100%', opacity: 0, pointerEvents: 'none' }} />
-              </button>
-
-              {!locked && (
-                <>
-                  <div style={{ position: 'absolute', top: '-32px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)', pointerEvents: 'auto' }} />
-                  <button
-                    type="button"
-                    onPointerDown={(event) => onStartInteraction(event, floorPlan, 'rotate')}
-                    style={{
-                      position: 'absolute',
-                      top: '-50px',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: '26px',
-                      height: '26px',
-                      borderRadius: '999px',
-                      border: '2px solid #38bdf8',
-                      background: '#ffffff',
-                      cursor: 'grab',
-                      fontSize: '13px',
-                      fontWeight: 700,
-                      padding: 0,
-                      pointerEvents: 'auto',
-                    }}
-                  >
-                    R
-                  </button>
-                  {resizeHandles.map((handle) => (
-                    <button
-                      key={handle.key}
-                      type="button"
-                      onPointerDown={(event) => onStartInteraction(event, floorPlan, 'resize', handle)}
-                      style={{
-                        position: 'absolute',
-                        width: '16px',
-                        height: '16px',
-                        borderRadius: '4px',
-                        border: '2px solid #38bdf8',
-                        background: '#ffffff',
-                        cursor: handle.cursor,
-                        padding: 0,
-                        pointerEvents: 'auto',
-                        ...handle,
-                      }}
-                    />
-                  ))}
-                </>
-              )}
-            </div>
-          </div>
-        </OverlayView>
+        <FloorPlanNativeInteraction
+          floorPlan={floorPlan}
+          locked={locked}
+          onSelect={onSelect}
+          onStartInteraction={onStartInteraction}
+          map={map}
+          geometry={geometry}
+        />
       )}
     </>
   )
