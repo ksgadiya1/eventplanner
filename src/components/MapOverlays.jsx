@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { MarkerF, OverlayView } from '@react-google-maps/api'
 import AssetGlyph from './AssetGlyph'
-import { getAssetSize, metersPerPixel, getFloorGeometry, buildRectanglePath } from '../utils/mapGeometry'
+import { getAssetSize, metersPerPixel, getFloorGeometry, buildRectanglePath, getPathCenter, getRectangleZoneDimensions } from '../utils/mapGeometry'
 
 function getStatusColor(status) {
   switch (status) {
@@ -424,3 +424,98 @@ export function MeasurementOverlay({ screenPosition, text }) {
 }
 
 
+// ─── Zone Overlay ─────────────────────────────────────────────────────────────
+
+/**
+ * Custom overlay for rectangular zones to provide constrained native-looking handles.
+ * Google's native Polygon editor always shows midpoints and allows diagonal distortion,
+ * which this component prevents by only showing vertex handles and using buildRectanglePath.
+ */
+export const ZoneOverlay = React.memo(function ZoneOverlay({ zone, selected, locked, onStartInteraction, map, zoom }) {
+  const [handleElements, setHandleElements] = useState([])
+
+  useEffect(() => {
+    if (!selected || locked || !map || zone.shapeType !== 'rectangle' || !zone.path || zone.path.length < 4) {
+      setHandleElements([])
+      return
+    }
+
+    const handleKeys = ['nw', 'ne', 'se', 'sw']
+    const signs = [
+      { x: -1, y: -1 },
+      { x: 1, y: -1 },
+      { x: 1, y: 1 },
+      { x: -1, y: 1 },
+    ]
+
+    const overlay = new window.google.maps.OverlayView()
+    const container = document.createElement('div')
+    container.style.position = 'absolute'
+    container.style.pointerEvents = 'none'
+    container.style.zIndex = '1000'
+
+    const buttons = zone.path.slice(0, 4).map((vertex, index) => {
+      const btn = document.createElement('button')
+      btn.style.position = 'absolute'
+      btn.style.width = '10px'
+      btn.style.height = '10px'
+      btn.style.backgroundColor = '#ffffff'
+      btn.style.border = '1px solid #38bdf8'
+      btn.style.borderRadius = '0px'
+      btn.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.5), 0 2px 5px rgba(0,0,0,0.2)'
+      btn.style.pointerEvents = 'auto'
+      btn.style.cursor = index === 0 || index === 2 ? 'nwse-resize' : 'nesw-resize'
+      btn.style.padding = '0'
+      btn.style.outline = 'none'
+
+      const startInteraction = (e) => {
+        e.stopPropagation()
+        onStartInteraction(e, zone, 'resize', {
+          key: handleKeys[index],
+          xSign: signs[index].x,
+          ySign: signs[index].y,
+        })
+      }
+
+      btn.addEventListener('mousedown', startInteraction)
+      btn.addEventListener('touchstart', (e) => {
+        // Simple touch to mouse event bridge if needed, but onStartInteraction should handle it
+        startInteraction(e)
+      }, { passive: false })
+
+      container.appendChild(btn)
+      return { btn, vertex }
+    })
+
+    overlay.onAdd = function () {
+      this.getPanes().overlayMouseTarget.appendChild(container)
+    }
+
+    overlay.draw = function () {
+      const projection = this.getProjection()
+      if (!projection) return
+
+      buttons.forEach(({ btn, vertex }) => {
+        const point = projection.fromLatLngToDivPixel(new window.google.maps.LatLng(vertex.lat, vertex.lng))
+        if (point) {
+          btn.style.left = `${point.x - 5}px`
+          btn.style.top = `${point.y - 5}px`
+        }
+      })
+    }
+
+    overlay.onRemove = function () {
+      if (container.parentNode) {
+        container.parentNode.removeChild(container)
+      }
+    }
+
+    overlay.setMap(map)
+
+    return () => {
+      overlay.setMap(null)
+    }
+  }, [zone, selected, locked, map, onStartInteraction])
+
+  return null
+})

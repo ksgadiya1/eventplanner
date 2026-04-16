@@ -22,7 +22,6 @@ import {
   normalizeFloorPlanState,
   computeContentBounds,
   buildCirclePath,
-  buildSquarePath,
   buildRectanglePath,
   getLinePatternIcons,
   getBoundsPreviewPath,
@@ -31,9 +30,11 @@ import {
   snapToZoneGrid,
   computeVisibleGridSpacing,
   computeRenderedGridSpacing,
+  getPathCenter,
+  getRectangleZoneDimensions,
 } from '../utils/mapGeometry'
 import { formatDistance, formatArea } from '../utils/units'
-import { AssetOverlay, FloorPlanOverlay, AnnotationOverlay, MeasurementOverlay } from './MapOverlays'
+import { AssetOverlay, FloorPlanOverlay, AnnotationOverlay, MeasurementOverlay, ZoneOverlay } from './MapOverlays'
 import MapLayers from './MapLayers'
 import GridLayer from './GridLayer'
 import AssetGlyph from './AssetGlyph'
@@ -107,46 +108,6 @@ function getZoneDisplayName(zone) {
   return customLabel || zone?.zoneType?.name || 'Zone'
 }
 
-function getPathCenter(path = []) {
-  if (!Array.isArray(path) || !path.length) return null
-  const totals = path.reduce((sum, point) => ({
-    lat: sum.lat + (point.lat || 0),
-    lng: sum.lng + (point.lng || 0),
-  }), { lat: 0, lng: 0 })
-
-  return {
-    lat: totals.lat / path.length,
-    lng: totals.lng / path.length,
-  }
-}
-
-function getRectangleZoneDimensions(zone, google) {
-  const widthM = Number(zone?.widthM)
-  const lengthM = Number(zone?.lengthM)
-  if (Number.isFinite(widthM) && widthM > 0 && Number.isFinite(lengthM) && lengthM > 0) {
-    return { widthM, lengthM }
-  }
-
-  if (!google?.maps?.geometry?.spherical || !Array.isArray(zone?.path) || zone.path.length < 4) {
-    return { widthM: null, lengthM: null }
-  }
-
-  const p0 = zone.path[0]
-  const p1 = zone.path[1]
-  const p2 = zone.path[2]
-  if (!p0 || !p1 || !p2) return { widthM: null, lengthM: null }
-
-  return {
-    widthM: google.maps.geometry.spherical.computeDistanceBetween(
-      new google.maps.LatLng(p0.lat, p0.lng),
-      new google.maps.LatLng(p1.lat, p1.lng)
-    ),
-    lengthM: google.maps.geometry.spherical.computeDistanceBetween(
-      new google.maps.LatLng(p1.lat, p1.lng),
-      new google.maps.LatLng(p2.lat, p2.lng)
-    ),
-  }
-}
 
 function buildZoneGridOverlay(zone, map, zoom) {
   if (!map || !Array.isArray(zone?.path) || zone.path.length < 3) return null
@@ -168,7 +129,7 @@ function buildZoneGridOverlay(zone, map, zoom) {
     y: (minY + maxY) / 2,
   }
 
-  const center = (zone.shapeType === 'circle' || zone.shapeType === 'square') && zone.center
+  const center = (zone.shapeType === 'circle' || zone.shapeType === 'rectangle') && zone.center
     ? zone.center
     : getPathCenter(zone.path)
   if (!center) return null
@@ -455,6 +416,7 @@ export default function MapCanvas({
   }, [annotations, assets, eventDetails, floorPlan, lines, zones])
 
   const rafRef = useRef(null)
+  const drawingManagerRef = useRef(null)
 
   const onLoad = useCallback((map) => {
     mapRef.current = map
@@ -492,7 +454,90 @@ export default function MapCanvas({
         zoom: map.getZoom() || defaultZoom,
       })
     }
-  }, [defaultCenter, defaultZoom, isViewOnly, mapViewMode, onMapRef, onViewportChange])
+
+    if (!isViewOnly && window.google?.maps?.drawing) {
+      const dm = new window.google.maps.drawing.DrawingManager({
+        drawingMode: null,
+        drawingControl: true,
+        drawingControlOptions: {
+          position: window.google.maps.ControlPosition.TOP_CENTER,
+          drawingModes: [window.google.maps.drawing.OverlayType.RECTANGLE],
+        },
+        rectangleOptions: {
+          fillColor: '#3d8ef8',
+          fillOpacity: 0.2,
+          strokeColor: '#3d8ef8',
+          strokeWeight: 2,
+          clickable: false,
+          editable: false,
+          zIndex: 1,
+        },
+      })
+      dm.setMap(map)
+      drawingManagerRef.current = dm
+
+      window.google.maps.event.addListener(dm, 'rectanglecomplete', (rectangle) => {
+        const bounds = rectangle.getBounds()
+        rectangle.setMap(null) // Remove native overlay immediately
+
+        const ne = bounds.getNorthEast()
+        const sw = bounds.getSouthWest()
+        const path = [
+          { lat: ne.lat(), lng: sw.lng() },
+          { lat: ne.lat(), lng: ne.lng() },
+          { lat: sw.lat(), lng: ne.lng() },
+          { lat: sw.lat(), lng: sw.lng() },
+        ]
+
+        const center = {
+          lat: (ne.lat() + sw.lat()) / 2,
+          lng: (ne.lng() + sw.lng()) / 2,
+        }
+
+        const zoneType = selectedZoneType || { id: 'generic', name: 'Zone', color: '#3d8ef8', fillOpacity: 0.2, layoutType: 'free' }
+        const defaultSubType = zoneType?.defaultSubTypeId
+          ? zoneType.subTypes?.find(subType => subType.id === zoneType.defaultSubTypeId) || null
+          : null
+
+        const metrics = computePolygonMetrics(path, window.google)
+        const widthM = window.google.maps.geometry.spherical.computeDistanceBetween(
+          new window.google.maps.LatLng(ne.lat(), sw.lng()),
+          new window.google.maps.LatLng(ne.lat(), ne.lng())
+        )
+        const lengthM = window.google.maps.geometry.spherical.computeDistanceBetween(
+          new window.google.maps.LatLng(ne.lat(), sw.lng()),
+          new window.google.maps.LatLng(sw.lat(), sw.lng())
+        )
+
+        onZoneCreate({
+          id: `zone_${Date.now()}`,
+          type: 'zone',
+          shapeType: 'rectangle',
+          center,
+          zoneType,
+          layoutType: 'free',
+          showGrid: false,
+          gridSize: 3,
+          gridRotation: 0,
+          subType: defaultSubType,
+          parentId: null,
+          path,
+          areaM2: metrics.areaM2,
+          perimeterM: metrics.perimeterM,
+          capacity: null,
+          label: zoneType?.name || 'Zone',
+          allowedAssetTypes: zoneType?.allowedAssetTypes || [],
+          contentLocked: !!zoneType?.allowedAssetTypes?.length,
+          status: 'planned',
+          notes: '',
+          widthM: Number(widthM.toFixed(2)),
+          lengthM: Number(lengthM.toFixed(2)),
+        })
+
+        onDrawMode?.('select')
+      })
+    }
+  }, [defaultCenter, defaultZoom, isViewOnly, mapViewMode, onMapRef, onViewportChange, onZoneCreate, selectedZoneType])
 
   useEffect(() => {
     const map = mapRef.current
@@ -506,6 +551,17 @@ export default function MapCanvas({
     map.setTilt(0)
     map.setHeading(0)
   }, [mapViewMode])
+
+  useEffect(() => {
+    const dm = drawingManagerRef.current
+    if (!dm || !window.google) return
+
+    if (drawMode === 'rectangle') {
+      dm.setDrawingMode(window.google.maps.drawing.OverlayType.RECTANGLE)
+    } else {
+      dm.setDrawingMode(null)
+    }
+  }, [drawMode])
 
 
 
@@ -830,8 +886,9 @@ export default function MapCanvas({
         const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
         const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
         const rawLength = interaction.startLengthPx + (localY * handle.ySign)
-        const widthPx = Math.max(MIN_ZONE_SIZE_PX, rawWidth)
-        const lengthPx = Math.max(MIN_ZONE_SIZE_PX, rawLength)
+        let widthPx = Math.max(MIN_ZONE_SIZE_PX, rawWidth)
+        let lengthPx = Math.max(MIN_ZONE_SIZE_PX, rawLength)
+
         const appliedWidthDelta = widthPx - interaction.startWidthPx
         const appliedLengthDelta = lengthPx - interaction.startLengthPx
         const localCenterShift = {
@@ -941,21 +998,25 @@ export default function MapCanvas({
     if (!window.google || !overlay) return
     const path = extractPathFromOverlay(overlay)
     if (path.length < 3) return
-    const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
+
+    const oldPath = zone.path
+    let finalPath = path
+
+    const { areaM2, perimeterM } = computePolygonMetrics(finalPath, window.google)
 
     const updateData = {
       ...zone,
-      path,
+      path: finalPath,
       areaM2,
       perimeterM,
       parentId: zone.parentId || null,
-      capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
+      capacity: computeZoneCapacity({ ...zone, path: finalPath, areaM2 }),
     }
 
-    // For square zones, synchronize center and dimensions with the new path
-    if (zone.shapeType === 'square') {
-      const center = getPathCenter(path)
-      const dimensions = getRectangleZoneDimensions({ path }, window.google)
+    // For rectangular zones, synchronize center and dimensions with the new path
+    if (zone.shapeType === 'rectangle') {
+      const center = getPathCenter(finalPath)
+      const dimensions = getRectangleZoneDimensions({ path: finalPath }, window.google)
       updateData.center = center
       if (dimensions.widthM) updateData.widthM = Number(dimensions.widthM.toFixed(2))
       if (dimensions.lengthM) updateData.lengthM = Number(dimensions.lengthM.toFixed(2))
@@ -1093,10 +1154,11 @@ export default function MapCanvas({
     }
 
     const activeShape = shapeDraftRef.current
-    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'square')) {
+    if (activeShape?.center && activeShape.type === 'circle') {
       const centerLatLng = new window.google.maps.LatLng(activeShape.center.lat, activeShape.center.lng)
       const currentDist = window.google.maps.geometry.spherical.computeDistanceBetween(centerLatLng, event.latLng)
       setLineMeasurement(currentDist)
+      setShapeDraft(prev => prev ? { ...prev, hoverPoint: { lat: event.latLng.lat(), lng: event.latLng.lng() } } : prev)
     }
 
 
@@ -1189,7 +1251,7 @@ export default function MapCanvas({
 
     if (placePendingZoneTemplateAtLatLng(event.latLng)) return
 
-    if ((drawMode === 'square' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
+    if (drawMode === 'circle' && !layers.zones?.locked && window.google) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
       const currentDraft = shapeDraftRef.current
 
@@ -1203,29 +1265,21 @@ export default function MapCanvas({
       const targetLatLng = new window.google.maps.LatLng(point.lat, point.lng)
       const radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
 
-      let path = []
-      if (drawMode === 'square') {
-        path = buildSquarePath(currentDraft.center, radiusM, window.google)
-      } else {
-        path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
-      }
+      const path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
 
       if (path.length >= 3) {
         const zoneType = selectedZoneType || { id: 'generic', name: 'Zone', color: '#3d8ef8', fillOpacity: 0.2, layoutType: 'free' }
         const defaultSubType = zoneType?.defaultSubTypeId
           ? zoneType.subTypes?.find(subType => subType.id === zoneType.defaultSubTypeId) || null
           : null
-        const metrics = drawMode === 'circle'
-          ? { areaM2: Math.PI * radiusM * radiusM, perimeterM: 2 * Math.PI * radiusM }
-          : computePolygonMetrics(path, window.google)
+        const metrics = { areaM2: Math.PI * radiusM * radiusM, perimeterM: 2 * Math.PI * radiusM }
 
         onZoneCreate({
           id: `zone_${Date.now()}`,
           type: 'zone',
           shapeType: drawMode,
-          // center: drawMode === 'circle' ? currentDraft.center : undefined,
           center: currentDraft.center,
-          radiusM: drawMode === 'circle' ? radiusM : undefined,
+          radiusM: radiusM,
           zoneType,
           layoutType: 'free',
           showGrid: false,
@@ -1242,8 +1296,6 @@ export default function MapCanvas({
           contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
-          widthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
-          lengthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
         })
       }
 
@@ -1568,7 +1620,7 @@ export default function MapCanvas({
     }
 
     if (object.type === 'zone' && type === 'resize') {
-      if (layers.zones?.locked || object.shapeType !== 'square') return
+      if (layers.zones?.locked || object.shapeType !== 'rectangle') return
       const rect = map.getDiv().getBoundingClientRect()
       const center = getPathCenter(object.path)
       const centerPoint = center ? latLngToContainerPoint(map, center.lat, center.lng) : null
@@ -1838,6 +1890,8 @@ export default function MapCanvas({
                     })
                   }}
                   onMouseOut={() => setHoveredItem(null)}
+                  onDrag={() => handleCircleZoneChange(zone)}
+                  onDragEnd={() => handleCircleZoneChange(zone)}
                   onMouseUp={() => handleCircleZoneChange(zone)}
                   onLoad={(circle) => {
                     const previousCircle = zoneCircleRefs.current[zone.id]
@@ -1860,9 +1914,9 @@ export default function MapCanvas({
                     fillOpacity: selectedId === zone.id
                       ? Math.min((zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2) + 0.08, 1)
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
-                    strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
-                    strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked,
+                    strokeColor: selectedId === zone.id && zone.shapeType === 'rectangle' ? '#38bdf8' : (zone.strokeColor || zone.zoneType?.color || '#3d8ef8'),
+                    strokeWeight: selectedId === zone.id && zone.shapeType === 'rectangle' ? 1.5 : (selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2)),
+                    editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'rectangle',
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
@@ -1886,6 +1940,7 @@ export default function MapCanvas({
                   }}
                   onMouseOut={() => setHoveredItem(null)}
                   onMouseUp={() => handleZonePathChange(zone)}
+                  onDrag={() => handleZonePathChange(zone)}
                   onDragEnd={() => handleZonePathChange(zone)}
                   onLoad={(polygon) => {
                     zoneOverlayRefs.current[zone.id] = polygon
@@ -1899,6 +1954,16 @@ export default function MapCanvas({
                   onUnmount={() => {
                     delete zoneOverlayRefs.current[zone.id]
                   }}
+                />
+              )}
+              {selectedId === zone.id && zone.shapeType === 'rectangle' && (
+                <ZoneOverlay
+                  zone={zone}
+                  selected={true}
+                  locked={layers.zones?.locked}
+                  onStartInteraction={handleStartInteraction}
+                  map={mapRef.current}
+                  zoom={mapZoom}
                 />
               )}
               {canShowZoneLabel && (
@@ -2150,28 +2215,16 @@ export default function MapCanvas({
           </>
         )}
 
-        {shapeDraft?.center && lineMeasurement !== null && window.google && (
+        {shapeDraft?.center && window.google && (
           <>
-            {shapeDraft.type === 'circle' ? (
+            {shapeDraft.type === 'circle' && (
               <Circle
                 center={shapeDraft.center}
-                radius={lineMeasurement}
+                radius={lineMeasurement || 0}
                 options={{
-                  fillColor: 'rgba(60, 130, 240, 0.2)',
-                  strokeColor: '#3d8ef8',
-                  strokeOpacity: 0.7,
-                  strokeWeight: 2,
-                  clickable: false,
-                }}
-              />
-            ) : (
-              <Polygon
-                key="shape-draft"
-                paths={buildSquarePath(shapeDraft.center, lineMeasurement, window.google)}
-                options={{
-                  fillColor: 'rgba(120, 210, 120, 0.2)',
-                  strokeColor: '#22c55e',
-                  strokeOpacity: 0.7,
+                  fillColor: 'rgba(56, 189, 248, 0.2)',
+                  strokeColor: '#38bdf8',
+                  strokeOpacity: 0.8,
                   strokeWeight: 2,
                   clickable: false,
                 }}
@@ -2198,7 +2251,7 @@ export default function MapCanvas({
                 whiteSpace: 'nowrap',
                 transform: 'translateY(-120%)',
               }}>
-                {shapeDraft.type === 'circle' ? 'Radius' : 'Half-side'}: {formatDistance(lineMeasurement, measurementUnit)}
+                Radius: {formatDistance(lineMeasurement, measurementUnit)}
               </div>
             </OverlayView>
           </>
@@ -2333,7 +2386,7 @@ export default function MapCanvas({
               gridSize={baseGridSnap ? baseGridSize : zoneGridSize}
               gridZone={resolvedGridZone}
               gridReferenceLat={baseCenterLat}
-              vertexSnapZone={parentZone?.shapeType === 'square' ? parentZone : null}
+              vertexSnapZone={parentZone?.shapeType === 'rectangle' ? parentZone : null}
             />
           )
         })}

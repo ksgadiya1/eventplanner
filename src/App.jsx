@@ -1288,10 +1288,10 @@ export default function App() {
         capacity: computeZoneCapacity(updated),
       }
 
-      const isSquareShape = updated.shapeType === 'square'
+      const isRectangleShape = updated.shapeType === 'rectangle'
       const isCircleShape = updated.shapeType === 'circle'
-      const widthChanged = isSquareShape && Number(updated.widthM) !== Number(previousZone?.widthM)
-      const lengthChanged = isSquareShape && Number(updated.lengthM) !== Number(previousZone?.lengthM)
+      const widthChanged = isRectangleShape && Number(updated.widthM) !== Number(previousZone?.widthM)
+      const lengthChanged = isRectangleShape && Number(updated.lengthM) !== Number(previousZone?.lengthM)
       const radiusChanged = isCircleShape && Number(updated.radiusM) !== Number(previousZone?.radiusM)
       const rotationChanged = Number(updated.rotation) !== Number(previousZone?.rotation)
 
@@ -1337,7 +1337,7 @@ export default function App() {
         }
       }
 
-      if (rotationChanged && !isSquareShape && Array.isArray(nextZoneRecord.path) && nextZoneRecord.path.length >= 3) {
+      if (rotationChanged && !isRectangleShape && Array.isArray(nextZoneRecord.path) && nextZoneRecord.path.length >= 3) {
         const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
         const oldRotation = Number(previousZone?.rotation || 0)
         const newRotation = Number(updated.rotation || 0)
@@ -1361,7 +1361,7 @@ export default function App() {
             rotation: newRotation,
           }
         }
-      } else if (rotationChanged && isSquareShape) {
+      } else if (rotationChanged && isRectangleShape) {
         const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
         const newRotation = Number(updated.rotation || 0)
 
@@ -2870,7 +2870,52 @@ export default function App() {
     return requestBody
   }, [eventId, loadEventRecord, updateEventMeta])
 
-  const handleCreateEvent = async (name, eventType) => {
+  const handleCreateEvent = async (name, eventType, location) => {
+    let centerLat = DEFAULT_MAP_VIEWPORT.center.lat
+    let centerLng = DEFAULT_MAP_VIEWPORT.center.lng
+    let zoomLevel = DEFAULT_MAP_VIEWPORT.zoom
+
+    if (location && location.trim()) {
+      try {
+        const query = location.trim()
+        let geocodeData = null
+
+        // Try what3words first if it matches the pattern
+        const w3wPattern = /^\s*([a-zA-Z]+\.[a-zA-Z]+\.[a-zA-Z]+)\s*$/
+        const w3wMatch = query.match(w3wPattern)
+
+        if (w3wMatch) {
+          try {
+            const w3wApiKey = import.meta.env.VITE_WHAT3WORDS_API_KEY
+            if (w3wApiKey) {
+              const res = await fetch(`https://api.what3words.com/v3/convert-to-coordinates?words=${w3wMatch[1]}&key=${w3wApiKey}`)
+              const data = await res.json()
+              if (data.coordinates) {
+                geocodeData = { lat: data.coordinates.lat, lng: data.coordinates.lng }
+              }
+            }
+          } catch (e) { console.error('w3w geocode failed', e) }
+        }
+
+        // Standard geocoding if w3w failed or wasn't used
+        if (!geocodeData) {
+          const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${mapsApiKey}`)
+          const data = await res.json()
+          if (data.status === 'OK' && data.results?.[0]?.geometry?.location) {
+            geocodeData = data.results[0].geometry.location
+          }
+        }
+
+        if (geocodeData) {
+          centerLat = geocodeData.lat
+          centerLng = geocodeData.lng
+          zoomLevel = 17 // Zoom in more if we have a specific location
+        }
+      } catch (err) {
+        console.error('Geocoding failed:', err)
+      }
+    }
+
     try {
       const res = await fetch(`${API_BASE_URL}/maps`, {
         method: 'POST',
@@ -2878,9 +2923,9 @@ export default function App() {
         body: JSON.stringify({
           name: name || 'New Event',
           eventType: eventType || 'festival',
-          center_lat: 51.505,
-          center_lng: -0.09,
-          zoom: 13,
+          center_lat: centerLat,
+          center_lng: centerLng,
+          zoom: zoomLevel,
           archived: false,
         })
       })
@@ -2899,8 +2944,8 @@ export default function App() {
           isArchived: false,
         }))
         setMapViewport({
-          center: { lat: 51.505, lng: -0.09 },
-          zoom: 13,
+          center: { lat: centerLat, lng: centerLng },
+          zoom: zoomLevel,
         })
         setCurrentView('editor')
       }

@@ -210,7 +210,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const [replaceCustomAssetId, setReplaceCustomAssetId] = useState('')
 
   useEffect(() => {
-    if (selected?.shapeType === 'square') {
+    if (selected?.shapeType === 'rectangle') {
       setWidthInput(selected.widthM !== undefined && selected.widthM !== null ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : '')
       setLengthInput(selected.lengthM !== undefined && selected.lengthM !== null ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : '')
     } else {
@@ -349,152 +349,150 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 
         {isZone && (
           <>
+            {selected.shapeType === 'rectangle' && (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Zone Size</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      step="0.1"
+                      style={styles.input}
+                      value={widthInput}
+                      onChange={e => {
+                        const nextValue = e.target.value
+                        setWidthInput(nextValue)
+                        const parsed = parseFloat(nextValue)
+                        if (!Number.isNaN(parsed)) {
+                          onUpdate({ ...selected, widthM: convertToMeters(parsed, measurementUnit) })
+                        }
+                      }}
+                      onBlur={() => {
+                        if (widthInput.trim() === '') {
+                          setWidthInput(
+                            selected.widthM !== undefined && selected.widthM !== null
+                              ? convertDistance(selected.widthM, measurementUnit).toFixed(2)
+                              : ''
+                          )
+                        }
+                      }}
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      step="0.1"
+                      style={styles.input}
+                      value={lengthInput}
+                      onChange={e => {
+                        const nextValue = e.target.value
+                        setLengthInput(nextValue)
+                        const parsed = parseFloat(nextValue)
+                        if (!Number.isNaN(parsed)) {
+                          onUpdate({ ...selected, lengthM: convertToMeters(parsed, measurementUnit) })
+                        }
+                      }}
+                      onBlur={() => {
+                        if (lengthInput.trim() === '') {
+                          setLengthInput(
+                            selected.lengthM !== undefined && selected.lengthM !== null
+                              ? convertDistance(selected.lengthM, measurementUnit).toFixed(2)
+                              : ''
+                          )
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
 
+            {selected.shapeType === 'circle' && (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Zone Size</div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Radius ({getUnitLabel(measurementUnit)})</label>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.1"
+                    style={styles.input}
+                    value={radiusInput}
+                    onChange={e => {
+                      const nextValue = e.target.value
+                      setRadiusInput(nextValue)
+                      const parsed = parseFloat(nextValue)
+                      if (!Number.isNaN(parsed)) {
+                        onUpdate({ ...selected, radiusM: convertToMeters(parsed, measurementUnit) })
+                      }
+                    }}
+                    onBlur={() => {
+                      if (radiusInput.trim() === '') {
+                        setRadiusInput(
+                          selected.radiusM !== undefined && selected.radiusM !== null
+                            ? convertDistance(selected.radiusM, measurementUnit).toFixed(2)
+                            : ''
+                        )
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
-{selected.shapeType === 'square' && (
-  <div style={styles.statCard}>
-    <div style={styles.blockTitle}>Zone Size</div>
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-      <div style={styles.field}>
-        <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
-        <input
-          type="number"
-          min="0.5"
-          step="0.1"
-          style={styles.input}
-          value={widthInput}
-          onChange={e => {
-            const nextValue = e.target.value
-            setWidthInput(nextValue)
-            const parsed = parseFloat(nextValue)
-            if (!Number.isNaN(parsed)) {
-              onUpdate({ ...selected, widthM: convertToMeters(parsed, measurementUnit) })
-            }
-          }}
-          onBlur={() => {
-            if (widthInput.trim() === '') {
-              setWidthInput(
-                selected.widthM !== undefined && selected.widthM !== null
-                  ? convertDistance(selected.widthM, measurementUnit).toFixed(2)
-                  : ''
-              )
-            }
-          }}
-        />
-      </div>
+            {/* Zone Rotation (NOT for circle) */}
+            {selected.shapeType !== 'circle' && (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Zone Rotation</div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Angle (0°-360°)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="360"
+                    step="1"
+                    style={styles.input}
+                    value={rotationInput}
+                    onChange={e => {
+                      const nextValue = e.target.value
+                      const parsed = parseFloat(nextValue)
 
-      <div style={styles.field}>
-        <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
-        <input
-          type="number"
-          min="0.5"
-          step="0.1"
-          style={styles.input}
-          value={lengthInput}
-          onChange={e => {
-            const nextValue = e.target.value
-            setLengthInput(nextValue)
-            const parsed = parseFloat(nextValue)
-            if (!Number.isNaN(parsed)) {
-              onUpdate({ ...selected, lengthM: convertToMeters(parsed, measurementUnit) })
-            }
-          }}
-          onBlur={() => {
-            if (lengthInput.trim() === '') {
-              setLengthInput(
-                selected.lengthM !== undefined && selected.lengthM !== null
-                  ? convertDistance(selected.lengthM, measurementUnit).toFixed(2)
-                  : ''
-              )
-            }
-          }}
-        />
-      </div>
-    </div>
-  </div>
-)}
+                      if (nextValue === '' || nextValue === '-') {
+                        setRotationInput(nextValue)
+                        return
+                      }
 
-{selected.shapeType === 'circle' && (
-  <div style={styles.statCard}>
-    <div style={styles.blockTitle}>Zone Size</div>
-    <div style={styles.field}>
-      <label style={styles.label}>Radius ({getUnitLabel(measurementUnit)})</label>
-      <input
-        type="number"
-        min="0.5"
-        step="0.1"
-        style={styles.input}
-        value={radiusInput}
-        onChange={e => {
-          const nextValue = e.target.value
-          setRadiusInput(nextValue)
-          const parsed = parseFloat(nextValue)
-          if (!Number.isNaN(parsed)) {
-            onUpdate({ ...selected, radiusM: convertToMeters(parsed, measurementUnit) })
-          }
-        }}
-        onBlur={() => {
-          if (radiusInput.trim() === '') {
-            setRadiusInput(
-              selected.radiusM !== undefined && selected.radiusM !== null
-                ? convertDistance(selected.radiusM, measurementUnit).toFixed(2)
-                : ''
+                      if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
+                        setRotationInput(nextValue)
+                        onUpdate({ ...selected, rotation: parsed })
+                      }
+                    }}
+                    onBlur={() => {
+                      const parsed = parseFloat(rotationInput)
+
+                      if (rotationInput === '' || Number.isNaN(parsed)) {
+                        setRotationInput(
+                          Number.isFinite(selected.rotation)
+                            ? selected.rotation.toString()
+                            : '0'
+                        )
+                      } else if (parsed < 0) {
+                        setRotationInput('0')
+                        onUpdate({ ...selected, rotation: 0 })
+                      } else if (parsed > 360) {
+                        setRotationInput('360')
+                        onUpdate({ ...selected, rotation: 360 })
+                      }
+                    }}
+                  />
+                </div>
+              </div>
             )
-          }
-        }}
-      />
-    </div>
-  </div>
-)}
-
-{/* Zone Rotation (NOT for circle) */}
-{selected.shapeType !== 'circle' && (
-  <div style={styles.statCard}>
-    <div style={styles.blockTitle}>Zone Rotation</div>
-    <div style={styles.field}>
-      <label style={styles.label}>Angle (0°-360°)</label>
-      <input
-        type="number"
-        min="0"
-        max="360"
-        step="1"
-        style={styles.input}
-        value={rotationInput}
-        onChange={e => {
-          const nextValue = e.target.value
-          const parsed = parseFloat(nextValue)
-
-          if (nextValue === '' || nextValue === '-') {
-            setRotationInput(nextValue)
-            return
-          }
-
-          if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
-            setRotationInput(nextValue)
-            onUpdate({ ...selected, rotation: parsed })
-          }
-        }}
-        onBlur={() => {
-          const parsed = parseFloat(rotationInput)
-
-          if (rotationInput === '' || Number.isNaN(parsed)) {
-            setRotationInput(
-              Number.isFinite(selected.rotation)
-                ? selected.rotation.toString()
-                : '0'
-            )
-          } else if (parsed < 0) {
-            setRotationInput('0')
-            onUpdate({ ...selected, rotation: 0 })
-          } else if (parsed > 360) {
-            setRotationInput('360')
-            onUpdate({ ...selected, rotation: 360 })
-          }
-        }}
-      />
-    </div>
-  </div>
-)}
+            }
             <div style={styles.sectionDivider} />
 
             <div style={styles.statCard}>
@@ -779,30 +777,32 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               )}
             </div>
 
-            {subTypes.length > 0 && (
-              <div style={styles.field}>
-                <label style={styles.label}>Subtype</label>
-                <select
-                  style={styles.select}
-                  value={selected.subType?.id || ''}
-                  onChange={e => {
-                    const subType = subTypes.find(sub => sub.id === e.target.value) || null
-                    onUpdate({
-                      ...selected,
-                      subType,
-                      capacity: computeZoneCapacity({ ...selected, subType }, selected.density || 0.5),
-                    })
-                  }}
-                >
-                  <option value="">Select subtype</option>
-                  {subTypes.map(subType => (
-                    <option key={subType.id} value={subType.id}>
-                      {subType.label || subType.id}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            {
+              subTypes.length > 0 && (
+                <div style={styles.field}>
+                  <label style={styles.label}>Subtype</label>
+                  <select
+                    style={styles.select}
+                    value={selected.subType?.id || ''}
+                    onChange={e => {
+                      const subType = subTypes.find(sub => sub.id === e.target.value) || null
+                      onUpdate({
+                        ...selected,
+                        subType,
+                        capacity: computeZoneCapacity({ ...selected, subType }, selected.density || 0.5),
+                      })
+                    }}
+                  >
+                    <option value="">Select subtype</option>
+                    {subTypes.map(subType => (
+                      <option key={subType.id} value={subType.id}>
+                        {subType.label || subType.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )
+            }
 
             <div style={styles.field}>
               <label style={styles.label}>Zone Content Rule</label>
@@ -816,16 +816,18 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               </select>
             </div>
 
-            {allowedAssetTypes.length > 0 && (
-              <div style={styles.statCard}>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
-                  ALLOWED ASSETS
+            {
+              allowedAssetTypes.length > 0 && (
+                <div style={styles.statCard}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
+                    ALLOWED ASSETS
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                    {allowedAssetTypes.join(', ')}
+                  </div>
                 </div>
-                <div style={{ fontSize: '12px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
-                  {allowedAssetTypes.join(', ')}
-                </div>
-              </div>
-            )}
+              )
+            }
 
             {/* Measurements */}
             <div style={styles.statCard}>
@@ -896,40 +898,44 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               </div>
             </div>
 
-            {isCarPark && (
-              <div style={styles.statCard}>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
-                  VEHICLE ROUTING
-                </div>
-                <div style={styles.statRow}>
-                  <span style={styles.statLabel}>Route Lines</span>
-                  <span style={styles.statValue}>{childLines.length}</span>
-                </div>
-                <div style={styles.statRow}>
-                  <span style={styles.statLabel}>Total Route Length</span>
-                  <span style={styles.statValue}>{formatDistance(totalRouteLengthM, measurementUnit) || '-'}</span>
-                </div>
-                <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
-                  Draw line tools inside this parking zone to define entry/exit movement paths.
-                </div>
-              </div>
-            )}
-
-            {childZones.length > 0 && (
-              <div style={styles.statCard}>
-                <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
-                  SUB ZONES
-                </div>
-                {childZones.map(zone => (
-                  <div key={zone.id} style={{ ...styles.statRow, marginBottom: '8px' }}>
-                    <span style={styles.statLabel}>{zone.zoneType?.name || 'Zone'}</span>
-                    <span style={{ ...styles.statValue, fontSize: '11px' }}>
-                      {zone.subType?.id || '-'} / {(zone.showGrid ?? ['grid', 'rows'].includes(zone.layoutType)) ? 'grid on' : 'grid off'}
-                    </span>
+            {
+              isCarPark && (
+                <div style={styles.statCard}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
+                    VEHICLE ROUTING
                   </div>
-                ))}
-              </div>
-            )}
+                  <div style={styles.statRow}>
+                    <span style={styles.statLabel}>Route Lines</span>
+                    <span style={styles.statValue}>{childLines.length}</span>
+                  </div>
+                  <div style={styles.statRow}>
+                    <span style={styles.statLabel}>Total Route Length</span>
+                    <span style={styles.statValue}>{formatDistance(totalRouteLengthM, measurementUnit) || '-'}</span>
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                    Draw line tools inside this parking zone to define entry/exit movement paths.
+                  </div>
+                </div>
+              )
+            }
+
+            {
+              childZones.length > 0 && (
+                <div style={styles.statCard}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
+                    SUB ZONES
+                  </div>
+                  {childZones.map(zone => (
+                    <div key={zone.id} style={{ ...styles.statRow, marginBottom: '8px' }}>
+                      <span style={styles.statLabel}>{zone.zoneType?.name || 'Zone'}</span>
+                      <span style={{ ...styles.statValue, fontSize: '11px' }}>
+                        {zone.subType?.id || '-'} / {(zone.showGrid ?? ['grid', 'rows'].includes(zone.layoutType)) ? 'grid on' : 'grid off'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
 
             {/* <div style={styles.statCard}>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '8px' }}>
@@ -959,475 +965,483 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
           </>
         )}
 
-        {isAsset && (
-          <>
-            <div style={styles.sectionDivider} />
-            <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Custom Asset Actions</div>
+        {
+          isAsset && (
+            <>
+              <div style={styles.sectionDivider} />
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Custom Asset Actions</div>
+                <button
+                  type="button"
+                  style={styles.actionBtn}
+                  onClick={() => onSaveCustomAsset?.(selected, { mode: 'new' })}
+                >
+                  Save As New
+                </button>
+                <div style={{ ...styles.field, marginBottom: '8px' }}>
+                  <label style={styles.label}>Replace Existing</label>
+                  <select
+                    style={styles.select}
+                    value={replaceCustomAssetId}
+                    onChange={e => setReplaceCustomAssetId(e.target.value)}
+                    disabled={!customAssetDefs.length}
+                  >
+                    {!customAssetDefs.length && <option value="">No saved custom assets</option>}
+                    {customAssetDefs.map(asset => (
+                      <option key={asset.id} value={asset.id}>
+                        {asset.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.actionBtn,
+                    marginBottom: 0,
+                    opacity: customAssetDefs.length ? 1 : 0.55,
+                    cursor: customAssetDefs.length ? 'pointer' : 'not-allowed',
+                  }}
+                  onClick={() => {
+                    if (!customAssetDefs.length || !replaceCustomAssetId) return
+                    onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId })
+                  }}
+                  disabled={!customAssetDefs.length || !replaceCustomAssetId}
+                >
+                  Replace
+                </button>
+              </div>
               <button
                 type="button"
                 style={styles.actionBtn}
-                onClick={() => onSaveCustomAsset?.(selected, { mode: 'new' })}
+                onClick={() => onDuplicate?.(selected)}
               >
-                Save As New
+                Duplicate Asset
               </button>
-              <div style={{ ...styles.field, marginBottom: '8px' }}>
-                <label style={styles.label}>Replace Existing</label>
-                <select
-                  style={styles.select}
-                  value={replaceCustomAssetId}
-                  onChange={e => setReplaceCustomAssetId(e.target.value)}
-                  disabled={!customAssetDefs.length}
-                >
-                  {!customAssetDefs.length && <option value="">No saved custom assets</option>}
-                  {customAssetDefs.map(asset => (
-                    <option key={asset.id} value={asset.id}>
-                      {asset.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button
-                type="button"
-                style={{
-                  ...styles.actionBtn,
-                  marginBottom: 0,
-                  opacity: customAssetDefs.length ? 1 : 0.55,
-                  cursor: customAssetDefs.length ? 'pointer' : 'not-allowed',
-                }}
-                onClick={() => {
-                  if (!customAssetDefs.length || !replaceCustomAssetId) return
-                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId })
-                }}
-                disabled={!customAssetDefs.length || !replaceCustomAssetId}
-              >
-                Replace
-              </button>
-            </div>
-            <button
-              type="button"
-              style={styles.actionBtn}
-              onClick={() => onDuplicate?.(selected)}
-            >
-              Duplicate Asset
-            </button>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <div style={styles.field}>
-                <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
-                <input
-                  type="number"
-                  min="0.5"
-                  step="0.1"
-                  style={styles.input}
-                  value={selected.widthM ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : ''}
-                  onChange={e => {
-                    const displayValue = Number(e.target.value)
-                    const metersValue = convertToMeters(displayValue, measurementUnit)
-                    onUpdate({ ...selected, widthM: metersValue || 0.5 })
-                  }}
-                />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
-                <input
-                  type="number"
-                  min="0.5"
-                  step="0.1"
-                  style={styles.input}
-                  value={selected.lengthM ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : ''}
-                  onChange={e => {
-                    const displayValue = Number(e.target.value)
-                    const metersValue = convertToMeters(displayValue, measurementUnit)
-                    onUpdate({ ...selected, lengthM: metersValue || 0.5 })
-                  }}
-                />
-              </div>
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Rotation (deg)</label>
-              <input
-                type="number"
-                min="0"
-                max="360"
-                step="1"
-                style={styles.input}
-                value={selected.rotationDeg ?? 0}
-                onChange={e => onUpdate({ ...selected, rotationDeg: Number(e.target.value) || 0 })}
-              />
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Asset Color</label>
-              <input
-                type="color"
-                style={{ ...styles.input, height: '40px', padding: '4px' }}
-                value={selected.assetDef?.color || '#3d8ef8'}
-                onChange={e => onUpdate({
-                  ...selected,
-                  assetDef: {
-                    ...selected.assetDef,
-                    color: e.target.value,
-                    iconColor: e.target.value,
-                  },
-                })}
-              />
-            </div>
-
-            {/* Asset Visual Styling */}
-            <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Asset Appearance</div>
-
-              {/* Fill Color & Opacity */}
-              <div style={{ marginBottom: '12px' }}>
-                <label style={styles.label}>Fill Color</label>
-                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={styles.field}>
+                  <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
                   <input
-                    type="color"
-                    style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.fillColor || selected.assetDef?.color || '#3d8ef8'}
-                    onChange={e => onUpdate({ ...selected, fillColor: e.target.value })}
-                  />
-                  <input
-                    style={styles.input}
-                    value={selected.fillColor || selected.assetDef?.color || '#3d8ef8'}
-                    onChange={e => {
-                      const value = e.target.value.trim()
-                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
-                      onUpdate({ ...selected, fillColor: value })
-                    }}
-                    placeholder="#3d8ef8"
-                  />
-                </div>
-              </div>
-
-              {/* Fill Opacity */}
-              <div style={{ marginBottom: '12px' }}>
-                <label style={styles.label}>Fill Opacity</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="5"
-                    value={(selected.fillOpacity !== undefined ? selected.fillOpacity : 0.85) * 100}
-                    onChange={e => onUpdate({ ...selected, fillOpacity: Number(e.target.value) / 100 })}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
-                    {Math.round((selected.fillOpacity !== undefined ? selected.fillOpacity : 0.85) * 100)}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Border Color */}
-              <div style={{ marginBottom: '12px' }}>
-                <label style={styles.label}>Border Color</label>
-                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
-                  <input
-                    type="color"
-                    style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.strokeColor || selected.assetDef?.color || '#3d8ef8'}
-                    onChange={e => onUpdate({ ...selected, strokeColor: e.target.value })}
-                  />
-                  <input
-                    style={styles.input}
-                    value={selected.strokeColor || selected.assetDef?.color || '#3d8ef8'}
-                    onChange={e => {
-                      const value = e.target.value.trim()
-                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
-                      onUpdate({ ...selected, strokeColor: value })
-                    }}
-                    placeholder="#3d8ef8"
-                  />
-                </div>
-              </div>
-
-              {/* Border Thickness */}
-              <div style={{ marginBottom: '0' }}>
-                <label style={styles.label}>Border Thickness</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input
-                    type="range"
+                    type="number"
                     min="0.5"
-                    max="8"
-                    step="0.5"
-                    value={selected.strokeWeight || 2}
-                    onChange={e => onUpdate({ ...selected, strokeWeight: Number(e.target.value) })}
-                    style={{ flex: 1 }}
-                  />
-                  <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
-                    {(selected.strokeWeight || 2).toFixed(1)}px
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Supplier</label>
-              <input
-                style={styles.input}
-                value={selected.supplier || ''}
-                onChange={e => onUpdate({ ...selected, supplier: e.target.value })}
-                placeholder="Supplier name..."
-              />
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Cost Code</label>
-              <input
-                style={styles.input}
-                value={selected.costCode || ''}
-                onChange={e => onUpdate({ ...selected, costCode: e.target.value })}
-                placeholder="e.g. INF-0042"
-              />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <div style={styles.field}>
-                <label style={styles.label}>Power (kW)</label>
-                <input
-                  type="number" min="0" step="0.1"
-                  style={styles.input}
-                  value={selected.powerNeed ?? ''}
-                  onChange={e => onUpdate({ ...selected, powerNeed: e.target.value === '' ? null : Number(e.target.value) })}
-                  placeholder="0"
-                />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Water (litres)</label>
-                <input
-                  type="number" min="0" step="1"
-                  style={styles.input}
-                  value={selected.waterNeed ?? ''}
-                  onChange={e => onUpdate({ ...selected, waterNeed: e.target.value === '' ? null : Number(e.target.value) })}
-                  placeholder="0"
-                />
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <div style={styles.field}>
-                <label style={styles.label}>Delivery Date</label>
-                <input type="date" style={styles.input} value={selected.deliveryDate || ''} onChange={e => onUpdate({ ...selected, deliveryDate: e.target.value })} />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Install Date</label>
-                <input type="date" style={styles.input} value={selected.installDate || ''} onChange={e => onUpdate({ ...selected, installDate: e.target.value })} />
-              </div>
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Removal Date</label>
-              <input type="date" style={styles.input} value={selected.removeDate || ''} onChange={e => onUpdate({ ...selected, removeDate: e.target.value })} />
-            </div>
-            <div style={styles.statCard}>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Parent Zone</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{parentZone?.label || '-'}</span>
-              </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Lat</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lat ? selected.lat.toFixed(5) : '—'}</span>
-              </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Lng</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lng ? selected.lng.toFixed(5) : '—'}</span>
-              </div>
-            </div>
-          </>
-        )}
-
-        {isLine && (
-          <>
-            <div style={styles.sectionDivider} />
-
-            <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Route Details</div>
-              <div style={styles.field}>
-                <label style={styles.label}>Route Type</label>
-                <select
-                  style={styles.select}
-                  value={selected.routeType || 'custom'}
-                  onChange={e => {
-                    const preset = getRouteStylePreset(e.target.value)
-                    const autoLabels = new Set(['', 'Line', 'Route', 'Custom Route', ...ROUTE_TYPE_OPTIONS.map(option => option.label)])
-                    const currentLabel = String(selected.label || '').trim()
-                    onUpdate({
-                      ...selected,
-                      routeType: preset.routeType,
-                      label: autoLabels.has(currentLabel) ? preset.label : selected.label,
-                      color: preset.color,
-                      strokeWeight: preset.weight,
-                      pattern: preset.pattern,
-                    })
-                  }}
-                >
-                  {ROUTE_TYPE_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.45 }}>
-                  {ROUTE_TYPE_OPTIONS.find(option => option.id === (selected.routeType || 'custom'))?.description || routeTypePreset?.label}
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Route Style</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '94px 1fr', gap: '8px' }}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Color</label>
-                  <input
-                    type="color"
-                    style={{ ...styles.input, padding: '4px', height: '36px' }}
-                    value={selected.color || '#f59e0b'}
-                    onChange={e => onUpdate({ ...selected, color: e.target.value })}
-                  />
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Hex</label>
-                  <input
+                    step="0.1"
                     style={styles.input}
-                    value={selected.color || '#f59e0b'}
+                    value={selected.widthM ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : ''}
                     onChange={e => {
-                      const v = e.target.value.trim()
-                      if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) return
-                      onUpdate({ ...selected, color: v })
+                      const displayValue = Number(e.target.value)
+                      const metersValue = convertToMeters(displayValue, measurementUnit)
+                      onUpdate({ ...selected, widthM: metersValue || 0.5 })
                     }}
-                    placeholder="#f59e0b"
+                  />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.1"
+                    style={styles.input}
+                    value={selected.lengthM ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : ''}
+                    onChange={e => {
+                      const displayValue = Number(e.target.value)
+                      const metersValue = convertToMeters(displayValue, measurementUnit)
+                      onUpdate({ ...selected, lengthM: metersValue || 0.5 })
+                    }}
+                  />
+                </div>
+              </div>
+              <div style={styles.field}>
+                <label style={styles.label}>Rotation (deg)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="360"
+                  step="1"
+                  style={styles.input}
+                  value={selected.rotationDeg ?? 0}
+                  onChange={e => onUpdate({ ...selected, rotationDeg: Number(e.target.value) || 0 })}
+                />
+              </div>
+              <div style={styles.field}>
+                <label style={styles.label}>Asset Color</label>
+                <input
+                  type="color"
+                  style={{ ...styles.input, height: '40px', padding: '4px' }}
+                  value={selected.assetDef?.color || '#3d8ef8'}
+                  onChange={e => onUpdate({
+                    ...selected,
+                    assetDef: {
+                      ...selected.assetDef,
+                      color: e.target.value,
+                      iconColor: e.target.value,
+                    },
+                  })}
+                />
+              </div>
+
+              {/* Asset Visual Styling */}
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Asset Appearance</div>
+
+                {/* Fill Color & Opacity */}
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={styles.label}>Fill Color</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
+                    <input
+                      type="color"
+                      style={{ ...styles.input, padding: '4px', height: '36px' }}
+                      value={selected.fillColor || selected.assetDef?.color || '#3d8ef8'}
+                      onChange={e => onUpdate({ ...selected, fillColor: e.target.value })}
+                    />
+                    <input
+                      style={styles.input}
+                      value={selected.fillColor || selected.assetDef?.color || '#3d8ef8'}
+                      onChange={e => {
+                        const value = e.target.value.trim()
+                        if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
+                        onUpdate({ ...selected, fillColor: value })
+                      }}
+                      placeholder="#3d8ef8"
+                    />
+                  </div>
+                </div>
+
+                {/* Fill Opacity */}
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={styles.label}>Fill Opacity</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={(selected.fillOpacity !== undefined ? selected.fillOpacity : 0.85) * 100}
+                      onChange={e => onUpdate({ ...selected, fillOpacity: Number(e.target.value) / 100 })}
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
+                      {Math.round((selected.fillOpacity !== undefined ? selected.fillOpacity : 0.85) * 100)}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Border Color */}
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={styles.label}>Border Color</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px' }}>
+                    <input
+                      type="color"
+                      style={{ ...styles.input, padding: '4px', height: '36px' }}
+                      value={selected.strokeColor || selected.assetDef?.color || '#3d8ef8'}
+                      onChange={e => onUpdate({ ...selected, strokeColor: e.target.value })}
+                    />
+                    <input
+                      style={styles.input}
+                      value={selected.strokeColor || selected.assetDef?.color || '#3d8ef8'}
+                      onChange={e => {
+                        const value = e.target.value.trim()
+                        if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return
+                        onUpdate({ ...selected, strokeColor: value })
+                      }}
+                      placeholder="#3d8ef8"
+                    />
+                  </div>
+                </div>
+
+                {/* Border Thickness */}
+                <div style={{ marginBottom: '0' }}>
+                  <label style={styles.label}>Border Thickness</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="8"
+                      step="0.5"
+                      value={selected.strokeWeight || 2}
+                      onChange={e => onUpdate({ ...selected, strokeWeight: Number(e.target.value) })}
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ ...styles.statValue, minWidth: '40px', textAlign: 'right' }}>
+                      {(selected.strokeWeight || 2).toFixed(1)}px
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div style={styles.field}>
+                <label style={styles.label}>Supplier</label>
+                <input
+                  style={styles.input}
+                  value={selected.supplier || ''}
+                  onChange={e => onUpdate({ ...selected, supplier: e.target.value })}
+                  placeholder="Supplier name..."
+                />
+              </div>
+              <div style={styles.field}>
+                <label style={styles.label}>Cost Code</label>
+                <input
+                  style={styles.input}
+                  value={selected.costCode || ''}
+                  onChange={e => onUpdate({ ...selected, costCode: e.target.value })}
+                  placeholder="e.g. INF-0042"
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={styles.field}>
+                  <label style={styles.label}>Power (kW)</label>
+                  <input
+                    type="number" min="0" step="0.1"
+                    style={styles.input}
+                    value={selected.powerNeed ?? ''}
+                    onChange={e => onUpdate({ ...selected, powerNeed: e.target.value === '' ? null : Number(e.target.value) })}
+                    placeholder="0"
+                  />
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Water (litres)</label>
+                  <input
+                    type="number" min="0" step="1"
+                    style={styles.input}
+                    value={selected.waterNeed ?? ''}
+                    onChange={e => onUpdate({ ...selected, waterNeed: e.target.value === '' ? null : Number(e.target.value) })}
+                    placeholder="0"
                   />
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                 <div style={styles.field}>
-                  <label style={styles.label}>Weight (px)</label>
-                  <input
-                    type="number" min="1" max="12" step="1"
-                    style={styles.input}
-                    value={selected.strokeWeight || 4}
-                    onChange={e => onUpdate({ ...selected, strokeWeight: Math.max(1, Number(e.target.value) || 4) })}
-                  />
+                  <label style={styles.label}>Delivery Date</label>
+                  <input type="date" style={styles.input} value={selected.deliveryDate || ''} onChange={e => onUpdate({ ...selected, deliveryDate: e.target.value })} />
                 </div>
                 <div style={styles.field}>
-                  <label style={styles.label}>Pattern</label>
-                  <select
-                    style={styles.select}
-                    value={selected.pattern || 'dashed'}
-                    onChange={e => onUpdate({ ...selected, pattern: e.target.value })}
-                  >
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                  </select>
+                  <label style={styles.label}>Install Date</label>
+                  <input type="date" style={styles.input} value={selected.installDate || ''} onChange={e => onUpdate({ ...selected, installDate: e.target.value })} />
                 </div>
               </div>
-            </div>
-
-            <div style={styles.statCard}>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Length</span>
-                <span style={styles.statValue}>{formatDistance(selected.lengthM, measurementUnit)}</span>
-              </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Parent Zone</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{parentZone?.label || '-'}</span>
-              </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Points</span>
-                <span style={styles.statValue}>{selected.path?.length || 0}</span>
-              </div>
-            </div>
-          </>
-        )}
-
-        {isFloor && (
-          <>
-            <div style={styles.sectionDivider} />
-            <div style={styles.field}>
-              <label style={styles.label}>Opacity</label>
-              <input
-                type="range"
-                min="0.1"
-                max="1"
-                step="0.05"
-                value={selected.opacity ?? 0.7}
-                onChange={e => onUpdate({ ...selected, opacity: Number(e.target.value) })}
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Rotation (deg)</label>
-              <input
-                type="number"
-                min="0"
-                max="360"
-                step="1"
-                style={styles.input}
-                value={selected.rotation ?? 0}
-                onChange={e => onUpdate({ ...selected, rotation: Number(e.target.value) || 0 })}
-              />
-            </div>
-            <div style={styles.statCard}>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Placed</span>
-                <span style={styles.statValue}>{selected.bounds ? 'Yes' : 'No'}</span>
-              </div>
-              {selected.bounds && (
-                <>
-                  <div style={styles.statRow}>
-                    <span style={styles.statLabel}>North</span>
-                    <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.north?.toFixed(5)}</span>
-                  </div>
-                  <div style={styles.statRow}>
-                    <span style={styles.statLabel}>South</span>
-                    <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.south?.toFixed(5)}</span>
-                  </div>
-                  <div style={styles.statRow}>
-                    <span style={styles.statLabel}>East</span>
-                    <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.east?.toFixed(5)}</span>
-                  </div>
-                  <div style={styles.statRow}>
-                    <span style={styles.statLabel}>West</span>
-                    <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.west?.toFixed(5)}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          </>
-        )}
-
-        {isAnnotation && (
-          <>
-            <div style={styles.sectionDivider} />
-            <div style={styles.statCard}>
-              <div style={styles.blockTitle}>Pin Appearance</div>
               <div style={styles.field}>
-                <label style={styles.label}>Pin Color</label>
+                <label style={styles.label}>Removal Date</label>
+                <input type="date" style={styles.input} value={selected.removeDate || ''} onChange={e => onUpdate({ ...selected, removeDate: e.target.value })} />
+              </div>
+              <div style={styles.statCard}>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Parent Zone</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{parentZone?.label || '-'}</span>
+                </div>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Lat</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lat ? selected.lat.toFixed(5) : '—'}</span>
+                </div>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Lng</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lng ? selected.lng.toFixed(5) : '—'}</span>
+                </div>
+              </div>
+            </>
+          )
+        }
+
+        {
+          isLine && (
+            <>
+              <div style={styles.sectionDivider} />
+
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Route Details</div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Route Type</label>
+                  <select
+                    style={styles.select}
+                    value={selected.routeType || 'custom'}
+                    onChange={e => {
+                      const preset = getRouteStylePreset(e.target.value)
+                      const autoLabels = new Set(['', 'Line', 'Route', 'Custom Route', ...ROUTE_TYPE_OPTIONS.map(option => option.label)])
+                      const currentLabel = String(selected.label || '').trim()
+                      onUpdate({
+                        ...selected,
+                        routeType: preset.routeType,
+                        label: autoLabels.has(currentLabel) ? preset.label : selected.label,
+                        color: preset.color,
+                        strokeWeight: preset.weight,
+                        pattern: preset.pattern,
+                      })
+                    }}
+                  >
+                    {ROUTE_TYPE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.45 }}>
+                    {ROUTE_TYPE_OPTIONS.find(option => option.id === (selected.routeType || 'custom'))?.description || routeTypePreset?.label}
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Route Style</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '94px 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Color</label>
+                    <input
+                      type="color"
+                      style={{ ...styles.input, padding: '4px', height: '36px' }}
+                      value={selected.color || '#f59e0b'}
+                      onChange={e => onUpdate({ ...selected, color: e.target.value })}
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Hex</label>
+                    <input
+                      style={styles.input}
+                      value={selected.color || '#f59e0b'}
+                      onChange={e => {
+                        const v = e.target.value.trim()
+                        if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) return
+                        onUpdate({ ...selected, color: v })
+                      }}
+                      placeholder="#f59e0b"
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Weight (px)</label>
+                    <input
+                      type="number" min="1" max="12" step="1"
+                      style={styles.input}
+                      value={selected.strokeWeight || 4}
+                      onChange={e => onUpdate({ ...selected, strokeWeight: Math.max(1, Number(e.target.value) || 4) })}
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Pattern</label>
+                    <select
+                      style={styles.select}
+                      value={selected.pattern || 'dashed'}
+                      onChange={e => onUpdate({ ...selected, pattern: e.target.value })}
+                    >
+                      <option value="solid">Solid</option>
+                      <option value="dashed">Dashed</option>
+                      <option value="dotted">Dotted</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.statCard}>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Length</span>
+                  <span style={styles.statValue}>{formatDistance(selected.lengthM, measurementUnit)}</span>
+                </div>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Parent Zone</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{parentZone?.label || '-'}</span>
+                </div>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Points</span>
+                  <span style={styles.statValue}>{selected.path?.length || 0}</span>
+                </div>
+              </div>
+            </>
+          )
+        }
+
+        {
+          isFloor && (
+            <>
+              <div style={styles.sectionDivider} />
+              <div style={styles.field}>
+                <label style={styles.label}>Opacity</label>
                 <input
-                  type="color"
-                  style={{ ...styles.input, padding: '4px', height: '36px' }}
-                  value={selected.pinColor || '#ea4335'}
-                  onChange={e => onUpdate({ ...selected, pinColor: e.target.value })}
+                  type="range"
+                  min="0.1"
+                  max="1"
+                  step="0.05"
+                  value={selected.opacity ?? 0.7}
+                  onChange={e => onUpdate({ ...selected, opacity: Number(e.target.value) })}
+                  style={{ width: '100%' }}
                 />
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.55 }}>
-                The pin title shows beside the marker on the map. Full details appear in the hover tooltip.
+              <div style={styles.field}>
+                <label style={styles.label}>Rotation (deg)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="360"
+                  step="1"
+                  style={styles.input}
+                  value={selected.rotation ?? 0}
+                  onChange={e => onUpdate({ ...selected, rotation: Number(e.target.value) || 0 })}
+                />
               </div>
-            </div>
-            <div style={styles.statCard}>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Parent Zone</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{parentZone?.label || '-'}</span>
+              <div style={styles.statCard}>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Placed</span>
+                  <span style={styles.statValue}>{selected.bounds ? 'Yes' : 'No'}</span>
+                </div>
+                {selected.bounds && (
+                  <>
+                    <div style={styles.statRow}>
+                      <span style={styles.statLabel}>North</span>
+                      <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.north?.toFixed(5)}</span>
+                    </div>
+                    <div style={styles.statRow}>
+                      <span style={styles.statLabel}>South</span>
+                      <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.south?.toFixed(5)}</span>
+                    </div>
+                    <div style={styles.statRow}>
+                      <span style={styles.statLabel}>East</span>
+                      <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.east?.toFixed(5)}</span>
+                    </div>
+                    <div style={styles.statRow}>
+                      <span style={styles.statLabel}>West</span>
+                      <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.bounds.west?.toFixed(5)}</span>
+                    </div>
+                  </>
+                )}
               </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Lat</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lat?.toFixed(5)}</span>
+            </>
+          )
+        }
+
+        {
+          isAnnotation && (
+            <>
+              <div style={styles.sectionDivider} />
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Pin Appearance</div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Pin Color</label>
+                  <input
+                    type="color"
+                    style={{ ...styles.input, padding: '4px', height: '36px' }}
+                    value={selected.pinColor || '#ea4335'}
+                    onChange={e => onUpdate({ ...selected, pinColor: e.target.value })}
+                  />
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.55 }}>
+                  The pin title shows beside the marker on the map. Full details appear in the hover tooltip.
+                </div>
               </div>
-              <div style={styles.statRow}>
-                <span style={styles.statLabel}>Lng</span>
-                <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lng?.toFixed(5)}</span>
+              <div style={styles.statCard}>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Parent Zone</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{parentZone?.label || '-'}</span>
+                </div>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Lat</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lat?.toFixed(5)}</span>
+                </div>
+                <div style={styles.statRow}>
+                  <span style={styles.statLabel}>Lng</span>
+                  <span style={{ ...styles.statValue, fontSize: '11px' }}>{selected.lng?.toFixed(5)}</span>
+                </div>
               </div>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+            </>
+          )
+        }
+      </div >
+    </div >
   )
 }
 

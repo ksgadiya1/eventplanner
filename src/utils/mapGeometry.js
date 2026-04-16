@@ -213,6 +213,28 @@ export function buildFloorBoundsFromPlacement(floorPlan) {
   }
 }
 
+export function getBoundsFromPath(path) {
+  if (!Array.isArray(path) || path.length === 0) return null
+  const lats = path.map(p => p.lat)
+  const lngs = path.map(p => p.lng)
+  return {
+    north: Math.max(...lats),
+    south: Math.min(...lats),
+    east: Math.max(...lngs),
+    west: Math.min(...lngs),
+  }
+}
+
+export function getPathFromBounds(bounds) {
+  if (!bounds) return []
+  return [
+    { lat: bounds.north, lng: bounds.west },
+    { lat: bounds.north, lng: bounds.east },
+    { lat: bounds.south, lng: bounds.east },
+    { lat: bounds.south, lng: bounds.west },
+  ]
+}
+
 export function normalizeFloorPlanState(floorPlan) {
   if (!floorPlan) return floorPlan
 
@@ -604,10 +626,10 @@ export function buildRectanglePath(center, halfWidthM, halfHeightM, google, rota
   const origin = new google.maps.LatLng(center.lat, center.lng)
   const rotationRad = (Number(rotationDeg) || 0) * Math.PI / 180
   const corners = [
-    { x: halfWidthM, y: halfHeightM },
-    { x: -halfWidthM, y: halfHeightM },
-    { x: -halfWidthM, y: -halfHeightM },
-    { x: halfWidthM, y: -halfHeightM },
+    { x: -halfWidthM, y: halfHeightM },  // NW
+    { x: halfWidthM, y: halfHeightM },   // NE
+    { x: halfWidthM, y: -halfHeightM },  // SE
+    { x: -halfWidthM, y: -halfHeightM }, // SW
   ]
 
   return corners.map(({ x, y }) => {
@@ -620,9 +642,6 @@ export function buildRectanglePath(center, halfWidthM, halfHeightM, google, rota
   })
 }
 
-export function buildSquarePath(center, halfSideM, google, rotationDeg = 0) {
-  return buildRectanglePath(center, halfSideM, halfSideM, google, rotationDeg)
-}
 
 export function snapAssetCenterToZoneVertex(
   lat,
@@ -684,17 +703,6 @@ export function snapAssetCenterToZoneVertex(
   }
 }
 
-export function getPathCenter(path) {
-  if (!Array.isArray(path) || path.length === 0) return null
-  const center = path.reduce((acc, point) => ({
-    lat: acc.lat + (point.lat || 0),
-    lng: acc.lng + (point.lng || 0),
-  }), { lat: 0, lng: 0 })
-  return {
-    lat: center.lat / path.length,
-    lng: center.lng / path.length,
-  }
-}
 
 export function limitGridSlots(slots, maxPoints = 450) {
   if (!slots?.length || slots.length <= maxPoints) return slots || []
@@ -801,6 +809,48 @@ export function snapToZoneGrid(lat, lng, zone, zoom, widthM = 0, lengthM = 0) {
     lng: centerLng + worldX / lngMetersPerDegree,
   }
 }
+
+export function getPathCenter(path = []) {
+  if (!Array.isArray(path) || !path.length) return null
+  const totals = path.reduce((sum, point) => ({
+    lat: sum.lat + (point.lat || 0),
+    lng: sum.lng + (point.lng || 0),
+  }), { lat: 0, lng: 0 })
+
+  return {
+    lat: totals.lat / path.length,
+    lng: totals.lng / path.length,
+  }
+}
+
+export function getRectangleZoneDimensions(zone, google) {
+  const widthM = Number(zone?.widthM)
+  const lengthM = Number(zone?.lengthM)
+  if (Number.isFinite(widthM) && widthM > 0 && Number.isFinite(lengthM) && lengthM > 0) {
+    return { widthM, lengthM }
+  }
+
+  if (!google?.maps?.geometry?.spherical || !Array.isArray(zone?.path) || zone.path.length < 4) {
+    return { widthM: null, lengthM: null }
+  }
+
+  const p0 = zone.path[0]
+  const p1 = zone.path[1]
+  const p2 = zone.path[2]
+  if (!p0 || !p1 || !p2) return { widthM: null, lengthM: null }
+
+  return {
+    widthM: google.maps.geometry.spherical.computeDistanceBetween(
+      new google.maps.LatLng(p0.lat, p0.lng),
+      new google.maps.LatLng(p1.lat, p1.lng)
+    ),
+    lengthM: google.maps.geometry.spherical.computeDistanceBetween(
+      new google.maps.LatLng(p1.lat, p1.lng),
+      new google.maps.LatLng(p2.lat, p2.lng)
+    ),
+  }
+}
+
 
 export function buildViewportGridLines(bounds, gridSizeMeters, limit = 500) {
   if (!bounds || !gridSizeMeters) return []

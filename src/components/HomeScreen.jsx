@@ -38,12 +38,13 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
     const [newName, setNewName] = useState('');
     const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
     const [newType, setNewType] = useState('festival');
+    const [newLocation, setNewLocation] = useState('');
     const [editingEventId, setEditingEventId] = useState(null);
     const [renameDraft, setRenameDraft] = useState('');
 
     const handleCreate = () => {
         if (!newName.trim()) { alert('Please enter an event name'); return; }
-        onCreateEvent(newName, newType);
+        onCreateEvent(newName, newType, newLocation);
     };
 
     const startRename = (event) => { setEditingEventId(event.id); setRenameDraft(event.name || ''); };
@@ -185,6 +186,17 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
                                     </div>
 
                                     <div>
+                                        <label style={{ fontSize: 12, color: '#64748b', fontWeight: 600, display: 'block', marginBottom: 6 }}>Event Location</label>
+                                        <input
+                                            type="text"
+                                            value={newLocation}
+                                            onChange={e => setNewLocation(e.target.value)}
+                                            placeholder="Location (city, address, or what3words)..."
+                                            style={inputStyle}
+                                        />
+                                    </div>
+
+                                    <div>
                                         <label style={{ fontSize: 12, color: '#64748b', fontWeight: 600, display: 'block', marginBottom: 8 }}>Event Type</label>
                                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                                             {EVENT_TYPES.map(type => (
@@ -249,7 +261,7 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
                         </div>
                     ) : (
                         <>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
                                 {activeEvents.map(event => {
                                     const eventTypeId = event.event_type || event.eventType;
                                     return (
@@ -303,72 +315,72 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
                                         </div>
                                     );
                                 })}
-                        </div>
-
-                        {/* Archived section */}
-                        {archivedEvents.length > 0 && (
-                            <div style={{ marginTop: 16 }}>
-                                <button
-                                    onClick={() => setShowArchived(p => !p)}
-                                    style={{
-                                        width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                        background: 'rgba(255,255,255,0.9)', color: '#475569', border: '1px solid #e8edf5',
-                                        borderRadius: 14, padding: '12px 18px', cursor: 'pointer', fontSize: 13, fontWeight: 700,
-                                        boxShadow: '0 2px 12px rgba(15,23,42,0.05)',
-                                    }}
-                                >
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <FolderArchive size={15} color="#f59e0b" /> Archived Events ({archivedEvents.length})
-                                    </span>
-                                    {showArchived ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                                </button>
-
-                                {showArchived && (
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 12, marginBottom: 8 }}>
-                                        {archivedEvents.map(event => {
-                                            const eventTypeId = event.event_type || event.eventType;
-                                            return (
-                                                <div
-                                                    key={event.id}
-                                                    onClick={() => onResumeEvent(event.id)}
-                                                    style={{
-                                                        padding: '16px 18px', borderRadius: 18,
-                                                        background: 'rgba(255,255,255,0.7)', border: '1px solid #e8edf5',
-                                                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14,
-                                                        boxShadow: '0 2px 12px rgba(15,23,42,0.04)',
-                                                        opacity: 0.85, transition: 'all 0.15s',
-                                                    }}
-                                                    onMouseOver={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'; }}
-                                                    onMouseOut={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.borderColor = '#e8edf5'; }}
-                                                >
-                                                    <div style={{ fontSize: '1.1rem', opacity: 0.7, flexShrink: 0 }}>{EVENT_TYPES.find(t => t.id === eventTypeId)?.icon || '📍'}</div>
-                                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                                        <div style={{ fontWeight: 600, fontSize: 14, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{event.name}</div>
-                                                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>Archived event</div>
-                                                    </div>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={e => e.stopPropagation()}>
-                                                        <button
-                                                            title="Unarchive"
-                                                            onClick={e => { e.stopPropagation(); onUnarchiveEvent?.(event.id); }}
-                                                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(16,185,129,0.1)', color: '#059669', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
-                                                        >
-                                                            <ArchiveRestore size={12} /> Unarchive
-                                                        </button>
-                                                        <button
-                                                            title="Delete"
-                                                            onClick={e => { e.stopPropagation(); if (window.confirm('Delete this archived event? This cannot be undone.')) onDeleteEvent?.(event.id); }}
-                                                            style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: 5, display: 'grid', placeItems: 'center', flexShrink: 0 }}
-                                                        >
-                                                            <Trash2 size={13} />
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
                             </div>
-                        )}
+
+                            {/* Archived section */}
+                            {archivedEvents.length > 0 && (
+                                <div style={{ marginTop: 16 }}>
+                                    <button
+                                        onClick={() => setShowArchived(p => !p)}
+                                        style={{
+                                            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                            background: 'rgba(255,255,255,0.9)', color: '#475569', border: '1px solid #e8edf5',
+                                            borderRadius: 14, padding: '12px 18px', cursor: 'pointer', fontSize: 13, fontWeight: 700,
+                                            boxShadow: '0 2px 12px rgba(15,23,42,0.05)',
+                                        }}
+                                    >
+                                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <FolderArchive size={15} color="#f59e0b" /> Archived Events ({archivedEvents.length})
+                                        </span>
+                                        {showArchived ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                                    </button>
+
+                                    {showArchived && (
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 12, marginBottom: 8 }}>
+                                            {archivedEvents.map(event => {
+                                                const eventTypeId = event.event_type || event.eventType;
+                                                return (
+                                                    <div
+                                                        key={event.id}
+                                                        onClick={() => onResumeEvent(event.id)}
+                                                        style={{
+                                                            padding: '16px 18px', borderRadius: 18,
+                                                            background: 'rgba(255,255,255,0.7)', border: '1px solid #e8edf5',
+                                                            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14,
+                                                            boxShadow: '0 2px 12px rgba(15,23,42,0.04)',
+                                                            opacity: 0.85, transition: 'all 0.15s',
+                                                        }}
+                                                        onMouseOver={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'rgba(245,158,11,0.3)'; }}
+                                                        onMouseOut={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.borderColor = '#e8edf5'; }}
+                                                    >
+                                                        <div style={{ fontSize: '1.1rem', opacity: 0.7, flexShrink: 0 }}>{EVENT_TYPES.find(t => t.id === eventTypeId)?.icon || '📍'}</div>
+                                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                                            <div style={{ fontWeight: 600, fontSize: 14, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{event.name}</div>
+                                                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>Archived event</div>
+                                                        </div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={e => e.stopPropagation()}>
+                                                            <button
+                                                                title="Unarchive"
+                                                                onClick={e => { e.stopPropagation(); onUnarchiveEvent?.(event.id); }}
+                                                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(16,185,129,0.1)', color: '#059669', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
+                                                            >
+                                                                <ArchiveRestore size={12} /> Unarchive
+                                                            </button>
+                                                            <button
+                                                                title="Delete"
+                                                                onClick={e => { e.stopPropagation(); if (window.confirm('Delete this archived event? This cannot be undone.')) onDeleteEvent?.(event.id); }}
+                                                                style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: 5, display: 'grid', placeItems: 'center', flexShrink: 0 }}
+                                                            >
+                                                                <Trash2 size={13} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </>
                     )}
                 </div>
