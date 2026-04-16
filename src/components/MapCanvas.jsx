@@ -232,7 +232,7 @@ export default function MapCanvas({
   assets,
   lines,
   annotations,
-  floorPlan,
+  floorPlans = [],
   placingFloor,
   selectedId,
   onSelect,
@@ -275,6 +275,7 @@ export default function MapCanvas({
   const polygonDraftRef = useRef(null)
   const shapeDraftRef = useRef(null)
   const zoneOverlayRefs = useRef({})
+  const zonePathListenersRef = useRef({})
   const zoneCircleRefs = useRef({})
   const lastCircleSnapshotRef = useRef({})
   const lineOverlayRefs = useRef({})
@@ -292,6 +293,7 @@ export default function MapCanvas({
   const [hoveredLine, setHoveredLine] = useState(null)
   const [hoverScreenPos, setHoverScreenPos] = useState(null)
   const [hoveredItem, setHoveredItem] = useState(null) // Track any hovered item with tooltips
+  const [overlaySyncTick, setOverlaySyncTick] = useState(0)
   const [measurePoints, setMeasurePoints] = useState([])
   const [measureHover, setMeasureHover] = useState(null)
   const measurePointsRef = useRef([])
@@ -322,6 +324,10 @@ export default function MapCanvas({
       setSegmentMeasurement(null)
       setMeasurePoints([])
       setMeasureHover(null)
+    }
+    if (drawMode !== 'square' && drawMode !== 'circle') {
+      setShapeDraft(null)
+      setLineMeasurement(null)
     }
     if (drawMode !== 'measure') {
       setMeasurePoints([])
@@ -383,7 +389,6 @@ export default function MapCanvas({
       return overlay ? [overlay] : []
     })
   }, [isLoaded, isZoneOrParentHidden, layers.zones?.visible, mapZoom, zones])
-  const floorSelected = selectedId === 'floor-plan'
   const visibleAssets = useMemo(() => {
     if (layers.assets?.visible === false) return []
 
@@ -404,9 +409,9 @@ export default function MapCanvas({
   const viewOnlyRestrictionBounds = useMemo(() => {
     if (!isViewOnly || !window.google) return null
     return eventDetails?.resolvedLocation?.restrictionBounds
-      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan: floorPlans[0] || null })
       || null
-  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlan, isViewOnly, lines, zones])
+  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlans, isViewOnly, lines, zones])
 
   const hoveredTooltipPosition = useMemo(() => {
     if (!hoveredItem || drawMode !== 'select') return null
@@ -456,14 +461,14 @@ export default function MapCanvas({
 
   const updateMapViewport = useCallback(() => {
     if (!mapRef.current || !window.google) return
-    const contentBounds = computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+    const contentBounds = computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan: floorPlans[0] || null })
     if (contentBounds) {
       mapRef.current.fitBounds(contentBounds, 80)
       return
     }
     const locationBounds = eventDetails?.resolvedLocation?.restrictionBounds
     if (locationBounds) mapRef.current.fitBounds(locationBounds, 60)
-  }, [annotations, assets, eventDetails, floorPlan, lines, zones])
+  }, [annotations, assets, eventDetails, floorPlans, lines, zones])
 
   const rafRef = useRef(null)
   const drawingManagerRef = useRef(null)
@@ -846,12 +851,51 @@ export default function MapCanvas({
       const center = getPathCenter(finalPath)
       const dimensions = getRectangleZoneDimensions({ path: finalPath }, window.google)
       updateData.center = center
-      if (dimensions.widthM) updateData.widthM = Number(dimensions.widthM.toFixed(2))
-      if (dimensions.lengthM) updateData.lengthM = Number(dimensions.lengthM.toFixed(2))
+      updateData.bounds = getBoundsFromPath(path)
+      const lockedSideM = Number(Math.max(widthM, lengthM).toFixed(2))
+      updateData.widthM = lockedSideM
+      updateData.lengthM = lockedSideM
+      updateData.path = buildSquarePath(center, lockedSideM / 2, window.google, Number(zone.rotation || 0))
     }
 
     onAssetUpdate(updateData)
-  }, [onAssetUpdate, zones])
+  }, [onAssetUpdate])
+
+  useEffect(() => {
+    Object.values(zonePathListenersRef.current).forEach((listeners) => {
+      if (Array.isArray(listeners)) {
+        listeners.forEach((listener) => listener?.remove?.())
+      }
+    })
+    zonePathListenersRef.current = {}
+
+    if (!selectedId || layers.zones?.locked) return
+
+    const selectedZone = zones.find((zone) => zone.id === selectedId)
+    if (!selectedZone || selectedZone.shapeType === 'circle') return
+
+    const overlay = zoneOverlayRefs.current[selectedZone.id]
+    const path = overlay?.getPath?.()
+    if (!path) return
+
+    const syncSelectedZonePath = () => {
+      const latestZone = zones.find((zone) => zone.id === selectedZone.id)
+      if (!latestZone) return
+      handleZonePathChange(latestZone)
+    }
+
+    const listeners = [
+      path.addListener('set_at', syncSelectedZonePath),
+      path.addListener('insert_at', syncSelectedZonePath),
+      path.addListener('remove_at', syncSelectedZonePath),
+    ]
+    zonePathListenersRef.current[selectedZone.id] = listeners
+
+    return () => {
+      listeners.forEach((listener) => listener?.remove?.())
+      delete zonePathListenersRef.current[selectedZone.id]
+    }
+  }, [handleZonePathChange, layers.zones?.locked, selectedId, zones])
 
   const handleCircleZoneChange = useCallback((zone) => {
     const circle = zoneCircleRefs.current[zone.id]
@@ -1073,6 +1117,27 @@ export default function MapCanvas({
     return true
   }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate, zones])
 
+  const syncOverlayGeometry = useCallback(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    const liveZoom = map.getZoom?.()
+    if (Number.isFinite(liveZoom)) {
+      setMapZoom((prev) => (prev !== liveZoom ? liveZoom : prev))
+    }
+
+    // Force immediate and post-frame refresh so overlays re-project without waiting for zoom/pan events.
+    setOverlaySyncTick((prev) => prev + 1)
+    requestAnimationFrame(() => {
+      setOverlaySyncTick((prev) => prev + 1)
+    })
+  }, [])
+
+  const selectWithOverlaySync = useCallback((object) => {
+    onSelect(object)
+    syncOverlayGeometry()
+  }, [onSelect, syncOverlayGeometry])
+
   const handleMapClick = useCallback((event) => {
     if (!event.latLng) return
     if (event?.domEvent?.detail > 1) return
@@ -1083,15 +1148,16 @@ export default function MapCanvas({
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
       const currentDraft = shapeDraftRef.current
 
-      if (!currentDraft?.center) {
+      if (drawMode === 'circle' && !currentDraft?.center) {
         setShapeDraft({ type: drawMode, center: point, radiusM: 0 })
         setLineMeasurement(0)
         return
       }
 
-      const originLatLng = new window.google.maps.LatLng(currentDraft.center.lat, currentDraft.center.lng)
-      const targetLatLng = new window.google.maps.LatLng(point.lat, point.lng)
-      const radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
+      if (drawMode === 'square' && !currentDraft?.anchor) {
+        setShapeDraft({ type: drawMode, anchor: point, corner: point })
+        return
+      }
 
       const path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
 
@@ -1133,7 +1199,8 @@ export default function MapCanvas({
       return
     }
 
-    if (placingFloor && floorPlan?.imageUrl) {
+    const firstFloorPlan = floorPlans[0] || null
+    if (placingFloor && (firstFloorPlan?.imageUrl || (Array.isArray(firstFloorPlan?.imageUrls) && firstFloorPlan.imageUrls.length))) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
 
       if (tempFloorPoints.length === 0) {
@@ -1142,32 +1209,55 @@ export default function MapCanvas({
       }
 
       const firstPoint = tempFloorPoints[0]
+      const latSign = point.lat >= firstPoint.lat ? 1 : -1
+      const lngSign = point.lng >= firstPoint.lng ? 1 : -1
+      const centerLatEstimate = (firstPoint.lat + point.lat) / 2
+      const cosLat = Math.max(0.15, Math.cos((centerLatEstimate * Math.PI) / 180))
+      const rawHeightM = Math.max(1, Math.abs(point.lat - firstPoint.lat) * 111111)
+      const rawWidthM = Math.max(1, Math.abs(point.lng - firstPoint.lng) * 111111 * cosLat)
+      const aspectRatio = Number(firstFloorPlan.aspectRatio) > 0
+        ? Number(firstFloorPlan.aspectRatio)
+        : (rawWidthM / Math.max(1, rawHeightM))
+      let widthM = rawWidthM
+      let heightM = rawHeightM
+      if ((rawWidthM / Math.max(1, rawHeightM)) >= aspectRatio) {
+        widthM = heightM * aspectRatio
+      } else {
+        heightM = widthM / Math.max(0.0001, aspectRatio)
+      }
+      const latDelta = heightM / 111111
+      const lngDelta = widthM / (111111 * cosLat)
+      const secondLat = firstPoint.lat + (latDelta * latSign)
+      const secondLng = firstPoint.lng + (lngDelta * lngSign)
       const nextBounds = {
-        north: Math.max(firstPoint.lat, point.lat),
-        south: Math.min(firstPoint.lat, point.lat),
-        east: Math.max(firstPoint.lng, point.lng),
-        west: Math.min(firstPoint.lng, point.lng),
+        north: Math.max(firstPoint.lat, secondLat),
+        south: Math.min(firstPoint.lat, secondLat),
+        east: Math.max(firstPoint.lng, secondLng),
+        west: Math.min(firstPoint.lng, secondLng),
       }
       const nextFloorPlan = normalizeFloorPlanState({
-        ...floorPlan,
+        ...firstFloorPlan,
         bounds: nextBounds,
       })
-      onFloorPlanChange(nextFloorPlan)
+      onFloorPlanChange(firstFloorPlan.id, nextFloorPlan)
       setTempFloorPoints([])
       onFloorPlacementChange(false)
-      onSelect({ id: 'floor-plan', type: 'floor', ...nextFloorPlan })
+      selectWithOverlaySync(nextFloorPlan)
       return
     }
 
-    if (drawMode === 'select' && floorPlan?.bounds && event.domEvent && mapRef.current) {
+    if (drawMode === 'select' && floorPlans.length && event.domEvent && mapRef.current) {
       const rect = mapRef.current.getDiv().getBoundingClientRect()
       const clickPoint = {
         x: event.domEvent.clientX - rect.left,
         y: event.domEvent.clientY - rect.top,
       }
-      if (isPointInsideFloorOverlay(mapRef.current, floorPlan, clickPoint)) {
-        onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
-        return
+      for (let i = floorPlans.length - 1; i >= 0; i -= 1) {
+        const candidate = floorPlans[i]
+        if (candidate?.bounds && isPointInsideFloorOverlay(mapRef.current, candidate, clickPoint)) {
+          selectWithOverlaySync(candidate)
+          return
+        }
       }
     }
 
@@ -1244,7 +1334,7 @@ export default function MapCanvas({
     if (drawMode === 'select') {
       onClearSelection?.()
     }
-  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlan, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, tempFloorPoints, textStyle])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, selectWithOverlaySync, tempFloorPoints, textStyle])
 
   const handleMapDoubleClick = useCallback((event) => {
     if (drawMode === 'select') {
@@ -1412,14 +1502,14 @@ export default function MapCanvas({
     restriction: isViewOnly && viewOnlyRestrictionBounds
       ? { latLngBounds: viewOnlyRestrictionBounds, strictBounds: false }
       : undefined,
-    disableDoubleClickZoom: isViewOnly ? false : drawMode === 'line' || drawMode === 'route' || drawMode === 'polygon' || drawMode === 'measure',
+    disableDoubleClickZoom: isViewOnly ? false : drawMode === 'line' || drawMode === 'route' || drawMode === 'polygon' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle',
     gestureHandling: 'greedy',
     draggableCursor: isViewOnly
       ? 'grab'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
     draggingCursor: isViewOnly
       ? 'grabbing'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
   }), [drawMode, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
 
   if (!apiKey) {
@@ -1479,17 +1569,21 @@ export default function MapCanvas({
           />
         )}
 
-        {layers.floor?.visible && floorPlan?.bounds && (
-          <FloorPlanOverlay
-            floorPlan={floorPlan}
-            selected={floorSelected}
-            locked={!!layers.floor?.locked}
-            onSelect={onSelect}
-            onStartInteraction={handleStartInteraction}
-            map={mapRef.current}
-            zoom={mapZoom}
-          />
-        )}
+        {layers.floor?.visible && floorPlans.map((plan) => (
+          plan?.bounds ? (
+            <FloorPlanOverlay
+              key={plan.id}
+              floorPlan={plan}
+              selected={selectedId === plan.id}
+              locked={!!layers.floor?.locked}
+              onSelect={selectWithOverlaySync}
+              onStartInteraction={handleStartInteraction}
+              map={mapRef.current}
+              zoom={mapZoom}
+              refreshTick={overlaySyncTick}
+            />
+          ) : null
+        ))}
 
         {layers.zones?.visible && zones.map(zone => {
           // Skip rendering zone if it or any parent zone is hidden
@@ -1571,7 +1665,7 @@ export default function MapCanvas({
                       return
                     }
                     if (drawMode !== 'select') return
-                    onSelect(zone)
+                    selectWithOverlaySync(zone)
                   }}
                   onMouseOver={() => {
                     if (drawMode !== 'select') return
@@ -1620,7 +1714,7 @@ export default function MapCanvas({
                       return
                     }
                     if (drawMode !== 'select') return
-                    onSelect(zone)
+                    selectWithOverlaySync(zone)
                   }}
                   onMouseOver={() => {
                     if (drawMode !== 'select') return
@@ -1635,14 +1729,13 @@ export default function MapCanvas({
                   onDragEnd={() => handleZonePathChange(zone)}
                   onLoad={(polygon) => {
                     zoneOverlayRefs.current[zone.id] = polygon
-                    if (selectedId === zone.id && !layers.zones?.locked) {
-                      const path = polygon.getPath()
-                      path.addListener('set_at', () => handleZonePathChange(zone))
-                      path.addListener('insert_at', () => handleZonePathChange(zone))
-                      path.addListener('remove_at', () => handleZonePathChange(zone))
-                    }
                   }}
                   onUnmount={() => {
+                    const listeners = zonePathListenersRef.current[zone.id]
+                    if (Array.isArray(listeners)) {
+                      listeners.forEach((listener) => listener?.remove?.())
+                    }
+                    delete zonePathListenersRef.current[zone.id]
                     delete zoneOverlayRefs.current[zone.id]
                   }}
                 />
@@ -1758,7 +1851,7 @@ export default function MapCanvas({
                     return
                   }
                   if (drawMode !== 'select') return
-                  onSelect(line)
+                  selectWithOverlaySync(line)
                 }}
                 onMouseOver={(e) => {
                   if (drawMode !== 'select' && drawMode !== 'erase') return
@@ -2023,6 +2116,7 @@ export default function MapCanvas({
           map={mapRef.current}
           visible={layers.grid?.visible}
           size={layers.grid?.size || 3}
+          size={layers.grid?.size || 3}
           opacity={layers.grid?.opacity}
           color={layers.grid?.color}
         />
@@ -2057,10 +2151,11 @@ export default function MapCanvas({
               interactive={drawMode === 'select' || drawMode === 'erase'}
               drawMode={drawMode}
               onEraseAsset={onEraseAsset}
-              onSelect={onSelect}
+              onSelect={selectWithOverlaySync}
               onStartInteraction={handleStartInteraction}
               onHover={setHoveredItem}
               map={mapRef.current}
+              refreshTick={overlaySyncTick}
               onAssetUpdate={onAssetUpdate}
               gridSnap={baseGridSnap || zoneGridSnap}
               gridSize={baseGridSnap ? baseGridSize : zoneGridSize}
@@ -2078,13 +2173,14 @@ export default function MapCanvas({
             selected={false}
             locked={!!layers.annotations?.locked}
             interactive={drawMode === 'select' || drawMode === 'erase'}
-            onSelect={onSelect}
+            onSelect={selectWithOverlaySync}
             onStartInteraction={handleStartInteraction}
             onUpdate={onAssetUpdate}
             drawMode={drawMode}
             onEraseAsset={onEraseAsset}
             zoom={mapZoom}
             onHover={setHoveredItem}
+            refreshTick={overlaySyncTick}
           />
         ))}
 
@@ -2094,13 +2190,14 @@ export default function MapCanvas({
             selected
             locked={!!layers.annotations?.locked}
             interactive={drawMode === 'select' || drawMode === 'erase'}
-            onSelect={onSelect}
+            onSelect={selectWithOverlaySync}
             onStartInteraction={handleStartInteraction}
             onUpdate={onAssetUpdate}
             drawMode={drawMode}
             onEraseAsset={onEraseAsset}
             zoom={mapZoom}
             onHover={setHoveredItem}
+            refreshTick={overlaySyncTick}
           />
         )}
 
@@ -2214,7 +2311,7 @@ export default function MapCanvas({
         </div>
       )}
 
-      {placingFloor && floorPlan?.imageUrl && (
+      {placingFloor && floorPlans.length > 0 && (
         <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(13,15,20,0.9)', border: '1px solid var(--accent)', borderRadius: 'var(--radius)', padding: '8px 16px', fontSize: '12px', color: 'var(--accent)', pointerEvents: 'none', backdropFilter: 'blur(8px)' }}>
           Click the top-left corner, then the bottom-right corner to place the floor plan
         </div>

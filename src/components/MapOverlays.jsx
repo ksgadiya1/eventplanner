@@ -19,7 +19,7 @@ function getStatusColor(status) {
 
 export const AssetOverlay = React.memo(function AssetOverlay({
   asset, zoom, selected, locked, interactive, onSelect,
-  drawMode, onEraseAsset, onHover, map, onStartInteraction,
+  drawMode, onEraseAsset, onHover, map, onStartInteraction, refreshTick = 0,
 }) {
   const ASSET_MIN_ZOOM = 11
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
@@ -75,6 +75,7 @@ export const AssetOverlay = React.memo(function AssetOverlay({
 
   return (
     <OverlayView
+      key={`asset-${asset.id}-${refreshTick}`}
       position={{ lat: asset.lat, lng: asset.lng }}
       mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
       getPixelPositionOffset={() => ({ x: -Math.round(widthPx / 2), y: -Math.round(lengthPx / 2) })}
@@ -201,10 +202,15 @@ export const AssetOverlay = React.memo(function AssetOverlay({
     </OverlayView>
   )
 })
-export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom }) {
-  const geometry = getFloorGeometry(map, floorPlan)
+export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom, refreshTick = 0 }) {
+  const geometry = getFloorGeometry(map, floorPlan, zoom)
   if (!geometry) return null
   const rotation = floorPlan.rotation || 0
+  const floorImages = Array.isArray(floorPlan.imageUrls) && floorPlan.imageUrls.length
+    ? floorPlan.imageUrls
+    : (floorPlan.imageUrl ? [floorPlan.imageUrl] : [])
+  const primaryImage = floorImages[0] || ''
+  const perImageOpacity = floorPlan.opacity ?? 0.7
   const resizeHandles = [
     { key: 'nw', left: '-8px', top: '-8px', cursor: 'nwse-resize', xSign: -1, ySign: -1 },
     { key: 'ne', right: '-8px', top: '-8px', cursor: 'nesw-resize', xSign: 1, ySign: -1 },
@@ -215,80 +221,70 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
   return (
     <>
       <OverlayView
+        key={`floor-image-${floorPlan.id}-${refreshTick}`}
         position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
         mapPaneName={OverlayView.OVERLAY_LAYER}
         getPixelPositionOffset={() => ({ x: -Math.round(geometry.widthPx / 2), y: -Math.round(geometry.heightPx / 2) })}
       >
         <div style={{ width: `${geometry.widthPx}px`, height: `${geometry.heightPx}px`, position: 'relative', pointerEvents: 'none' }}>
           <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}>
-            <img
-              src={floorPlan.imageUrl}
-              alt="Floor plan"
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'fill',
-                display: 'block',
-                opacity: floorPlan.opacity ?? 0.7,
-                userSelect: 'none',
-                pointerEvents: 'none',
-              }}
-            />
+            {primaryImage && (
+              <img
+                src={primaryImage}
+                alt="Floor plan"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'fill',
+                  display: 'block',
+                  opacity: perImageOpacity,
+                  userSelect: 'none',
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
           </div>
         </div>
       </OverlayView>
 
       {selected && (
         <OverlayView
+          key={`floor-selection-${floorPlan.id}-${refreshTick}`}
           position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
           mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
           getPixelPositionOffset={() => ({ x: -Math.round(geometry.widthPx / 2), y: -Math.round(geometry.heightPx / 2) })}
         >
-          <div style={{ width: `${geometry.widthPx}px`, height: `${geometry.heightPx}px`, position: 'relative', pointerEvents: 'none' }}>
+          <div style={{ width: `${geometry.widthPx}px`, height: `${geometry.heightPx}px`, position: 'relative', pointerEvents: 'auto' }}>
             <div style={{ position: 'absolute', inset: 0, transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}>
               <button
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation()
-                  onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
+                  onSelect({ ...floorPlan, type: 'floor' })
                 }}
                 onPointerDown={(event) => !locked && onStartInteraction(event, floorPlan, 'move')}
-                onMouseDown={(event) => !locked && onStartInteraction(event, floorPlan, 'move')}
                 style={{
                   position: 'absolute',
                   inset: 0,
                   padding: 0,
-                  border: selected ? '2px solid #38bdf8' : '2px solid rgba(255,255,255,0.42)',
+                  border: '2px solid #38bdf8',
                   background: 'transparent',
                   cursor: locked ? 'default' : 'move',
                   borderRadius: '14px',
                   overflow: 'hidden',
-                  boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.92)' : 'none',
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.92)',
                   pointerEvents: 'auto',
                 }}
               >
-                <img
-                  src={floorPlan.imageUrl}
-                  alt="Floor plan"
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'fill',
-                    display: 'block',
-                    opacity: 0,
-                    userSelect: 'none',
-                    pointerEvents: 'none',
-                  }}
-                />
+                <div style={{ width: '100%', height: '100%', opacity: 0, pointerEvents: 'none' }} />
               </button>
 
-              {selected && !locked && (
+              {!locked && (
                 <>
                   <div style={{ position: 'absolute', top: '-32px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)', pointerEvents: 'auto' }} />
                   <button
                     type="button"
                     onPointerDown={(event) => onStartInteraction(event, floorPlan, 'rotate')}
-                    onMouseDown={(event) => onStartInteraction(event, floorPlan, 'rotate')}
                     style={{
                       position: 'absolute',
                       top: '-50px',
@@ -313,7 +309,6 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
                       key={handle.key}
                       type="button"
                       onPointerDown={(event) => onStartInteraction(event, floorPlan, 'resize', handle)}
-                      onMouseDown={(event) => onStartInteraction(event, floorPlan, 'resize', handle)}
                       style={{
                         position: 'absolute',
                         width: '16px',
@@ -339,7 +334,7 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
 })
 
 // ─── Annotation Overlay ───────────────────────────────────────────────────────
-export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotation, selected, locked, interactive, onSelect, onStartInteraction, onUpdate, drawMode = 'select', onEraseAsset, zoom, onHover }) {
+export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotation, selected, locked, interactive, onSelect, onStartInteraction, onUpdate, drawMode = 'select', onEraseAsset, zoom, onHover, refreshTick = 0 }) {
   const [isEditing, setIsEditing] = useState(false)
   const [draftText, setDraftText] = useState(annotation.text || '')
   const [isHovered, setIsHovered] = useState(false)
@@ -379,6 +374,7 @@ export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotat
   return (
     <>
       <MarkerF
+        key={`annotation-marker-${annotation.id}-${refreshTick}`}
         position={{ lat: annotation.lat, lng: annotation.lng }}
         title={pinLabel}
         icon={markerIcon}

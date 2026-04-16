@@ -965,119 +965,128 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
           </>
         )}
 
-        {
-          isAsset && (
-            <>
-              <div style={styles.sectionDivider} />
-              <div style={styles.statCard}>
-                <div style={styles.blockTitle}>Custom Asset Actions</div>
-                <button
-                  type="button"
-                  style={styles.actionBtn}
-                  onClick={() => onSaveCustomAsset?.(selected, { mode: 'new' })}
-                >
-                  Save As New
-                </button>
-                <div style={{ ...styles.field, marginBottom: '8px' }}>
-                  <label style={styles.label}>Replace Existing</label>
-                  <select
-                    style={styles.select}
-                    value={replaceCustomAssetId}
-                    onChange={e => setReplaceCustomAssetId(e.target.value)}
-                    disabled={!customAssetDefs.length}
-                  >
-                    {!customAssetDefs.length && <option value="">No saved custom assets</option>}
-                    {customAssetDefs.map(asset => (
-                      <option key={asset.id} value={asset.id}>
-                        {asset.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  type="button"
-                  style={{
-                    ...styles.actionBtn,
-                    marginBottom: 0,
-                    opacity: customAssetDefs.length ? 1 : 0.55,
-                    cursor: customAssetDefs.length ? 'pointer' : 'not-allowed',
-                  }}
-                  onClick={() => {
-                    if (!customAssetDefs.length || !replaceCustomAssetId) return
-                    onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId })
-                  }}
-                  disabled={!customAssetDefs.length || !replaceCustomAssetId}
-                >
-                  Replace
-                </button>
-              </div>
+        {isAsset && (
+          <>
+            <div style={styles.sectionDivider} />
+            <div style={styles.statCard}>
+              <div style={styles.blockTitle}>Custom Asset Actions</div>
               <button
                 type="button"
                 style={styles.actionBtn}
-                onClick={() => onDuplicate?.(selected)}
+                onClick={() => {
+                  const defaultName = String(selected?.label || selected?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
+                  const nextName = window.prompt('Enter name for new custom asset:', defaultName)
+                  if (nextName == null) return
+                  const trimmedName = String(nextName).trim()
+                  if (!trimmedName) {
+                    window.alert('Asset name is required.')
+                    return
+                  }
+                  onSaveCustomAsset?.(selected, { mode: 'new', name: trimmedName })
+                }}
               >
-                Duplicate Asset
+                Save As New
               </button>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <div style={styles.field}>
-                  <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.1"
-                    style={styles.input}
-                    value={selected.widthM ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : ''}
-                    onChange={e => {
-                      const displayValue = Number(e.target.value)
-                      const metersValue = convertToMeters(displayValue, measurementUnit)
-                      onUpdate({ ...selected, widthM: metersValue || 0.5 })
-                    }}
-                  />
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.1"
-                    style={styles.input}
-                    value={selected.lengthM ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : ''}
-                    onChange={e => {
-                      const displayValue = Number(e.target.value)
-                      const metersValue = convertToMeters(displayValue, measurementUnit)
-                      onUpdate({ ...selected, lengthM: metersValue || 0.5 })
-                    }}
-                  />
-                </div>
+              <div style={{ ...styles.field, marginBottom: '8px' }}>
+                <label style={styles.label}>Replace Existing</label>
+                <select
+                  style={styles.select}
+                  value={replaceCustomAssetId}
+                  onChange={e => setReplaceCustomAssetId(e.target.value)}
+                  disabled={!customAssetDefs.length}
+                >
+                  {!customAssetDefs.length && <option value="">No saved custom assets</option>}
+                  {customAssetDefs.map(asset => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.name}
+                    </option>
+                  ))}
+                </select>
               </div>
+              <button
+                type="button"
+                style={{
+                  ...styles.actionBtn,
+                  marginBottom: 0,
+                  opacity: customAssetDefs.length ? 1 : 0.55,
+                  cursor: customAssetDefs.length ? 'pointer' : 'not-allowed',
+                }}
+                onClick={() => {
+                  if (!customAssetDefs.length || !replaceCustomAssetId) return
+                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId })
+                }}
+                disabled={!customAssetDefs.length || !replaceCustomAssetId}
+              >
+                Replace
+              </button>
+            </div>
+            <button
+              type="button"
+              style={styles.actionBtn}
+              onClick={() => onDuplicate?.(selected)}
+            >
+              Duplicate Asset
+            </button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
               <div style={styles.field}>
-                <label style={styles.label}>Rotation (deg)</label>
+                <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
                 <input
                   type="number"
-                  min="0"
-                  max="360"
-                  step="1"
+                  min="0.5"
+                  step="0.1"
                   style={styles.input}
-                  value={selected.rotationDeg ?? 0}
-                  onChange={e => onUpdate({ ...selected, rotationDeg: Number(e.target.value) || 0 })}
+                  value={selected.widthM ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : ''}
+                  onChange={e => {
+                    const displayValue = Number(e.target.value)
+                    const metersValue = convertToMeters(displayValue, measurementUnit)
+                    onUpdate({ ...selected, widthM: metersValue || 0.5 })
+                  }}
                 />
               </div>
               <div style={styles.field}>
-                <label style={styles.label}>Asset Color</label>
+                <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
                 <input
-                  type="color"
-                  style={{ ...styles.input, height: '40px', padding: '4px' }}
-                  value={selected.assetDef?.color || '#3d8ef8'}
-                  onChange={e => onUpdate({
-                    ...selected,
-                    assetDef: {
-                      ...selected.assetDef,
-                      color: e.target.value,
-                      iconColor: e.target.value,
-                    },
-                  })}
+                  type="number"
+                  min="0.5"
+                  step="0.1"
+                  style={styles.input}
+                  value={selected.lengthM ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : ''}
+                  onChange={e => {
+                    const displayValue = Number(e.target.value)
+                    const metersValue = convertToMeters(displayValue, measurementUnit)
+                    onUpdate({ ...selected, lengthM: metersValue || 0.5 })
+                  }}
                 />
               </div>
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Rotation (deg)</label>
+              <input
+                type="number"
+                min="0"
+                max="360"
+                step="1"
+                style={styles.input}
+                value={selected.rotationDeg ?? 0}
+                onChange={e => onUpdate({ ...selected, rotationDeg: Number(e.target.value) || 0 })}
+              />
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Asset Color</label>
+              <input
+                type="color"
+                style={{ ...styles.input, height: '40px', padding: '4px' }}
+                value={selected.assetDef?.color || '#3d8ef8'}
+                onChange={e => onUpdate({
+                  ...selected,
+                  assetDef: {
+                    ...selected.assetDef,
+                    color: e.target.value,
+                    iconColor: e.target.value,
+                  },
+                })}
+              />
+            </div>
 
               {/* Asset Visual Styling */}
               <div style={styles.statCard}>
