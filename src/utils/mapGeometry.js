@@ -217,6 +217,25 @@ export function normalizeFloorPlanState(floorPlan) {
   if (!floorPlan) return floorPlan
 
   const nextPlan = { ...floorPlan }
+  const normalizedImageUrls = Array.isArray(nextPlan.imageUrls)
+    ? nextPlan.imageUrls.filter((url) => typeof url === 'string' && url.trim())
+    : []
+  if (!normalizedImageUrls.length && typeof nextPlan.imageUrl === 'string' && nextPlan.imageUrl.trim()) {
+    normalizedImageUrls.push(nextPlan.imageUrl)
+  }
+  nextPlan.imageUrls = [...new Set(normalizedImageUrls)]
+  nextPlan.imageUrl = nextPlan.imageUrls[0] || ''
+  const naturalWidth = Number(nextPlan.naturalWidth)
+  const naturalHeight = Number(nextPlan.naturalHeight)
+  if (Number.isFinite(naturalWidth) && naturalWidth > 0 && Number.isFinite(naturalHeight) && naturalHeight > 0) {
+    nextPlan.naturalWidth = naturalWidth
+    nextPlan.naturalHeight = naturalHeight
+    nextPlan.aspectRatio = Number((naturalWidth / naturalHeight).toFixed(6))
+  } else if (Number.isFinite(Number(nextPlan.aspectRatio)) && Number(nextPlan.aspectRatio) > 0) {
+    nextPlan.aspectRatio = Number(nextPlan.aspectRatio)
+  } else if (Number.isFinite(Number(nextPlan.widthM)) && Number(nextPlan.widthM) > 0 && Number.isFinite(Number(nextPlan.heightM)) && Number(nextPlan.heightM) > 0) {
+    nextPlan.aspectRatio = Number((Number(nextPlan.widthM) / Number(nextPlan.heightM)).toFixed(6))
+  }
   const hasCenter = Number.isFinite(nextPlan.center?.lat) && Number.isFinite(nextPlan.center?.lng)
   const hasSize = Number.isFinite(Number(nextPlan.widthM)) && Number.isFinite(Number(nextPlan.heightM))
 

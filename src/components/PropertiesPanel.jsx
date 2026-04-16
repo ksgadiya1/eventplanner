@@ -967,7 +967,17 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               <button
                 type="button"
                 style={styles.actionBtn}
-                onClick={() => onSaveCustomAsset?.(selected, { mode: 'new' })}
+                onClick={() => {
+                  const defaultName = String(selected?.label || selected?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
+                  const nextName = window.prompt('Enter name for new custom asset:', defaultName)
+                  if (nextName == null) return
+                  const trimmedName = String(nextName).trim()
+                  if (!trimmedName) {
+                    window.alert('Asset name is required.')
+                    return
+                  }
+                  onSaveCustomAsset?.(selected, { mode: 'new', name: trimmedName })
+                }}
               >
                 Save As New
               </button>

@@ -31,6 +31,29 @@ const DEFAULT_MAP_VIEWPORT = {
   zoom: 14,
 }
 
+function toFloorPlanArray(rawFloor) {
+  if (Array.isArray(rawFloor)) return rawFloor.filter(Boolean).map(plan => normalizeFloorPlanState(plan))
+  if (rawFloor && typeof rawFloor === 'object') return [normalizeFloorPlanState(rawFloor)]
+  return []
+}
+
+function readImageDimensions(imageUrl) {
+  return new Promise((resolve) => {
+    if (!imageUrl) {
+      resolve({ width: 1, height: 1 })
+      return
+    }
+    const image = new Image()
+    image.onload = () => {
+      const width = Number(image.naturalWidth || image.width || 1)
+      const height = Number(image.naturalHeight || image.height || 1)
+      resolve({ width: Math.max(1, width), height: Math.max(1, height) })
+    }
+    image.onerror = () => resolve({ width: 1, height: 1 })
+    image.src = imageUrl
+  })
+}
+
 function normalizePersistedZoom(value, fallback = DEFAULT_MAP_VIEWPORT.zoom) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
@@ -147,7 +170,7 @@ const DEFAULT_LAYERS = {
   annotations: { visible: true, locked: false },
   lines: { visible: true, locked: false },
   floor: { visible: true, locked: false },
-  grid: { visible: false, locked: false, snap: false },
+  grid: { visible: false, locked: false, snap: false, size: 3 },
 }
 
 function getExportStatusColor(status) {
@@ -564,7 +587,7 @@ export default function App() {
   const [assets, setAssets] = useState([])
   const [lines, setLines] = useState([])
   const [annotations, setAnnotations] = useState([])
-  const [floorPlan, setFloorPlan] = useState(null)
+  const [floorPlans, setFloorPlans] = useState([])
   const [placingFloor, setPlacingFloor] = useState(false)
   const [pendingAssetDef, setPendingAssetDef] = useState(null)
   const [pendingZoneTemplate, setPendingZoneTemplate] = useState(null)
@@ -717,7 +740,7 @@ export default function App() {
       setAssets(Array.isArray(parsed.assets) ? parsed.assets : [])
       setLines(Array.isArray(parsed.lines) ? parsed.lines : [])
       setAnnotations(Array.isArray(parsed.annotations) ? parsed.annotations : [])
-      setFloorPlan(parsed.floorPlan || null)
+      setFloorPlans(toFloorPlanArray(parsed.floorPlans || parsed.floorPlan))
       setLayers({ ...DEFAULT_LAYERS, ...(parsed.layers || {}) })
       setLineStyle(prev => ({ ...prev, ...(parsed.lineStyle || {}) }))
       setTextStyle(prev => ({ ...prev, ...(parsed.textStyle || {}) }))
@@ -757,7 +780,7 @@ export default function App() {
       assets,
       lines,
       annotations,
-      floorPlan,
+      floorPlans,
       layers,
       lineStyle,
       textStyle,
@@ -773,7 +796,7 @@ export default function App() {
     } catch {
       // ignore storage quota failures
     }
-  }, [annotationDraftText, annotations, assets, eventDetails, floorPlan, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
+  }, [annotationDraftText, annotations, assets, eventDetails, floorPlans, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
 
   useEffect(() => {
     if (drawMode !== 'select' && pendingAssetDef) {
@@ -824,11 +847,14 @@ export default function App() {
       if (lines.find(l => l.id === selectedId)) return { ...foundItem, type: 'line' }
       if (annotations.find(a => a.id === selectedId)) return { ...foundItem, type: 'annotation' }
     }
-    if (selectedId === 'floor-plan' && floorPlan) return { id: 'floor-plan', type: 'floor', ...floorPlan }
+    if (String(selectedId || '').startsWith('floor-plan-')) {
+      const selectedFloorPlan = floorPlans.find(plan => plan.id === selectedId)
+      if (selectedFloorPlan) return selectedFloorPlan
+    }
     return null
-  }, [annotations, assets, floorPlan, lines, selectedId, zones])
+  }, [annotations, assets, floorPlans, lines, selectedId, zones])
 
-  const snapshot = useCallback(() => ({ zones, assets, lines, annotations, floorPlan }), [zones, assets, lines, annotations, floorPlan])
+  const snapshot = useCallback(() => ({ zones, assets, lines, annotations, floorPlans }), [zones, assets, lines, annotations, floorPlans])
 
   const snapshotRef = useRef(snapshot)
   useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
@@ -944,7 +970,7 @@ export default function App() {
 
   const handleSaveCustomAsset = useCallback((asset, options = {}) => {
     const categoryLabel = String(asset?.assetDef?.category || asset?.category || 'Custom Assets').trim() || 'Custom Assets'
-    const baseName = String(asset?.label || asset?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
+    const baseName = String(options?.name || asset?.label || asset?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
     const assetType = String(asset?.assetDef?.assetType || asset?.assetType || 'custom').trim() || 'custom'
 
     const assetDefinition = {
@@ -986,6 +1012,7 @@ export default function App() {
       || 'lines' in payload
       || 'annotations' in payload
       || 'floorPlan' in payload
+      || 'floorPlans' in payload
       || 'eventDetails' in payload
     )
 
@@ -1029,7 +1056,7 @@ export default function App() {
     setAssets(importedAssets)
     setLines(importedLines)
     setAnnotations(importedAnnotations)
-    setFloorPlan(payload.floorPlan || null)
+    setFloorPlans(toFloorPlanArray(payload.floorPlans || payload.floorPlan))
     setLayers({ ...DEFAULT_LAYERS, ...(payload.layers || {}) })
     setLineStyle(prev => ({ ...prev, ...(payload.lineStyle || {}) }))
     setTextStyle(prev => ({ ...prev, ...(payload.textStyle || {}) }))
@@ -1133,11 +1160,10 @@ export default function App() {
     setSelectedId(item.id)
     setDrawMode('select')
 
-    // Auto-zoom to selected item on map
+    // Keep map zoom stable on selection; only pan if needed.
     if (mapRef.current && window.google) {
       let targetLat = null
       let targetLng = null
-      let zoomLevel = 16
 
       if (item.type === 'zone' || item.zoneType) {
         // For zones, calculate center of polygon
@@ -1149,7 +1175,6 @@ export default function App() {
           })
           targetLat = sumLat / item.path.length
           targetLng = sumLng / item.path.length
-          zoomLevel = 16
         }
       } else if (item.type === 'line' || (item.path && !item.zoneType)) {
         // For lines, calculate center of line path
@@ -1161,24 +1186,15 @@ export default function App() {
           })
           targetLat = sumLat / item.path.length
           targetLng = sumLng / item.path.length
-          zoomLevel = 16
         }
       } else if (item.lat !== undefined && item.lng !== undefined) {
-        // For assets, annotations — pan only, no zoom change
+        // For assets, annotations — pan only
         targetLat = item.lat
         targetLng = item.lng
-        zoomLevel = null
       }
 
       if (targetLat !== null && targetLng !== null) {
         mapRef.current.panTo({ lat: targetLat, lng: targetLng })
-        // Only zoom in if currently zoomed out further than the target level
-        if (zoomLevel !== null) {
-          const currentZoom = mapRef.current.getZoom()
-          if (currentZoom < zoomLevel) {
-            mapRef.current.setZoom(zoomLevel)
-          }
-        }
       }
     }
   }, [])
@@ -1297,8 +1313,11 @@ export default function App() {
 
       if ((widthChanged || lengthChanged) && window.google?.maps?.geometry?.spherical) {
         const center = updated.center || getPathCenter(previousZone?.path || updated.path)
-        const widthM = Number(updated.widthM)
-        const lengthM = Number(updated.lengthM)
+        const nextWidthM = Number(updated.widthM)
+        const nextLengthM = Number(updated.lengthM)
+        const sideM = Math.max(nextWidthM, nextLengthM)
+        const widthM = sideM
+        const lengthM = sideM
         const rotationDeg = Number(updated.rotation || 0)
 
         if (center && Number.isFinite(widthM) && Number.isFinite(lengthM)) {
@@ -1471,7 +1490,9 @@ export default function App() {
       const normalizedAnnotation = normalizeAnnotationParent(updated, zones)
       setAnnotations(prev => prev.map(annotation => annotation.id === updated.id ? normalizedAnnotation : annotation))
     } else if (updated.type === 'floor') {
-      setFloorPlan(prev => prev ? normalizeFloorPlanState({ ...prev, ...updated }) : prev)
+      setFloorPlans(prev => prev.map(plan => (
+        plan.id === updated.id ? normalizeFloorPlanState({ ...plan, ...updated }) : plan
+      )))
     } else {
       const normalizedAsset = normalizeAssetParent(updated, zones)
       setAssets(prev => prev.map(a => a.id === updated.id ? normalizedAsset : a))
@@ -1581,23 +1602,96 @@ export default function App() {
     setSharedView(readSharedViewState())
   }, [])
 
-  const handleFloorPlanUpload = useCallback((imageUrl) => {
-    setFloorPlan({
-      id: 'floor-plan',
-      type: 'floor',
-      imageUrl,
-      bounds: null,
-      center: null,
-      widthM: null,
-      heightM: null,
-      opacity: 0.7,
-      rotation: 0,
-    })
-    setPlacingFloor(true)
-  }, [])
+  const getAutoFloorBounds = useCallback(() => {
+    const map = mapRef.current
+    const center = map?.getCenter?.()
+    const bounds = map?.getBounds?.()
+    if (center && bounds) {
+      const north = bounds.getNorthEast?.()?.lat?.()
+      const south = bounds.getSouthWest?.()?.lat?.()
+      const east = bounds.getNorthEast?.()?.lng?.()
+      const west = bounds.getSouthWest?.()?.lng?.()
+      if ([north, south, east, west].every(Number.isFinite)) {
+        const latHalf = Math.max(Math.abs(north - south) * 0.12, 0.0008)
+        const lngHalf = Math.max(Math.abs(east - west) * 0.12, 0.0008)
+        return {
+          north: center.lat() + latHalf,
+          south: center.lat() - latHalf,
+          east: center.lng() + lngHalf,
+          west: center.lng() - lngHalf,
+        }
+      }
+    }
 
-  const handleFloorPlanChange = useCallback((updater) => {
-    setFloorPlan(prev => normalizeFloorPlanState(typeof updater === 'function' ? updater(prev) : updater))
+    const fallbackCenter = mapViewport?.center || DEFAULT_MAP_VIEWPORT.center
+    const latHalf = 0.0018
+    const lngHalf = 0.0018
+    return {
+      north: fallbackCenter.lat + latHalf,
+      south: fallbackCenter.lat - latHalf,
+      east: fallbackCenter.lng + lngHalf,
+      west: fallbackCenter.lng - lngHalf,
+    }
+  }, [mapViewport?.center])
+
+  const handleFloorPlanUpload = useCallback(async (uploadedImages) => {
+    const incomingImages = (Array.isArray(uploadedImages) ? uploadedImages : [uploadedImages])
+      .filter((url) => typeof url === 'string' && url.trim())
+    if (!incomingImages.length) return
+
+    const baseBounds = getAutoFloorBounds()
+    const baseCenterLat = (baseBounds.north + baseBounds.south) / 2
+    const baseCenterLng = (baseBounds.east + baseBounds.west) / 2
+    const latSpan = Math.max(Math.abs(baseBounds.north - baseBounds.south), 0.0008)
+    const lngSpan = Math.max(Math.abs(baseBounds.east - baseBounds.west), 0.0008)
+    const offsetStepLat = latSpan * 0.38
+    const offsetStepLng = lngSpan * 0.38
+    const imageDimensions = await Promise.all(incomingImages.map((url) => readImageDimensions(url)))
+
+    const createdPlans = incomingImages.map((imageUrl, index) => {
+      const dims = imageDimensions[index] || { width: 1, height: 1 }
+      const imageAspect = dims.width / Math.max(1, dims.height)
+      const column = index % 3
+      const row = Math.floor(index / 3)
+      const centerLat = baseCenterLat - row * offsetStepLat
+      const centerLng = baseCenterLng + column * offsetStepLng
+      const halfLat = latSpan * 0.45
+      const cosLat = Math.max(0.15, Math.cos((centerLat * Math.PI) / 180))
+      const computedHalfLng = (halfLat * imageAspect) / cosLat
+      const maxHalfLng = Math.max(lngSpan * 0.75, 0.0006)
+      const halfLng = Math.min(maxHalfLng, Math.max(0.0003, computedHalfLng))
+      return normalizeFloorPlanState({
+        id: `floor-plan-${Date.now()}-${index}`,
+        type: 'floor',
+        label: `Floor Overlay ${index + 1}`,
+        imageUrl,
+        imageUrls: [imageUrl],
+        naturalWidth: dims.width,
+        naturalHeight: dims.height,
+        aspectRatio: imageAspect,
+        bounds: {
+          north: centerLat + halfLat,
+          south: centerLat - halfLat,
+          east: centerLng + halfLng,
+          west: centerLng - halfLng,
+        },
+        opacity: 0.7,
+        rotation: 0,
+      })
+    })
+
+    setFloorPlans(prev => [...prev, ...createdPlans])
+    setSelectedId(createdPlans[createdPlans.length - 1]?.id || null)
+    setPlacingFloor(false)
+  }, [getAutoFloorBounds])
+
+  const handleFloorPlanChange = useCallback((floorPlanId, updater) => {
+    if (!floorPlanId) return
+    setFloorPlans(prev => prev.map((plan) => {
+      if (plan.id !== floorPlanId) return plan
+      const nextPlan = typeof updater === 'function' ? updater(plan) : updater
+      return normalizeFloorPlanState(nextPlan)
+    }))
   }, [])
 
   // Delete selected
@@ -1616,7 +1710,9 @@ export default function App() {
       setLines(prev => prev.filter(line => line.id !== selectedId))
       setAnnotations(prev => prev.filter(annotation => annotation.id !== selectedId))
     }
-    if (selectedId === 'floor-plan') setFloorPlan(null)
+    if (String(selectedId).startsWith('floor-plan-')) {
+      setFloorPlans(prev => prev.filter(plan => plan.id !== selectedId))
+    }
     setSelectedId(null)
   }, [annotations, assets, lines, pushHistory, selectedId, zones])
 
@@ -1624,33 +1720,33 @@ export default function App() {
     setUndoStack(stack => {
       if (!stack.length) return stack
       const prev = stack[stack.length - 1]
-      const current = { zones, assets, lines, annotations, floorPlan }
+      const current = { zones, assets, lines, annotations, floorPlans }
       setRedoStack(r => [...r.slice(-50), current])
       setZones(prev.zones)
       setAssets(prev.assets)
       setLines(prev.lines || [])
       setAnnotations(prev.annotations || [])
-      setFloorPlan(prev.floorPlan || null)
+      setFloorPlans(prev.floorPlans || toFloorPlanArray(prev.floorPlan))
       setSelectedId(null)
       return stack.slice(0, -1)
     })
-  }, [zones, assets, lines, annotations, floorPlan])
+  }, [zones, assets, lines, annotations, floorPlans])
 
   const handleRedo = useCallback(() => {
     setRedoStack(stack => {
       if (!stack.length) return stack
       const next = stack[stack.length - 1]
-      const current = { zones, assets, lines, annotations, floorPlan }
+      const current = { zones, assets, lines, annotations, floorPlans }
       setUndoStack(u => [...u.slice(-50), current])
       setZones(next.zones)
       setAssets(next.assets)
       setLines(next.lines || [])
       setAnnotations(next.annotations || [])
-      setFloorPlan(next.floorPlan || null)
+      setFloorPlans(next.floorPlans || toFloorPlanArray(next.floorPlan))
       setSelectedId(null)
       return stack.slice(0, -1)
     })
-  }, [zones, assets, lines, annotations, floorPlan])
+  }, [zones, assets, lines, annotations, floorPlans])
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1960,20 +2056,44 @@ export default function App() {
         await drawBaseMapFromDom()
       }
 
-      if (layers.floor?.visible !== false && floorPlan?.bounds && floorPlan?.imageUrl) {
-        try {
-          const floorImage = await loadImage(floorPlan.imageUrl)
-          const geometry = getFloorGeometry(map, floorPlan)
-          if (geometry) {
+      if (layers.floor?.visible !== false && floorPlans.length > 0) {
+        for (const floorPlan of floorPlans) {
+          if (!floorPlan?.bounds || (!floorPlan?.imageUrl && !floorPlan?.imageUrls?.length)) continue
+          try {
+            const floorImageUrls = Array.isArray(floorPlan.imageUrls) && floorPlan.imageUrls.length
+              ? floorPlan.imageUrls
+              : [floorPlan.imageUrl]
+            const geometry = getFloorGeometry(map, floorPlan)
+            if (!geometry) continue
+            const floorImages = await Promise.all(floorImageUrls.filter(Boolean).map(src => loadImage(src)))
             ctx.save()
             ctx.translate(geometry.centerPoint.x, geometry.centerPoint.y)
             ctx.rotate(((floorPlan.rotation || 0) * Math.PI) / 180)
-            ctx.globalAlpha = floorPlan.opacity ?? 0.7
-            ctx.drawImage(floorImage, -geometry.widthPx / 2, -geometry.heightPx / 2, geometry.widthPx, geometry.heightPx)
+            const imageOpacity = floorPlan.opacity ?? 0.7
+            if (floorImages.length <= 1) {
+              const floorImage = floorImages[0]
+              if (floorImage) {
+                ctx.globalAlpha = imageOpacity
+                ctx.drawImage(floorImage, -geometry.widthPx / 2, -geometry.heightPx / 2, geometry.widthPx, geometry.heightPx)
+              }
+            } else {
+              const cols = Math.max(1, Math.ceil(Math.sqrt(floorImages.length || 1)))
+              const rows = Math.max(1, Math.ceil((floorImages.length || 1) / cols))
+              const cellWidth = geometry.widthPx / cols
+              const cellHeight = geometry.heightPx / rows
+              floorImages.forEach((floorImage, index) => {
+                const col = index % cols
+                const row = Math.floor(index / cols)
+                const drawX = -geometry.widthPx / 2 + col * cellWidth
+                const drawY = -geometry.heightPx / 2 + row * cellHeight
+                ctx.globalAlpha = imageOpacity
+                ctx.drawImage(floorImage, drawX, drawY, cellWidth, cellHeight)
+              })
+            }
             ctx.restore()
+          } catch (error) {
+            console.warn('Could not draw floor plan in export.', error)
           }
-        } catch (error) {
-          console.warn('Could not draw floor plan in export.', error)
         }
       }
 
@@ -2119,7 +2239,7 @@ export default function App() {
         requestAnimationFrame(() => setSelectedId(previousSelectedId))
       }
     }
-  }, [annotations, assets, floorPlan, layers, lines, mapViewMode, selectedId, zones])
+  }, [annotations, assets, floorPlans, layers, lines, mapViewMode, selectedId, zones])
 
   // Export current viewport as PNG / PDF / JSON
   const handleExport = useCallback(async (format = 'png') => {
@@ -2132,7 +2252,8 @@ export default function App() {
         assets,
         lines,
         annotations,
-        floorPlan,
+        floorPlans,
+        floorPlan: floorPlans[0] || null,
         layers,
         lineStyle,
         textStyle,
@@ -2774,7 +2895,7 @@ export default function App() {
       console.error('Export failed:', err)
       window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
     }
-  }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, mapViewport, measurementUnit, selectedZoneType, textStyle, zones])
+  }, [annotations, assets, captureMapImage, eventDetails, floorPlans, layers, lineStyle, lines, mapViewMode, mapViewport, measurementUnit, selectedZoneType, textStyle, zones])
 
   const updateEventMeta = useCallback((id, patch = null) => {
     if (!id) return
@@ -2943,7 +3064,7 @@ export default function App() {
         setLayers(prev => ({ ...prev, ...(data.layers || {}) }))
         setLineStyle(data.settings?.lineStyle || getRouteStylePreset('custom'))
         setTextStyle(prev => ({ ...prev, ...(data.settings?.textStyle || {}) }))
-        setFloorPlan(data.settings?.floorPlan || null)
+        setFloorPlans(toFloorPlanArray(data.settings?.floorPlans || data.settings?.floorPlan))
       })
       .catch(err => {
         console.error('Error resuming event:', err)
@@ -2980,7 +3101,8 @@ export default function App() {
         settings: {
           lineStyle,
           textStyle,
-          floorPlan,
+          floorPlans,
+          floorPlan: floorPlans[0] || null,
         },
       } : {}
 
@@ -3095,7 +3217,8 @@ export default function App() {
           settings: {
             lineStyle,
             textStyle,
-            floorPlan,
+            floorPlans,
+            floorPlan: floorPlans[0] || null,
             archived: !!eventDetails.isArchived,
           },
           zones,
@@ -3200,16 +3323,17 @@ export default function App() {
             selectedId={selectedId}
             onSelectItem={handleSelect}
             onUpdateAsset={handleUpdate}
-            floorPlan={floorPlan}
+            floorPlans={floorPlans}
             placingFloor={placingFloor}
             onFloorPlanUpload={handleFloorPlanUpload}
             onStartFloorPlacement={() => {
-              if (!floorPlan?.imageUrl) return
-              setFloorPlan(prev => prev ? { ...prev, bounds: null } : prev)
+              const hasFloorImage = floorPlans.length > 0
+              if (!hasFloorImage) return
+              setFloorPlans(prev => prev.map((plan, index) => index === 0 ? { ...plan, bounds: null } : plan))
               setPlacingFloor(true)
             }}
             onFloorOpacityChange={(opacity) => {
-              setFloorPlan(prev => prev ? { ...prev, opacity } : prev)
+              setFloorPlans(prev => prev.map((plan, index) => index === 0 ? { ...plan, opacity } : plan))
             }}
             layers={layers}
             onToggleLayer={handleToggleLayer}
@@ -3236,7 +3360,7 @@ export default function App() {
           assets={assets}
           lines={lines}
           annotations={annotations}
-          floorPlan={floorPlan}
+          floorPlans={floorPlans}
           placingFloor={placingFloor}
           selectedId={selectedId}
           onSelect={handleSelect}

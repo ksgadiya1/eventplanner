@@ -413,7 +413,7 @@ export default function Sidebar({
   selectedId,
   onSelectItem,
   onUpdateAsset,
-  floorPlan,
+  floorPlans = [],
   onFloorPlanUpload,
   layers,
   onToggleLayer,
@@ -920,16 +920,21 @@ export default function Sidebar({
               <input
                 type="file"
                 accept="image/*"
+                multiple
                 style={styles.floorInput}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  if (!file) return
-                  const reader = new FileReader()
-                  reader.onload = () => {
-                    if (typeof reader.result !== 'string') return
-                    onFloorPlanUpload(reader.result)
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files || [])
+                  if (!files.length) return
+                  const imageUrls = await Promise.all(files.map((file) => new Promise((resolve) => {
+                    const reader = new FileReader()
+                    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+                    reader.onerror = () => resolve('')
+                    reader.readAsDataURL(file)
+                  })))
+                  const validUrls = imageUrls.filter(Boolean)
+                  if (validUrls.length) {
+                    onFloorPlanUpload(validUrls)
                   }
-                  reader.readAsDataURL(file)
                   e.target.value = ''
                 }}
               />
@@ -1151,7 +1156,7 @@ export default function Sidebar({
                 { id: 'assets', name: 'Assets', items: assets.length, visibleKey: 'assets' },
                 { id: 'annotations', name: 'Annotations', items: annotations.length, visibleKey: 'annotations' },
                 { id: 'lines', name: lines.some(line => line.routeType) ? 'Routes' : 'Lines', items: lines.length, visibleKey: 'lines' },
-                { id: 'floor', name: 'Floor Plan', items: floorPlan ? 1 : 0, visibleKey: 'floor' },
+                { id: 'floor', name: 'Floor Plan', items: floorPlans.length, visibleKey: 'floor' },
               ].filter(folder => folder.items > 0).map(folder => {
                 const lstate = layers[folder.visibleKey] || { visible: true, locked: false }
                 const expanded = expandedFolders[folder.id] ?? true
@@ -1253,13 +1258,15 @@ export default function Sidebar({
                       </div>
                     )}
 
-                    {expanded && folder.id === 'floor' && floorPlan && (
+                    {expanded && folder.id === 'floor' && floorPlans.length > 0 && (
                       <div style={styles.treeChildren}>
-                        <div style={{ ...styles.treeNode, background: selectedId === 'floor-plan' ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.({ id: 'floor-plan', type: 'floor', ...floorPlan })}>
-                          <span style={{ fontSize: '14px' }}>#</span>
-                          <span style={styles.treeLabel}>Floor Plan Overlay</span>
-                          <span style={styles.treeMeta}>Floor</span>
-                        </div>
+                        {floorPlans.map((plan, index) => (
+                          <div key={plan.id || `floor-plan-${index}`} style={{ ...styles.treeNode, background: selectedId === plan.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.(plan)}>
+                            <span style={{ fontSize: '14px' }}>#</span>
+                            <span style={styles.treeLabel}>{plan.label || `Floor Overlay ${index + 1}`}</span>
+                            <span style={styles.treeMeta}>Floor</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1375,7 +1382,7 @@ export default function Sidebar({
                 </button>
               </div>
 
-              {rootZones.length === 0 && !assets.length && !annotations.length && !lines.length && !floorPlan && (
+              {rootZones.length === 0 && !assets.length && !annotations.length && !lines.length && !floorPlans.length && (
                 <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, padding: '8px 2px' }}>
                   Layers will appear here after you place zones, assets, lines, annotations, or floor plan.
                 </div>

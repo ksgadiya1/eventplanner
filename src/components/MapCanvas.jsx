@@ -120,6 +120,144 @@ function getPathCenter(path = []) {
   }
 }
 
+function getBoundsFromPath(path = []) {
+  if (!Array.isArray(path) || !path.length) return null
+  const lats = path.map((point) => Number(point?.lat)).filter(Number.isFinite)
+  const lngs = path.map((point) => Number(point?.lng)).filter(Number.isFinite)
+  if (!lats.length || !lngs.length) return null
+  return {
+    north: Math.max(...lats),
+    south: Math.min(...lats),
+    east: Math.max(...lngs),
+    west: Math.min(...lngs),
+  }
+}
+
+function getBoundsCenter(bounds) {
+  if (!bounds) return null
+  return {
+    lat: (Number(bounds.north) + Number(bounds.south)) / 2,
+    lng: (Number(bounds.east) + Number(bounds.west)) / 2,
+  }
+}
+
+function buildPathFromBounds(bounds) {
+  if (!bounds) return []
+  return [
+    { lat: bounds.north, lng: bounds.east },
+    { lat: bounds.north, lng: bounds.west },
+    { lat: bounds.south, lng: bounds.west },
+    { lat: bounds.south, lng: bounds.east },
+  ]
+}
+
+function getBoundsFromCorners(anchor, point) {
+  if (!anchor || !point) return null
+  return {
+    north: Math.max(Number(anchor.lat), Number(point.lat)),
+    south: Math.min(Number(anchor.lat), Number(point.lat)),
+    east: Math.max(Number(anchor.lng), Number(point.lng)),
+    west: Math.min(Number(anchor.lng), Number(point.lng)),
+  }
+}
+
+function getSquareBoundsFromCorners(anchor, point, map = null) {
+  if (!anchor || !point) return null
+  if (map) {
+    const mapRect = map.getDiv?.()?.getBoundingClientRect?.()
+    const anchorPx = latLngToContainerPoint(map, Number(anchor.lat), Number(anchor.lng))
+    const pointPx = latLngToContainerPoint(map, Number(point.lat), Number(point.lng))
+    if (mapRect && anchorPx && pointPx) {
+      const dx = pointPx.x - anchorPx.x
+      const dy = pointPx.y - anchorPx.y
+      const size = Math.max(Math.abs(dx), Math.abs(dy))
+      const xSign = dx >= 0 ? 1 : -1
+      const ySign = dy >= 0 ? 1 : -1
+      const adjustedPx = {
+        x: anchorPx.x + (size * xSign),
+        y: anchorPx.y + (size * ySign),
+      }
+      const adjustedLatLng = clientPointToLatLng(
+        map,
+        mapRect.left + adjustedPx.x,
+        mapRect.top + adjustedPx.y
+      )
+      if (adjustedLatLng) {
+        return getBoundsFromCorners(anchor, {
+          lat: adjustedLatLng.lat(),
+          lng: adjustedLatLng.lng(),
+        })
+      }
+    }
+  }
+
+  const anchorLat = Number(anchor.lat)
+  const anchorLng = Number(anchor.lng)
+  const pointLat = Number(point.lat)
+  const pointLng = Number(point.lng)
+  const latDiff = pointLat - anchorLat
+  const lngDiff = pointLng - anchorLng
+  const size = Math.max(Math.abs(latDiff), Math.abs(lngDiff))
+  const latSign = latDiff >= 0 ? 1 : -1
+  const lngSign = lngDiff >= 0 ? 1 : -1
+  const nextPoint = {
+    lat: anchorLat + (size * latSign),
+    lng: anchorLng + (size * lngSign),
+  }
+  return getBoundsFromCorners(anchor, nextPoint)
+}
+
+function arePathsNearlyEqual(pathA = [], pathB = [], epsilon = 1e-11) {
+  if (!Array.isArray(pathA) || !Array.isArray(pathB) || pathA.length !== pathB.length) return false
+  for (let index = 0; index < pathA.length; index += 1) {
+    const a = pathA[index]
+    const b = pathB[index]
+    if (!a || !b) return false
+    if (Math.abs(Number(a.lat || 0) - Number(b.lat || 0)) > epsilon) return false
+    if (Math.abs(Number(a.lng || 0) - Number(b.lng || 0)) > epsilon) return false
+  }
+  return true
+}
+
+function getSquareHandleData(path = []) {
+
+  if (!Array.isArray(path) || path.length < 4)
+    return null
+
+  return {
+
+    corners: [
+
+      {
+        key: 'corner-0',
+        position: path[0],
+        handle: { kind: 'corner', xSign: 1, ySign: -1 }
+      },
+
+      {
+        key: 'corner-1',
+        position: path[1],
+        handle: { kind: 'corner', xSign: -1, ySign: -1 }
+      },
+
+      {
+        key: 'corner-2',
+        position: path[2],
+        handle: { kind: 'corner', xSign: -1, ySign: 1 }
+      },
+
+      {
+        key: 'corner-3',
+        position: path[3],
+        handle: { kind: 'corner', xSign: 1, ySign: 1 }
+      }
+
+    ],
+
+    sides: []
+
+  }
+}
 function getRectangleZoneDimensions(zone, google) {
   const widthM = Number(zone?.widthM)
   const lengthM = Number(zone?.lengthM)
@@ -221,7 +359,7 @@ export default function MapCanvas({
   assets,
   lines,
   annotations,
-  floorPlan,
+  floorPlans = [],
   placingFloor,
   selectedId,
   onSelect,
@@ -264,6 +402,7 @@ export default function MapCanvas({
   const polygonDraftRef = useRef(null)
   const shapeDraftRef = useRef(null)
   const zoneOverlayRefs = useRef({})
+  const zonePathListenersRef = useRef({})
   const zoneCircleRefs = useRef({})
   const lastCircleSnapshotRef = useRef({})
   const lineOverlayRefs = useRef({})
@@ -281,6 +420,7 @@ export default function MapCanvas({
   const [hoveredLine, setHoveredLine] = useState(null)
   const [hoverScreenPos, setHoverScreenPos] = useState(null)
   const [hoveredItem, setHoveredItem] = useState(null) // Track any hovered item with tooltips
+  const [overlaySyncTick, setOverlaySyncTick] = useState(0)
   const [measurePoints, setMeasurePoints] = useState([])
   const [measureHover, setMeasureHover] = useState(null)
   const measurePointsRef = useRef([])
@@ -311,6 +451,10 @@ export default function MapCanvas({
       setSegmentMeasurement(null)
       setMeasurePoints([])
       setMeasureHover(null)
+    }
+    if (drawMode !== 'square' && drawMode !== 'circle') {
+      setShapeDraft(null)
+      setLineMeasurement(null)
     }
     if (drawMode !== 'measure') {
       setMeasurePoints([])
@@ -372,7 +516,6 @@ export default function MapCanvas({
       return overlay ? [overlay] : []
     })
   }, [isLoaded, isZoneOrParentHidden, layers.zones?.visible, mapZoom, zones])
-  const floorSelected = selectedId === 'floor-plan'
   const visibleAssets = useMemo(() => {
     if (layers.assets?.visible === false) return []
 
@@ -393,9 +536,9 @@ export default function MapCanvas({
   const viewOnlyRestrictionBounds = useMemo(() => {
     if (!isViewOnly || !window.google) return null
     return eventDetails?.resolvedLocation?.restrictionBounds
-      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan: floorPlans[0] || null })
       || null
-  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlan, isViewOnly, lines, zones])
+  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlans, isViewOnly, lines, zones])
 
   const hoveredTooltipPosition = useMemo(() => {
     if (!hoveredItem || drawMode !== 'select') return null
@@ -445,14 +588,14 @@ export default function MapCanvas({
 
   const updateMapViewport = useCallback(() => {
     if (!mapRef.current || !window.google) return
-    const contentBounds = computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+    const contentBounds = computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan: floorPlans[0] || null })
     if (contentBounds) {
       mapRef.current.fitBounds(contentBounds, 80)
       return
     }
     const locationBounds = eventDetails?.resolvedLocation?.restrictionBounds
     if (locationBounds) mapRef.current.fitBounds(locationBounds, 60)
-  }, [annotations, assets, eventDetails, floorPlan, lines, zones])
+  }, [annotations, assets, eventDetails, floorPlans, lines, zones])
 
   const rafRef = useRef(null)
 
@@ -710,10 +853,18 @@ export default function MapCanvas({
 
       if (interaction.objectType === 'floor') {
         if (interaction.type === 'move') {
+          const dragDistanceX = event.clientX - interaction.startX
+          const dragDistanceY = event.clientY - interaction.startY
+          const dragDistance = Math.hypot(dragDistanceX, dragDistanceY)
+          if (!interaction.hasDragged) {
+            if (dragDistance < 3) return
+            interactionRef.current = { ...interaction, hasDragged: true }
+          }
+
           const nextCenter = clientPointToLatLng(map, event.clientX, event.clientY)
           if (!nextCenter) return
 
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
+          onFloorPlanChange(interaction.objectId, prev => prev ? normalizeFloorPlanState({
             ...prev,
             center: {
               lat: nextCenter.lat() - (interaction.latOffset || 0),
@@ -733,8 +884,20 @@ export default function MapCanvas({
           const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
           const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
           const rawHeight = interaction.startHeightPx + (localY * handle.ySign)
-          const widthPx = Math.max(MIN_FLOOR_SIZE_PX, rawWidth)
-          const heightPx = Math.max(MIN_FLOOR_SIZE_PX, rawHeight)
+          const aspectRatio = Number(interaction.aspectRatio)
+          let widthPx = Math.max(MIN_FLOOR_SIZE_PX, rawWidth)
+          let heightPx = Math.max(MIN_FLOOR_SIZE_PX, rawHeight)
+          if (Number.isFinite(aspectRatio) && aspectRatio > 0) {
+            const widthDrivenHeight = Math.max(MIN_FLOOR_SIZE_PX, widthPx / aspectRatio)
+            const heightDrivenWidth = Math.max(MIN_FLOOR_SIZE_PX, heightPx * aspectRatio)
+            const widthDrivenError = Math.abs(widthDrivenHeight - rawHeight)
+            const heightDrivenError = Math.abs(heightDrivenWidth - rawWidth)
+            if (widthDrivenError <= heightDrivenError) {
+              heightPx = widthDrivenHeight
+            } else {
+              widthPx = heightDrivenWidth
+            }
+          }
           const appliedWidthDelta = widthPx - interaction.startWidthPx
           const appliedHeightDelta = heightPx - interaction.startHeightPx
           const localCenterShift = {
@@ -749,7 +912,7 @@ export default function MapCanvas({
           )
           if (!nextCenter) return
 
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
+          onFloorPlanChange(interaction.objectId, prev => prev ? normalizeFloorPlanState({
             ...prev,
             center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
             widthM: Number(Math.max(1, widthPx * interaction.metersPerPixel).toFixed(2)),
@@ -762,7 +925,7 @@ export default function MapCanvas({
         if (interaction.type === 'rotate') {
           const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
           const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
+          onFloorPlanChange(interaction.objectId, prev => prev ? normalizeFloorPlanState({
             ...prev,
             center: interaction.startCenter,
             widthM: interaction.startWidthM,
@@ -818,6 +981,7 @@ export default function MapCanvas({
         onAssetUpdate({
           ...interaction.object,
           path: rotatedPath,
+          bounds: getBoundsFromPath(rotatedPath),
           rotation: Number(normalizeAngle((interaction.startRotation || 0) + (delta * 180) / Math.PI).toFixed(1)),
         })
         return
@@ -828,6 +992,64 @@ export default function MapCanvas({
         const dy = event.clientY - interaction.startY
         const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotation)
         const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
+
+        if (interaction.object?.shapeType === 'square') {
+          const startSidePx = Math.max(MIN_ZONE_SIZE_PX, interaction.startSidePx || Math.max(interaction.startWidthPx, interaction.startLengthPx))
+          const componentX = localX * (Number(handle.xSign) || 0)
+          const componentY = localY * (Number(handle.ySign) || 0)
+
+                
+
+        // Always use larger movement
+        // Just like circle radius resize
+
+        let deltaPx = 0
+
+        const absX = Math.abs(componentX)
+        const absY = Math.abs(componentY)
+
+        // Always use biggest movement
+        // Makes opposite corner stick
+
+        deltaPx =
+          Math.sign(componentX || componentY) *
+          Math.max(absX, absY)
+
+          const sidePx = Math.max(MIN_ZONE_SIZE_PX, startSidePx + deltaPx)
+          const appliedDeltaPx = sidePx - startSidePx
+         const localCenterShift = {
+  x: (appliedDeltaPx / 2) * (Number(handle.xSign) || 0),
+  y: (appliedDeltaPx / 2) * (Number(handle.ySign) || 0),
+}
+          const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
+          const nextCenter = clientPointToLatLng(
+            map,
+            interaction.center.x + screenShift.x,
+            interaction.center.y + screenShift.y
+          )
+          if (!nextCenter) return
+
+          const nextSideM = Number(Math.max(MIN_ZONE_SIZE_M, sidePx * interaction.metersPerPixel).toFixed(2))
+          const lockedSide = nextSideM
+          const nextCenterLatLng = { lat: nextCenter.lat(), lng: nextCenter.lng() }
+          const nextPath = buildSquarePath(
+            nextCenterLatLng,
+            nextSideM / 2,
+            window.google,
+            interaction.object.rotation || 0
+          )
+
+          onAssetUpdate({
+            ...interaction.object,
+            center: nextCenterLatLng,
+            widthM: lockedSide,
+            lengthM: lockedSide,
+            path: nextPath,
+            bounds: getBoundsFromPath(nextPath),
+          })
+          return
+        }
+
         const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
         const rawLength = interaction.startLengthPx + (localY * handle.ySign)
         const widthPx = Math.max(MIN_ZONE_SIZE_PX, rawWidth)
@@ -850,18 +1072,21 @@ export default function MapCanvas({
         const nextLengthM = Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2))
         const nextCenterLatLng = { lat: nextCenter.lat(), lng: nextCenter.lng() }
 
+        const nextPath = buildRectanglePath(
+          nextCenterLatLng,
+          nextWidthM / 2,
+          nextLengthM / 2,
+          window.google,
+          interaction.object.rotation || 0
+        )
+
         onAssetUpdate({
           ...interaction.object,
           center: nextCenterLatLng,
           widthM: nextWidthM,
           lengthM: nextLengthM,
-          path: buildRectanglePath(
-            nextCenterLatLng,
-            nextWidthM / 2,
-            nextLengthM / 2,
-            window.google,
-            interaction.object.rotation || 0
-          ),
+          path: nextPath,
+          bounds: getBoundsFromPath(nextPath),
         })
         return
       }
@@ -939,8 +1164,137 @@ export default function MapCanvas({
   const handleZonePathChange = useCallback((zone) => {
     const overlay = zoneOverlayRefs.current[zone.id]
     if (!window.google || !overlay) return
-    const path = extractPathFromOverlay(overlay)
-    if (path.length < 3) return
+    const rawPath = extractPathFromOverlay(overlay)
+    if (rawPath.length < 3) return
+    if (arePathsNearlyEqual(rawPath, zone.path)) return
+
+    let path = rawPath
+    if (zone.shapeType === 'square') {
+      const isPureTranslation = Array.isArray(zone.path)
+        && zone.path.length === rawPath.length
+        && zone.path.length >= 3
+        && (() => {
+          const firstPrev = zone.path[0]
+          const firstNext = rawPath[0]
+          if (!firstPrev || !firstNext) return false
+          const deltaLat = Number(firstNext.lat || 0) - Number(firstPrev.lat || 0)
+          const deltaLng = Number(firstNext.lng || 0) - Number(firstPrev.lng || 0)
+          return zone.path.every((prevPoint, index) => {
+            const nextPoint = rawPath[index]
+            if (!prevPoint || !nextPoint) return false
+            const pointDeltaLat = Number(nextPoint.lat || 0) - Number(prevPoint.lat || 0)
+            const pointDeltaLng = Number(nextPoint.lng || 0) - Number(prevPoint.lng || 0)
+            return Math.abs(pointDeltaLat - deltaLat) <= 1e-9
+              && Math.abs(pointDeltaLng - deltaLng) <= 1e-9
+          })
+        })()
+
+      if (isPureTranslation && zone.center) {
+        const deltaLat = Number(rawPath[0].lat || 0) - Number(zone.path[0].lat || 0)
+        const deltaLng = Number(rawPath[0].lng || 0) - Number(zone.path[0].lng || 0)
+        const nextCenter = {
+          lat: Number(zone.center.lat || 0) + deltaLat,
+          lng: Number(zone.center.lng || 0) + deltaLng,
+        }
+        const sideFromZone = Math.max(
+          MIN_ZONE_SIZE_M,
+          Number(zone.widthM || zone.lengthM || MIN_ZONE_SIZE_M)
+        )
+        path = buildSquarePath(nextCenter, sideFromZone / 2, window.google, Number(zone.rotation || 0))
+      } else {
+      const baseCenter = getPathCenter(rawPath)
+      if (!baseCenter) return
+
+      const latMetersPerDegree = 111111.0
+      const lngMetersPerDegree = 111111.0 * Math.max(0.000001, Math.cos(baseCenter.lat * Math.PI / 180))
+      const rotation = Number.isFinite(Number(zone.rotation)) ? Number(zone.rotation) : 0
+      const rotationRad = rotation * Math.PI / 180
+      const previousDimensions = getRectangleZoneDimensions(zone, window.google)
+      const previousHalfWidth = Math.max(MIN_ZONE_SIZE_M / 2, Number(previousDimensions.widthM || zone.widthM || MIN_ZONE_SIZE_M) / 2)
+      const previousHalfLength = Math.max(MIN_ZONE_SIZE_M / 2, Number(previousDimensions.lengthM || zone.lengthM || MIN_ZONE_SIZE_M) / 2)
+      const eps = 0.01
+
+      const localPoints = rawPath.map((point) => {
+        const deltaXM = (Number(point.lng || 0) - baseCenter.lng) * lngMetersPerDegree
+        const deltaYM = (Number(point.lat || 0) - baseCenter.lat) * latMetersPerDegree
+        return {
+          x: deltaXM * Math.cos(rotationRad) + deltaYM * Math.sin(rotationRad),
+          y: -deltaXM * Math.sin(rotationRad) + deltaYM * Math.cos(rotationRad),
+        }
+      })
+
+      let left = -previousHalfWidth
+      let right = previousHalfWidth
+      let bottom = -previousHalfLength
+      let top = previousHalfLength
+
+      const rightCandidates = localPoints.map((point) => point.x).filter((value) => value > 0)
+      const leftCandidates = localPoints.map((point) => point.x).filter((value) => value < 0)
+      const topCandidates = localPoints.map((point) => point.y).filter((value) => value > 0)
+      const bottomCandidates = localPoints.map((point) => point.y).filter((value) => value < 0)
+
+      if (rightCandidates.length) {
+        const candidateMin = Math.min(...rightCandidates)
+        const candidateMax = Math.max(...rightCandidates)
+        if (candidateMax > right + eps) right = candidateMax
+        else if (candidateMin < right - eps) right = candidateMin
+      }
+
+      if (leftCandidates.length) {
+        const candidateMin = Math.min(...leftCandidates)
+        const candidateMax = Math.max(...leftCandidates)
+        if (candidateMin < left - eps) left = candidateMin
+        else if (candidateMax > left + eps) left = candidateMax
+      }
+
+      if (topCandidates.length) {
+        const candidateMin = Math.min(...topCandidates)
+        const candidateMax = Math.max(...topCandidates)
+        if (candidateMax > top + eps) top = candidateMax
+        else if (candidateMin < top - eps) top = candidateMin
+      }
+
+      if (bottomCandidates.length) {
+        const candidateMin = Math.min(...bottomCandidates)
+        const candidateMax = Math.max(...bottomCandidates)
+        if (candidateMin < bottom - eps) bottom = candidateMin
+        else if (candidateMax > bottom + eps) bottom = candidateMax
+      }
+
+      if ((right - left) < MIN_ZONE_SIZE_M) {
+        const centerX = (left + right) / 2
+        left = centerX - (MIN_ZONE_SIZE_M / 2)
+        right = centerX + (MIN_ZONE_SIZE_M / 2)
+      }
+      if ((top - bottom) < MIN_ZONE_SIZE_M) {
+        const centerY = (bottom + top) / 2
+        bottom = centerY - (MIN_ZONE_SIZE_M / 2)
+        top = centerY + (MIN_ZONE_SIZE_M / 2)
+      }
+
+      const localCenterShift = {
+        x: (left + right) / 2,
+        y: (bottom + top) / 2,
+      }
+
+      const worldCenterShift = {
+        x: localCenterShift.x * Math.cos(rotationRad) - localCenterShift.y * Math.sin(rotationRad),
+        y: localCenterShift.x * Math.sin(rotationRad) + localCenterShift.y * Math.cos(rotationRad),
+      }
+
+      const nextCenter = {
+        lat: baseCenter.lat + (worldCenterShift.y / latMetersPerDegree),
+        lng: baseCenter.lng + (worldCenterShift.x / lngMetersPerDegree),
+      }
+
+      const halfSideM = Math.max(
+        MIN_ZONE_SIZE_M / 2,
+        Math.max((right - left) / 2, (top - bottom) / 2)
+      )
+      path = buildSquarePath(nextCenter, halfSideM, window.google, rotation)
+      }
+    }
+
     const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
 
     const updateData = {
@@ -952,17 +1306,58 @@ export default function MapCanvas({
       capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
     }
 
-    // For square zones, synchronize center and dimensions with the new path
+    // Keep square geometry synchronized from geographic path data.
     if (zone.shapeType === 'square') {
-      const center = getPathCenter(path)
+      const center =  zone.center || getPathCenter(path)
       const dimensions = getRectangleZoneDimensions({ path }, window.google)
+      const widthM = Number(Math.max(MIN_ZONE_SIZE_M, dimensions.widthM || zone.widthM || MIN_ZONE_SIZE_M).toFixed(2))
+      const lengthM = Number(Math.max(MIN_ZONE_SIZE_M, dimensions.lengthM || zone.lengthM || MIN_ZONE_SIZE_M).toFixed(2))
       updateData.center = center
-      if (dimensions.widthM) updateData.widthM = Number(dimensions.widthM.toFixed(2))
-      if (dimensions.lengthM) updateData.lengthM = Number(dimensions.lengthM.toFixed(2))
+      updateData.bounds = getBoundsFromPath(path)
+      const lockedSideM = Number(Math.max(widthM, lengthM).toFixed(2))
+      updateData.widthM = lockedSideM
+      updateData.lengthM = lockedSideM
+      updateData.path = buildSquarePath(center, lockedSideM / 2, window.google, Number(zone.rotation || 0))
     }
 
     onAssetUpdate(updateData)
-  }, [onAssetUpdate, zones])
+  }, [onAssetUpdate])
+
+  useEffect(() => {
+    Object.values(zonePathListenersRef.current).forEach((listeners) => {
+      if (Array.isArray(listeners)) {
+        listeners.forEach((listener) => listener?.remove?.())
+      }
+    })
+    zonePathListenersRef.current = {}
+
+    if (!selectedId || layers.zones?.locked) return
+
+    const selectedZone = zones.find((zone) => zone.id === selectedId)
+    if (!selectedZone || selectedZone.shapeType === 'circle') return
+
+    const overlay = zoneOverlayRefs.current[selectedZone.id]
+    const path = overlay?.getPath?.()
+    if (!path) return
+
+    const syncSelectedZonePath = () => {
+      const latestZone = zones.find((zone) => zone.id === selectedZone.id)
+      if (!latestZone) return
+      handleZonePathChange(latestZone)
+    }
+
+    const listeners = [
+      path.addListener('set_at', syncSelectedZonePath),
+      path.addListener('insert_at', syncSelectedZonePath),
+      path.addListener('remove_at', syncSelectedZonePath),
+    ]
+    zonePathListenersRef.current[selectedZone.id] = listeners
+
+    return () => {
+      listeners.forEach((listener) => listener?.remove?.())
+      delete zonePathListenersRef.current[selectedZone.id]
+    }
+  }, [handleZonePathChange, layers.zones?.locked, selectedId, zones])
 
   const handleCircleZoneChange = useCallback((zone) => {
     const circle = zoneCircleRefs.current[zone.id]
@@ -1093,12 +1488,38 @@ export default function MapCanvas({
     }
 
     const activeShape = shapeDraftRef.current
-    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'square')) {
+    if (activeShape?.type === 'circle' && activeShape?.center) {
       const centerLatLng = new window.google.maps.LatLng(activeShape.center.lat, activeShape.center.lng)
       const currentDist = window.google.maps.geometry.spherical.computeDistanceBetween(centerLatLng, event.latLng)
       setLineMeasurement(currentDist)
     }
 
+
+   if (activeShape?.type === 'square' && activeShape?.anchor) {
+
+  const rawCorner = {
+    lat: event.latLng.lat(),
+    lng: event.latLng.lng(),
+  }
+
+  const squareBounds =
+    getSquareBoundsFromCorners(
+      activeShape.anchor,
+      rawCorner
+    )
+
+  if (squareBounds) {
+
+    // Use actual mouse position
+    // Do NOT force north/east corner
+
+    setShapeDraft(prev =>
+      prev
+        ? { ...prev, corner: rawCorner }
+        : prev
+    )
+  }
+}
 
     const hoverPoint = { lat: event.latLng.lat(), lng: event.latLng.lng() }
     const activeLineDraft = lineDraftRef.current
@@ -1183,6 +1604,27 @@ export default function MapCanvas({
     return true
   }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate, zones])
 
+  const syncOverlayGeometry = useCallback(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    const liveZoom = map.getZoom?.()
+    if (Number.isFinite(liveZoom)) {
+      setMapZoom((prev) => (prev !== liveZoom ? liveZoom : prev))
+    }
+
+    // Force immediate and post-frame refresh so overlays re-project without waiting for zoom/pan events.
+    setOverlaySyncTick((prev) => prev + 1)
+    requestAnimationFrame(() => {
+      setOverlaySyncTick((prev) => prev + 1)
+    })
+  }, [])
+
+  const selectWithOverlaySync = useCallback((object) => {
+    onSelect(object)
+    syncOverlayGeometry()
+  }, [onSelect, syncOverlayGeometry])
+
   const handleMapClick = useCallback((event) => {
     if (!event.latLng) return
     if (event?.domEvent?.detail > 1) return
@@ -1193,21 +1635,43 @@ export default function MapCanvas({
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
       const currentDraft = shapeDraftRef.current
 
-      if (!currentDraft?.center) {
+      if (drawMode === 'circle' && !currentDraft?.center) {
         setShapeDraft({ type: drawMode, center: point, radiusM: 0 })
         setLineMeasurement(0)
         return
       }
 
-      const originLatLng = new window.google.maps.LatLng(currentDraft.center.lat, currentDraft.center.lng)
-      const targetLatLng = new window.google.maps.LatLng(point.lat, point.lng)
-      const radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
+      if (drawMode === 'square' && !currentDraft?.anchor) {
+        setShapeDraft({ type: drawMode, anchor: point, corner: point })
+        return
+      }
 
       let path = []
-      if (drawMode === 'square') {
-        path = buildSquarePath(currentDraft.center, radiusM, window.google)
-      } else {
+      let center = null
+      let widthM
+      let lengthM
+      let radiusM
+      let bounds = null
+      if (drawMode === 'circle') {
+        const originLatLng = new window.google.maps.LatLng(currentDraft.center.lat, currentDraft.center.lng)
+        const targetLatLng = new window.google.maps.LatLng(point.lat, point.lng)
+        radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
         path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
+        center = currentDraft.center
+      } else {
+        bounds = getSquareBoundsFromCorners(currentDraft.anchor, point, mapRef.current)
+        if (!bounds) return
+        path = buildPathFromBounds(bounds)
+        center = getBoundsCenter(bounds)
+        const dims = getRectangleZoneDimensions({ path }, window.google)
+        widthM = Number(Math.max(MIN_ZONE_SIZE_M, dims.widthM || MIN_ZONE_SIZE_M).toFixed(2))
+        lengthM = Number(Math.max(MIN_ZONE_SIZE_M, dims.lengthM || MIN_ZONE_SIZE_M).toFixed(2))
+        if (drawMode === 'square') {
+          const side = Number(Math.max(widthM, lengthM).toFixed(2))
+          widthM = side
+          lengthM = side
+          path = buildPathFromBounds(getSquareBoundsFromCorners(currentDraft.anchor, point, mapRef.current))
+        }
       }
 
       if (path.length >= 3) {
@@ -1223,8 +1687,7 @@ export default function MapCanvas({
           id: `zone_${Date.now()}`,
           type: 'zone',
           shapeType: drawMode,
-          // center: drawMode === 'circle' ? currentDraft.center : undefined,
-          center: currentDraft.center,
+          center,
           radiusM: drawMode === 'circle' ? radiusM : undefined,
           zoneType,
           layoutType: 'free',
@@ -1242,8 +1705,9 @@ export default function MapCanvas({
           contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
-          widthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
-          lengthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
+          widthM: drawMode === 'square' ? widthM : undefined,
+          lengthM: drawMode === 'square' ? lengthM : undefined,
+          bounds: drawMode === 'square' ? bounds : undefined,
         })
       }
 
@@ -1253,7 +1717,8 @@ export default function MapCanvas({
       return
     }
 
-    if (placingFloor && floorPlan?.imageUrl) {
+    const firstFloorPlan = floorPlans[0] || null
+    if (placingFloor && (firstFloorPlan?.imageUrl || (Array.isArray(firstFloorPlan?.imageUrls) && firstFloorPlan.imageUrls.length))) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
 
       if (tempFloorPoints.length === 0) {
@@ -1262,32 +1727,55 @@ export default function MapCanvas({
       }
 
       const firstPoint = tempFloorPoints[0]
+      const latSign = point.lat >= firstPoint.lat ? 1 : -1
+      const lngSign = point.lng >= firstPoint.lng ? 1 : -1
+      const centerLatEstimate = (firstPoint.lat + point.lat) / 2
+      const cosLat = Math.max(0.15, Math.cos((centerLatEstimate * Math.PI) / 180))
+      const rawHeightM = Math.max(1, Math.abs(point.lat - firstPoint.lat) * 111111)
+      const rawWidthM = Math.max(1, Math.abs(point.lng - firstPoint.lng) * 111111 * cosLat)
+      const aspectRatio = Number(firstFloorPlan.aspectRatio) > 0
+        ? Number(firstFloorPlan.aspectRatio)
+        : (rawWidthM / Math.max(1, rawHeightM))
+      let widthM = rawWidthM
+      let heightM = rawHeightM
+      if ((rawWidthM / Math.max(1, rawHeightM)) >= aspectRatio) {
+        widthM = heightM * aspectRatio
+      } else {
+        heightM = widthM / Math.max(0.0001, aspectRatio)
+      }
+      const latDelta = heightM / 111111
+      const lngDelta = widthM / (111111 * cosLat)
+      const secondLat = firstPoint.lat + (latDelta * latSign)
+      const secondLng = firstPoint.lng + (lngDelta * lngSign)
       const nextBounds = {
-        north: Math.max(firstPoint.lat, point.lat),
-        south: Math.min(firstPoint.lat, point.lat),
-        east: Math.max(firstPoint.lng, point.lng),
-        west: Math.min(firstPoint.lng, point.lng),
+        north: Math.max(firstPoint.lat, secondLat),
+        south: Math.min(firstPoint.lat, secondLat),
+        east: Math.max(firstPoint.lng, secondLng),
+        west: Math.min(firstPoint.lng, secondLng),
       }
       const nextFloorPlan = normalizeFloorPlanState({
-        ...floorPlan,
+        ...firstFloorPlan,
         bounds: nextBounds,
       })
-      onFloorPlanChange(nextFloorPlan)
+      onFloorPlanChange(firstFloorPlan.id, nextFloorPlan)
       setTempFloorPoints([])
       onFloorPlacementChange(false)
-      onSelect({ id: 'floor-plan', type: 'floor', ...nextFloorPlan })
+      selectWithOverlaySync(nextFloorPlan)
       return
     }
 
-    if (drawMode === 'select' && floorPlan?.bounds && event.domEvent && mapRef.current) {
+    if (drawMode === 'select' && floorPlans.length && event.domEvent && mapRef.current) {
       const rect = mapRef.current.getDiv().getBoundingClientRect()
       const clickPoint = {
         x: event.domEvent.clientX - rect.left,
         y: event.domEvent.clientY - rect.top,
       }
-      if (isPointInsideFloorOverlay(mapRef.current, floorPlan, clickPoint)) {
-        onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
-        return
+      for (let i = floorPlans.length - 1; i >= 0; i -= 1) {
+        const candidate = floorPlans[i]
+        if (candidate?.bounds && isPointInsideFloorOverlay(mapRef.current, candidate, clickPoint)) {
+          selectWithOverlaySync(candidate)
+          return
+        }
       }
     }
 
@@ -1364,7 +1852,7 @@ export default function MapCanvas({
     if (drawMode === 'select') {
       onClearSelection?.()
     }
-  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlan, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, tempFloorPoints, textStyle])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, selectWithOverlaySync, tempFloorPoints, textStyle])
 
   const handleMapDoubleClick = useCallback((event) => {
     if (drawMode === 'select') {
@@ -1514,7 +2002,7 @@ export default function MapCanvas({
     const map = mapRef.current
     if (!map) return
 
-    if (object.type === 'floor' || object.id === 'floor-plan') {
+    if (object.type === 'floor' || String(object.id || '').startsWith('floor-plan-')) {
       if (layers.floor?.locked || !object.bounds) return
       const floorGeometry = getFloorGeometry(map, object)
       const rect = map.getDiv().getBoundingClientRect()
@@ -1526,7 +2014,9 @@ export default function MapCanvas({
 
       interactionRef.current = {
         objectType: 'floor',
+        objectId: object.id,
         type,
+        hasDragged: false,
         startX: event.clientX,
         startY: event.clientY,
         center: { x: rect.left + floorGeometry.centerPoint.x, y: rect.top + floorGeometry.centerPoint.y },
@@ -1539,6 +2029,9 @@ export default function MapCanvas({
         startHeightM: floorGeometry.heightM,
         metersPerPixel: floorGeometry.metersPerPixel,
         startRotation: object.rotation || 0,
+        aspectRatio: Number(object.aspectRatio) > 0
+          ? Number(object.aspectRatio)
+          : (Number(floorGeometry.widthM || 1) / Math.max(1, Number(floorGeometry.heightM || 1))),
         resizeHandle,
         startPointerAngle: Math.atan2(
           event.clientY - (rect.top + floorGeometry.centerPoint.y),
@@ -1547,7 +2040,9 @@ export default function MapCanvas({
       }
 
       document.body.style.userSelect = 'none'
-      onSelect({ id: 'floor-plan', type: 'floor', ...object })
+      if (selectedId !== object.id) {
+        selectWithOverlaySync(object)
+      }
       return
     }
 
@@ -1563,7 +2058,9 @@ export default function MapCanvas({
         startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
       }
       document.body.style.userSelect = 'none'
-      onSelect(object)
+      if (selectedId !== object.id) {
+        selectWithOverlaySync(object)
+      }
       return
     }
 
@@ -1587,12 +2084,15 @@ export default function MapCanvas({
         center: { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y },
         startWidthPx: widthM / scale,
         startLengthPx: lengthM / scale,
+        startSidePx: Math.max(widthM / scale, lengthM / scale),
         startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
         metersPerPixel: scale,
         resizeHandle,
       }
       document.body.style.userSelect = 'none'
-      onSelect(object)
+      if (selectedId !== object.id) {
+        selectWithOverlaySync(object)
+      }
       return
     }
 
@@ -1611,7 +2111,9 @@ export default function MapCanvas({
         lngOffset,
       }
       document.body.style.userSelect = 'none'
-      onSelect(object)
+      if (selectedId !== object.id) {
+        selectWithOverlaySync(object)
+      }
       return
     }
 
@@ -1642,8 +2144,10 @@ export default function MapCanvas({
     }
 
     document.body.style.userSelect = 'none'
-    onSelect(object)
-  }, [layers.annotations, layers.assets, layers.floor, onSelect])
+    if (selectedId !== object.id) {
+      selectWithOverlaySync(object)
+    }
+  }, [layers.annotations, layers.assets, layers.floor, selectWithOverlaySync, selectedId])
 
   const mapOptions = useMemo(() => ({
     clickableIcons: false,
@@ -1669,14 +2173,14 @@ export default function MapCanvas({
     restriction: isViewOnly && viewOnlyRestrictionBounds
       ? { latLngBounds: viewOnlyRestrictionBounds, strictBounds: false }
       : undefined,
-    disableDoubleClickZoom: isViewOnly ? false : drawMode === 'line' || drawMode === 'route' || drawMode === 'polygon' || drawMode === 'measure',
+    disableDoubleClickZoom: isViewOnly ? false : drawMode === 'line' || drawMode === 'route' || drawMode === 'polygon' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle',
     gestureHandling: 'greedy',
     draggableCursor: isViewOnly
       ? 'grab'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
     draggingCursor: isViewOnly
       ? 'grabbing'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
   }), [drawMode, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
 
   if (!apiKey) {
@@ -1736,17 +2240,21 @@ export default function MapCanvas({
           />
         )}
 
-        {layers.floor?.visible && floorPlan?.bounds && (
-          <FloorPlanOverlay
-            floorPlan={floorPlan}
-            selected={floorSelected}
-            locked={!!layers.floor?.locked}
-            onSelect={onSelect}
-            onStartInteraction={handleStartInteraction}
-            map={mapRef.current}
-            zoom={mapZoom}
-          />
-        )}
+        {layers.floor?.visible && floorPlans.map((plan) => (
+          plan?.bounds ? (
+            <FloorPlanOverlay
+              key={plan.id}
+              floorPlan={plan}
+              selected={selectedId === plan.id}
+              locked={!!layers.floor?.locked}
+              onSelect={selectWithOverlaySync}
+              onStartInteraction={handleStartInteraction}
+              map={mapRef.current}
+              zoom={mapZoom}
+              refreshTick={overlaySyncTick}
+            />
+          ) : null
+        ))}
 
         {layers.zones?.visible && zones.map(zone => {
           // Skip rendering zone if it or any parent zone is hidden
@@ -1828,7 +2336,7 @@ export default function MapCanvas({
                       return
                     }
                     if (drawMode !== 'select') return
-                    onSelect(zone)
+                    selectWithOverlaySync(zone)
                   }}
                   onMouseOver={() => {
                     if (drawMode !== 'select') return
@@ -1862,7 +2370,7 @@ export default function MapCanvas({
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
                     strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked,
+                    editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'square',
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
@@ -1875,7 +2383,7 @@ export default function MapCanvas({
                       return
                     }
                     if (drawMode !== 'select') return
-                    onSelect(zone)
+                    selectWithOverlaySync(zone)
                   }}
                   onMouseOver={() => {
                     if (drawMode !== 'select') return
@@ -1889,18 +2397,73 @@ export default function MapCanvas({
                   onDragEnd={() => handleZonePathChange(zone)}
                   onLoad={(polygon) => {
                     zoneOverlayRefs.current[zone.id] = polygon
-                    if (selectedId === zone.id && !layers.zones?.locked) {
-                      const path = polygon.getPath()
-                      path.addListener('set_at', () => handleZonePathChange(zone))
-                      path.addListener('insert_at', () => handleZonePathChange(zone))
-                      path.addListener('remove_at', () => handleZonePathChange(zone))
-                    }
                   }}
                   onUnmount={() => {
+                    const listeners = zonePathListenersRef.current[zone.id]
+                    if (Array.isArray(listeners)) {
+                      listeners.forEach((listener) => listener?.remove?.())
+                    }
+                    delete zonePathListenersRef.current[zone.id]
                     delete zoneOverlayRefs.current[zone.id]
                   }}
                 />
               )}
+              {selectedId === zone.id && zone.shapeType === 'square' && !layers.zones?.locked && drawMode === 'select' && (() => {
+                const handleData = getSquareHandleData(zone.path)
+                if (!handleData) return null
+                return (
+                  <>
+                    {handleData.sides.map((side) => (
+                      <OverlayView
+                        key={`${zone.id}-${side.key}`}
+                        position={side.position}
+                        mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                        getPixelPositionOffset={() => ({ x: -5, y: -5 })}
+                      >
+                        <button
+                          type="button"
+                          onMouseDown={(event) => handleStartInteraction(event, zone, 'resize', side.handle)}
+                          onPointerDown={(event) => handleStartInteraction(event, zone, 'resize', side.handle)}
+                          style={{
+                            width: '10px',
+                            height: '10px',
+                            borderRadius: '999px',
+                            border: '1px solid #ffffff',
+                            background: '#60a5fa',
+                            padding: 0,
+                            cursor: side.handle.xSign === 0 ? 'ns-resize' : 'ew-resize',
+                            boxShadow: '0 0 0 1px rgba(59,130,246,0.7)',
+                          }}
+                        />
+                      </OverlayView>
+                    ))}
+                    {handleData.corners.map((corner) => (
+                      <OverlayView
+                        key={`${zone.id}-${corner.key}`}
+                        position={corner.position}
+                        mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                        getPixelPositionOffset={() => ({ x: -6, y: -6 })}
+                      >
+                        <button
+                          type="button"
+                          onMouseDown={(event) => handleStartInteraction(event, zone, 'resize', corner.handle)}
+                          onPointerDown={(event) => handleStartInteraction(event, zone, 'resize', corner.handle)}
+                          style={{
+                            width: '12px',
+                            height: '12px',
+                            borderRadius: '999px',
+                            border: '1px solid #ffffff',
+                            background: '#3b82f6',
+                            padding: 0,
+                            cursor: 'nwse-resize',
+                            boxShadow: '0 0 0 1px rgba(59,130,246,0.85)',
+                          }}
+                        />
+                      </OverlayView>
+                    ))}
+                  </>
+                )
+              })()}
               {canShowZoneLabel && (
                 <OverlayView
                   position={zoneCenter}
@@ -2002,7 +2565,7 @@ export default function MapCanvas({
                     return
                   }
                   if (drawMode !== 'select') return
-                  onSelect(line)
+                  selectWithOverlaySync(line)
                 }}
                 onMouseOver={(e) => {
                   if (drawMode !== 'select' && drawMode !== 'erase') return
@@ -2150,33 +2713,19 @@ export default function MapCanvas({
           </>
         )}
 
-        {shapeDraft?.center && lineMeasurement !== null && window.google && (
+        {shapeDraft?.type === 'circle' && shapeDraft?.center && lineMeasurement !== null && window.google && (
           <>
-            {shapeDraft.type === 'circle' ? (
-              <Circle
-                center={shapeDraft.center}
-                radius={lineMeasurement}
-                options={{
-                  fillColor: 'rgba(60, 130, 240, 0.2)',
-                  strokeColor: '#3d8ef8',
-                  strokeOpacity: 0.7,
-                  strokeWeight: 2,
-                  clickable: false,
-                }}
-              />
-            ) : (
-              <Polygon
-                key="shape-draft"
-                paths={buildSquarePath(shapeDraft.center, lineMeasurement, window.google)}
-                options={{
-                  fillColor: 'rgba(120, 210, 120, 0.2)',
-                  strokeColor: '#22c55e',
-                  strokeOpacity: 0.7,
-                  strokeWeight: 2,
-                  clickable: false,
-                }}
-              />
-            )}
+            <Circle
+              center={shapeDraft.center}
+              radius={lineMeasurement}
+              options={{
+                fillColor: 'rgba(60, 130, 240, 0.2)',
+                strokeColor: '#3d8ef8',
+                strokeOpacity: 0.7,
+                strokeWeight: 2,
+                clickable: false,
+              }}
+            />
             <CircleDot
               position={shapeDraft.center}
               scale={6}
@@ -2198,11 +2747,61 @@ export default function MapCanvas({
                 whiteSpace: 'nowrap',
                 transform: 'translateY(-120%)',
               }}>
-                {shapeDraft.type === 'circle' ? 'Radius' : 'Half-side'}: {formatDistance(lineMeasurement, measurementUnit)}
+                Radius: {formatDistance(lineMeasurement, measurementUnit)}
               </div>
             </OverlayView>
           </>
         )}
+        {shapeDraft?.type === 'square' && shapeDraft?.anchor && shapeDraft?.corner && (() => {
+          const draftBounds = getSquareBoundsFromCorners(shapeDraft.anchor, shapeDraft.corner, mapRef.current)
+          if (!draftBounds) return null
+          const draftPath = buildPathFromBounds(draftBounds)
+          const draftCenter = getBoundsCenter(draftBounds)
+          const dims = getRectangleZoneDimensions({ path: draftPath }, window.google)
+          const widthText = formatDistance(dims.widthM, measurementUnit)
+          const lengthText = formatDistance(dims.lengthM, measurementUnit)
+          return (
+            <>
+              <Polygon
+                key="shape-rect-draft"
+                paths={draftPath}
+                options={{
+                  fillColor: 'rgba(59, 130, 246, 0.2)',
+                  strokeColor: '#3b82f6',
+                  strokeOpacity: 0.8,
+                  strokeWeight: 2,
+                  clickable: false,
+                }}
+              />
+              <CircleDot
+                position={shapeDraft.anchor}
+                scale={6}
+                fillColor="#ffffff"
+                strokeColor="#000"
+                strokeWeight={2}
+              />
+              {draftCenter && (
+                <OverlayView
+                  position={draftCenter}
+                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                >
+                  <div style={{
+                    background: 'rgba(0,0,0,0.75)',
+                    color: '#fff',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    fontWeight: 'bold',
+                    whiteSpace: 'nowrap',
+                    transform: 'translateY(-120%)',
+                  }}>
+                    Square: {widthText} x {lengthText}
+                  </div>
+                </OverlayView>
+              )}
+            </>
+          )
+        })()}
 
         {placingFloor && tempFloorPoints.length > 0 && (
           <>
@@ -2289,7 +2888,7 @@ export default function MapCanvas({
         <GridLayer
           map={mapRef.current}
           visible={layers.grid?.visible}
-          size={layers.grid?.size || 10}
+          size={layers.grid?.size || 3}
           opacity={layers.grid?.opacity}
           color={layers.grid?.color}
         />
@@ -2324,10 +2923,11 @@ export default function MapCanvas({
               interactive={drawMode === 'select' || drawMode === 'erase'}
               drawMode={drawMode}
               onEraseAsset={onEraseAsset}
-              onSelect={onSelect}
+              onSelect={selectWithOverlaySync}
               onStartInteraction={handleStartInteraction}
               onHover={setHoveredItem}
               map={mapRef.current}
+              refreshTick={overlaySyncTick}
               onAssetUpdate={onAssetUpdate}
               gridSnap={baseGridSnap || zoneGridSnap}
               gridSize={baseGridSnap ? baseGridSize : zoneGridSize}
@@ -2345,13 +2945,14 @@ export default function MapCanvas({
             selected={false}
             locked={!!layers.annotations?.locked}
             interactive={drawMode === 'select' || drawMode === 'erase'}
-            onSelect={onSelect}
+            onSelect={selectWithOverlaySync}
             onStartInteraction={handleStartInteraction}
             onUpdate={onAssetUpdate}
             drawMode={drawMode}
             onEraseAsset={onEraseAsset}
             zoom={mapZoom}
             onHover={setHoveredItem}
+            refreshTick={overlaySyncTick}
           />
         ))}
 
@@ -2361,13 +2962,14 @@ export default function MapCanvas({
             selected
             locked={!!layers.annotations?.locked}
             interactive={drawMode === 'select' || drawMode === 'erase'}
-            onSelect={onSelect}
+            onSelect={selectWithOverlaySync}
             onStartInteraction={handleStartInteraction}
             onUpdate={onAssetUpdate}
             drawMode={drawMode}
             onEraseAsset={onEraseAsset}
             zoom={mapZoom}
             onHover={setHoveredItem}
+            refreshTick={overlaySyncTick}
           />
         )}
 
@@ -2481,7 +3083,7 @@ export default function MapCanvas({
         </div>
       )}
 
-      {placingFloor && floorPlan?.imageUrl && (
+      {placingFloor && floorPlans.length > 0 && (
         <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(13,15,20,0.9)', border: '1px solid var(--accent)', borderRadius: 'var(--radius)', padding: '8px 16px', fontSize: '12px', color: 'var(--accent)', pointerEvents: 'none', backdropFilter: 'blur(8px)' }}>
           Click the top-left corner, then the bottom-right corner to place the floor plan
         </div>
