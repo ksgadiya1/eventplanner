@@ -16,7 +16,7 @@ import { getRouteStylePreset } from './data/routeTypes'
 //   normalizeFloorPlanState,
 //   serializeZoneTemplateGeometry,
 // } from './utils/mapGeometry'
-import { buildCirclePath, buildRectanglePath, computePolygonMetrics, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry } from './utils/mapGeometry'
+import { buildCirclePath, buildRectanglePath, computePolygonMetrics, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry, getDeepestParentFloor } from './utils/mapGeometry'
 import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
@@ -497,23 +497,35 @@ function findDeepestZoneForPoint(point, zones, excludedZoneId = null) {
     .sort((a, b) => (a.areaM2 || Number.MAX_SAFE_INTEGER) - (b.areaM2 || Number.MAX_SAFE_INTEGER))[0] || null
 }
 
-function normalizeAssetParent(asset, zones) {
+function normalizeAssetParent(asset, zones, floorPlans) {
   if (!asset?.lat || !asset?.lng) return asset
   const parentZone = findDeepestZoneForPoint({ lat: asset.lat, lng: asset.lng }, zones)
-  return { ...asset, parentId: parentZone?.id || null }
+  const parentFloor = getDeepestParentFloor({ lat: asset.lat, lng: asset.lng }, floorPlans, window.google)
+  return { ...asset, parentId: parentZone?.id || parentFloor?.id || null }
 }
 
-function normalizeAnnotationParent(annotation, zones) {
+function normalizeAnnotationParent(annotation, zones, floorPlans) {
   if (!annotation?.lat || !annotation?.lng) return annotation
   const parentZone = findDeepestZoneForPoint({ lat: annotation.lat, lng: annotation.lng }, zones)
-  return { ...annotation, parentId: parentZone?.id || null }
+  const parentFloor = getDeepestParentFloor({ lat: annotation.lat, lng: annotation.lng }, floorPlans, window.google)
+  return { ...annotation, parentId: parentZone?.id || parentFloor?.id || null }
 }
 
-function normalizeLineParent(line, zones) {
-  const anchorPoint = line?.path?.[0]
+function normalizeZoneParent(zone, zones, floorPlans) {
+  if (!zone?.path?.length) return zone
+  const anchorPoint = zone.path[0]
+  if (!anchorPoint) return zone
+  const parentFloor = getDeepestParentFloor(anchorPoint, floorPlans, window.google)
+  return { ...zone, parentId: parentFloor?.id || null }
+}
+
+function normalizeLineParent(line, zones, floorPlans) {
+  if (!line?.path?.length) return line
+  const anchorPoint = getPathCentroid(line.path)
   if (!anchorPoint) return line
   const parentZone = findDeepestZoneForPoint(anchorPoint, zones)
-  return { ...line, parentId: parentZone?.id || null }
+  const parentFloor = parentZone ? null : getDeepestParentFloor(anchorPoint, floorPlans, window.google)
+  return { ...line, parentId: parentZone?.id || parentFloor?.id || null }
 }
 
 function collectRelatedZoneIds(rootZoneId, zones) {
@@ -819,7 +831,7 @@ export default function App() {
 
     setPendingAssetDef(null)
     setPendingZoneTemplate(null)
-    setPlacingFloor(false)
+    setPendingFloorImageUrl(null)
   }, [drawMode, isViewOnly])
 
   // Auto-clean zones with invalid labels (empty or "0")
@@ -867,19 +879,20 @@ export default function App() {
   // Zone created by drawing
   const handleZoneCreate = useCallback((zone) => {
     pushHistory()
-    setZones(prev => [...prev, { ...zone, capacity: computeZoneCapacity(zone) }])
+    const normalizedZone = normalizeZoneParent(zone, zones, floorPlans)
+    setZones(prev => [...prev, { ...normalizedZone, capacity: computeZoneCapacity(normalizedZone) }])
     setSelectedId(zone.id)
     setDrawMode('select')
-  }, [pushHistory])
+  }, [pushHistory, zones, floorPlans])
 
   // Asset dropped onto map
   const handleAssetDrop = useCallback((asset) => {
     pushHistory()
-    const normalizedAsset = normalizeAssetParent(asset, zones)
+    const normalizedAsset = normalizeAssetParent(asset, zones, floorPlans)
     setAssets(prev => [...prev, normalizedAsset])
     setSelectedId(normalizedAsset.id)
     setPendingAssetDef(null)
-  }, [pushHistory, zones])
+  }, [floorPlans, pushHistory, zones])
 
   const handleImportAssets = useCallback((payload) => {
     if (payload?.mode === 'library-image') {
@@ -952,7 +965,7 @@ export default function App() {
           label: asset?.label || asset?.assetDef?.name || 'Imported Asset',
           status: asset?.status || 'planned',
           notes: asset?.notes || '',
-        }, zones)
+        }, zones, floorPlans)
       })
       .filter(Boolean)
 
@@ -966,7 +979,7 @@ export default function App() {
     setSelectedId(importedAssets[importedAssets.length - 1].id)
     setDrawMode('select')
     window.alert(`${importedAssets.length} asset(s) imported successfully.`)
-  }, [pushHistory, zones])
+  }, [floorPlans, pushHistory, zones])
 
   const handleSaveCustomAsset = useCallback((asset, options = {}) => {
     const categoryLabel = String(asset?.assetDef?.category || asset?.category || 'Custom Assets').trim() || 'Custom Assets'
@@ -1013,6 +1026,7 @@ export default function App() {
       || 'annotations' in payload
       || 'floorPlan' in payload
       || 'floorPlans' in payload
+      || 'floorPlans' in payload
       || 'eventDetails' in payload
     )
 
@@ -1021,21 +1035,25 @@ export default function App() {
       return
     }
 
+    const importedFloorPlans = Array.isArray(payload.floorPlans)
+      ? payload.floorPlans.map(plan => normalizeFloorPlanState(plan)).filter(Boolean)
+      : (payload.floorPlan ? [normalizeFloorPlanState(payload.floorPlan)].filter(Boolean) : [])
+
     const importedZones = (Array.isArray(payload.zones) ? payload.zones : [])
       .filter(Boolean)
-      .map(zone => ({
+      .map(zone => normalizeZoneParent({
         ...zone,
         type: 'zone',
         capacity: zone?.capacity ?? computeZoneCapacity(zone, zone?.density || 0.5),
-      }))
+      }, [], importedFloorPlans))
 
     const importedAssets = (Array.isArray(payload.assets) ? payload.assets : [])
       .filter(Boolean)
-      .map(asset => normalizeAssetParent({ ...asset, type: 'asset' }, importedZones))
+      .map(asset => normalizeAssetParent({ ...asset, type: 'asset' }, importedZones, importedFloorPlans))
 
     const importedLines = (Array.isArray(payload.lines) ? payload.lines : [])
       .filter(Boolean)
-      .map(line => normalizeLineParent({ ...line, type: 'line' }, importedZones))
+      .map(line => normalizeLineParent({ ...line, type: 'line' }, importedZones, importedFloorPlans))
 
     const importedAnnotations = (Array.isArray(payload.annotations) ? payload.annotations : [])
       .filter(Boolean)
@@ -1043,7 +1061,7 @@ export default function App() {
         ...annotation,
         type: 'annotation',
         text: annotation?.text || annotation?.label || 'New annotation',
-      }, importedZones))
+      }, importedZones, importedFloorPlans))
 
     const importedMapViewMode = payload.mapViewMode === '2d'
       ? 'roadmap'
@@ -1075,7 +1093,7 @@ export default function App() {
     })
     setSelectedId(null)
     setPendingAssetDef(null)
-    setPlacingFloor(false)
+    setPendingFloorImageUrl(null)
     setDrawMode('select')
     window.alert('Map JSON imported successfully.')
   }, [assetData.zoneTypes, pushHistory])
@@ -1119,17 +1137,19 @@ export default function App() {
 
   const handleLineCreate = useCallback((line) => {
     pushHistory()
-    setLines(prev => [...prev, line])
-    setSelectedId(line.id)
+    const normalizedLine = normalizeLineParent(line, zones, floorPlans)
+    setLines(prev => [...prev, normalizedLine])
+    setSelectedId(normalizedLine.id)
     setDrawMode('select')
-  }, [pushHistory])
+  }, [floorPlans, pushHistory, zones])
 
   const handleAnnotationCreate = useCallback((annotation) => {
     pushHistory()
-    setAnnotations(prev => [...prev, annotation])
-    setSelectedId(annotation.id)
+    const normalizedAnnotation = normalizeAnnotationParent(annotation, zones, floorPlans)
+    setAnnotations(prev => [...prev, normalizedAnnotation])
+    setSelectedId(normalizedAnnotation.id)
     setDrawMode('select')
-  }, [pushHistory])
+  }, [floorPlans, pushHistory, zones])
 
   // Asset drag start
   const handleAssetDragStart = useCallback((e, assetDef) => {
@@ -1159,6 +1179,11 @@ export default function App() {
     setPendingZoneTemplate(null)
     setSelectedId(item.id)
     setDrawMode('select')
+
+    // Auto-expand sidebar if collapsed
+    if (leftSidebarCollapsed) {
+      setLeftSidebarCollapsed(false)
+    }
 
     // Keep map zoom stable on selection; only pan if needed.
     if (mapRef.current && window.google) {
@@ -1197,7 +1222,7 @@ export default function App() {
         mapRef.current.panTo({ lat: targetLat, lng: targetLng })
       }
     }
-  }, [])
+  }, [leftSidebarCollapsed])
 
   const handleSaveZoneTemplate = useCallback((zone, options = {}) => {
     if (!zone || zone.type !== 'zone') return
@@ -1476,28 +1501,29 @@ export default function App() {
           )))
         } else {
           setZones(nextZones)
-          setAssets(assets.map(asset => normalizeAssetParent(asset, nextZones)))
-          setAnnotations(annotations.map(annotation => normalizeAnnotationParent(annotation, nextZones)))
-          setLines(lines.map(line => normalizeLineParent(line, nextZones)))
+          setAssets(assets.map(asset => normalizeAssetParent(asset, nextZones, floorPlans)))
+          setAnnotations(annotations.map(annotation => normalizeAnnotationParent(annotation, nextZones, floorPlans)))
+          setLines(lines.map(line => normalizeLineParent(line, nextZones, floorPlans)))
         }
       } else {
-        setZones(prev => prev.map(z => z.id === updated.id ? nextZoneRecord : z))
+        const normalizedZone = normalizeZoneParent(nextZoneRecord, zones, floorPlans)
+        setZones(prev => prev.map(z => z.id === updated.id ? normalizedZone : z))
       }
     } else if (updated.type === 'line') {
-      const normalizedLine = normalizeLineParent(updated, zones)
+      const normalizedLine = normalizeLineParent(updated, zones, floorPlans)
       setLines(prev => prev.map(line => line.id === updated.id ? normalizedLine : line))
     } else if (updated.type === 'annotation') {
-      const normalizedAnnotation = normalizeAnnotationParent(updated, zones)
+      const normalizedAnnotation = normalizeAnnotationParent(updated, zones, floorPlans)
       setAnnotations(prev => prev.map(annotation => annotation.id === updated.id ? normalizedAnnotation : annotation))
     } else if (updated.type === 'floor') {
       setFloorPlans(prev => prev.map(plan => (
         plan.id === updated.id ? normalizeFloorPlanState({ ...plan, ...updated }) : plan
       )))
     } else {
-      const normalizedAsset = normalizeAssetParent(updated, zones)
+      const normalizedAsset = normalizeAssetParent(updated, zones, floorPlans)
       setAssets(prev => prev.map(a => a.id === updated.id ? normalizedAsset : a))
     }
-  }, [annotations, assets, lines, pushHistory, selectedId, zones])
+  }, [annotations, assets, floorPlans, lines, pushHistory, selectedId, zones])
 
   const handleToggleTheme = useCallback(() => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark')
@@ -1698,12 +1724,32 @@ export default function App() {
   const handleDelete = useCallback(() => {
     if (!selectedId) return
     pushHistory()
-    if (zones.some(zone => zone.id === selectedId)) {
-      const cascadeState = buildCascadeDeleteState(selectedId, zones, assets, lines, annotations)
-      setZones(cascadeState.nextZones)
-      setAssets(prev => prev.filter(asset => asset.id !== selectedId && !cascadeState.zoneIdsToDelete.has(asset.parentId)))
-      setLines(prev => prev.filter(line => line.id !== selectedId && !cascadeState.zoneIdsToDelete.has(line.parentId)))
-      setAnnotations(prev => prev.filter(annotation => annotation.id !== selectedId && !cascadeState.zoneIdsToDelete.has(annotation.parentId)))
+    const isFloorPlan = floorPlans.some(plan => plan.id === selectedId)
+    const isZone = zones.some(zone => zone.id === selectedId)
+    const isCascadeTarget = isFloorPlan || isZone
+
+    if (isCascadeTarget) {
+      if (isFloorPlan) {
+        const floorZoneIds = new Set()
+        zones.forEach(zone => {
+          if (zone.parentId === selectedId) {
+            floorZoneIds.add(zone.id)
+            collectRelatedZoneIds(zone.id, zones).forEach(zoneId => floorZoneIds.add(zoneId))
+          }
+        })
+
+        setZones(prev => prev.filter(zone => zone.parentId !== selectedId && !floorZoneIds.has(zone.id)))
+        setAssets(prev => prev.filter(asset => asset.parentId !== selectedId && !floorZoneIds.has(asset.parentId)))
+        setLines(prev => prev.filter(line => line.parentId !== selectedId && !floorZoneIds.has(line.parentId)))
+        setAnnotations(prev => prev.filter(annotation => annotation.parentId !== selectedId && !floorZoneIds.has(annotation.parentId)))
+      } else {
+        // Delete zone and cascade to descendants
+        const cascadeState = buildCascadeDeleteState(selectedId, zones, assets, lines, annotations)
+        setZones(cascadeState.nextZones)
+        setAssets(prev => prev.filter(asset => asset.id !== selectedId && !cascadeState.zoneIdsToDelete.has(asset.parentId)))
+        setLines(prev => prev.filter(line => line.id !== selectedId && !cascadeState.zoneIdsToDelete.has(line.parentId)))
+        setAnnotations(prev => prev.filter(annotation => annotation.id !== selectedId && !cascadeState.zoneIdsToDelete.has(annotation.parentId)))
+      }
     } else {
       setZones(prev => prev.filter(z => z.id !== selectedId))
       setAssets(prev => prev.filter(a => a.id !== selectedId))
@@ -1714,7 +1760,7 @@ export default function App() {
       setFloorPlans(prev => prev.filter(plan => plan.id !== selectedId))
     }
     setSelectedId(null)
-  }, [annotations, assets, lines, pushHistory, selectedId, zones])
+  }, [annotations, assets, floorPlans, lines, pushHistory, selectedId, zones])
 
   const handleUndo = useCallback(() => {
     setUndoStack(stack => {
@@ -2950,6 +2996,7 @@ export default function App() {
       assets: patch.assets ?? currentData.assets ?? [],
       lines: patch.lines ?? currentData.lines ?? [],
       annotations: patch.annotations ?? currentData.annotations ?? [],
+      floorPlans: patch.floorPlans ?? currentData.floorPlans ?? [],
       archived: nextArchived,
     }
 
@@ -3149,6 +3196,7 @@ export default function App() {
           floorPlans,
           floorPlan: floorPlans[0] || null,
         },
+        floorPlans,
       } : {}
 
       await persistEventPatch(id, {
@@ -3266,6 +3314,7 @@ export default function App() {
             floorPlan: floorPlans[0] || null,
             archived: !!eventDetails.isArchived,
           },
+          floorPlans,
           zones,
           assets,
           lines,
@@ -3420,8 +3469,8 @@ export default function App() {
           onPendingAssetClear={() => setPendingAssetDef(null)}
           pendingZoneTemplate={pendingZoneTemplate}
           onPendingZoneTemplateClear={() => setPendingZoneTemplate(null)}
-          onFloorPlanChange={handleFloorPlanChange}
-          onFloorPlacementChange={setPlacingFloor}
+          onFloorPlanCreate={(newPlan) => setFloorPlans(prev => [...prev, newPlan])}
+          onPendingFloorImageClear={() => setPendingFloorImageUrl(null)}
           eventDetails={eventDetails}
           onEventDetailsChange={setEventDetails}
           mapViewMode={mapViewMode}

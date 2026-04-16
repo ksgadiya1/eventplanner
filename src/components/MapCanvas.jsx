@@ -14,6 +14,7 @@ import {
   computePolygonMetrics,
   extractPathFromOverlay,
   getDeepestParentZone,
+  getDeepestParentFloor,
   getFloorGeometry,
   getZoneAnchor,
   clientRectToBounds,
@@ -233,7 +234,7 @@ export default function MapCanvas({
   lines,
   annotations,
   floorPlans = [],
-  placingFloor,
+  pendingFloorImageUrl,
   selectedId,
   onSelect,
   onClearSelection,
@@ -246,8 +247,8 @@ export default function MapCanvas({
   onPendingAssetClear,
   pendingZoneTemplate,
   onPendingZoneTemplateClear,
-  onFloorPlanChange,
-  onFloorPlacementChange,
+  onFloorPlanCreate,
+  onPendingFloorImageClear,
   eventDetails,
   onEventDetailsChange,
   mapViewMode = 'roadmap',
@@ -281,7 +282,6 @@ export default function MapCanvas({
   const lineOverlayRefs = useRef({})
   const lastLineSnapshotRef = useRef({})
   const [mapZoom, setMapZoom] = useState(14)
-  const [tempFloorPoints, setTempFloorPoints] = useState([])
   const [lineDraft, setLineDraft] = useState(null)
   const [polygonDraft, setPolygonDraft] = useState(null)
   const [shapeDraft, setShapeDraft] = useState(null)
@@ -698,6 +698,7 @@ export default function MapCanvas({
   function buildAssetPlacement(assetBase) {
     if (!window.google) return assetBase
     const parentZone = getDeepestParentZone({ lat: assetBase.lat, lng: assetBase.lng }, zones, window.google)
+    const parentFloor = parentZone ? null : getDeepestParentFloor({ lat: assetBase.lat, lng: assetBase.lng }, floorPlans, window.google)
 
     if (parentZone?.contentLocked && !isAssetAllowedInZone(parentZone, assetBase.assetDef?.id)) {
       const allowed = getZoneAllowedAssetTypes(parentZone).map(getAssetName)
@@ -707,7 +708,7 @@ export default function MapCanvas({
 
     const placement = {
       ...assetBase,
-      parentId: parentZone?.id || null,
+      parentId: parentZone?.id || parentFloor?.id || null,
     }
 
     const baseGridSnap = Boolean(layers.grid?.visible && layers.grid?.snap)
@@ -745,51 +746,269 @@ export default function MapCanvas({
   const buildAnnotationPlacement = useCallback((annotationBase) => {
     if (!window.google) return annotationBase
     const parentZone = getDeepestParentZone({ lat: annotationBase.lat, lng: annotationBase.lng }, zones, window.google)
+    const parentFloor = parentZone ? null : getDeepestParentFloor({ lat: annotationBase.lat, lng: annotationBase.lng }, floorPlans, window.google)
     return {
       ...annotationBase,
-      parentId: parentZone?.id || null,
+      parentId: parentZone?.id || parentFloor?.id || null,
     }
-  }, [zones])
-
-
-  const { startInteraction, move, end, isInteracting } = useMapInteraction({
-    map: mapRef.current,
-    gridSize: Number(layers.grid?.size || 3),
-    snapEnabled: Boolean(layers.grid?.snap),
-    onUpdate: (updated) => {
-      if (updated.type === 'asset' || updated.type === 'zone' || updated.type === 'annotation') {
-        onAssetUpdate(updated)
-      } else if (!updated.type) {
-        // Floor plan doesn't have a type property usually in this state
-        onFloorPlanChange(prev => updated)
-      }
-    },
-    onComplete: (final) => {
-      // Any final cleanup if needed
-    }
-  })
-
-  const handleStartInteraction = useCallback((e, object, type, metadata) => {
-    startInteraction(e, object, type, metadata)
-  }, [startInteraction])
+  }, [floorPlans, zones])
 
   useEffect(() => {
-    if (!isInteracting) return
+    const handleInteractionMove = (event) => {
+      const interaction = interactionRef.current
+      const map = mapRef.current
+      if (!interaction || !map || !onAssetUpdate) return
 
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', end)
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', end)
-    window.addEventListener('pointercancel', end)
+      if (interaction.objectType === 'asset') {
+        if (interaction.type === 'move') {
+          const latLng = clientPointToLatLng(map, event.clientX, event.clientY)
+          if (!latLng) return
+          const movedAsset = buildAssetPlacement({
+            ...interaction.object,
+            lat: latLng.lat() - (interaction.latOffset || 0),
+            lng: latLng.lng() - (interaction.lngOffset || 0),
+          })
+          if (!movedAsset) return
+          onAssetUpdate(movedAsset)
+          return
+        }
+
+        if (interaction.type === 'resize') {
+          const dx = event.clientX - interaction.startX
+          const dy = event.clientY - interaction.startY
+          const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotationDeg)
+          const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
+          const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
+          const rawLength = interaction.startLengthPx + (localY * handle.ySign)
+          const widthPx = Math.max(MIN_ASSET_SIZE_PX, rawWidth)
+          const lengthPx = Math.max(MIN_ASSET_SIZE_PX, rawLength)
+          const appliedWidthDelta = widthPx - interaction.startWidthPx
+          const appliedLengthDelta = lengthPx - interaction.startLengthPx
+          const localCenterShift = {
+            x: (appliedWidthDelta / 2) * handle.xSign,
+            y: (appliedLengthDelta / 2) * handle.ySign,
+          }
+          const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotationDeg)
+          const nextCenterLatLng = clientPointToLatLng(
+            map,
+            interaction.center.x + screenShift.x,
+            interaction.center.y + screenShift.y
+          )
+          if (!nextCenterLatLng) return
+
+          onAssetUpdate({
+            ...interaction.object,
+            lat: nextCenterLatLng.lat(),
+            lng: nextCenterLatLng.lng(),
+            widthM: Number(Math.max(MIN_ASSET_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2)),
+            lengthM: Number(Math.max(MIN_ASSET_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2)),
+          })
+          return
+        }
+
+        if (interaction.type === 'rotate') {
+          const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
+          const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
+          onAssetUpdate({
+            ...interaction.object,
+            rotationDeg: Number(normalizeAngle(interaction.startRotationDeg + delta).toFixed(1)),
+          })
+        }
+        return
+      }
+
+      if (interaction.objectType === 'floor') {
+        if (interaction.type === 'move') {
+          const nextCenter = clientPointToLatLng(map, event.clientX, event.clientY)
+          if (!nextCenter) return
+
+          onAssetUpdate(normalizeFloorPlanState({
+            ...interaction.object,
+            center: {
+              lat: nextCenter.lat() - (interaction.latOffset || 0),
+              lng: nextCenter.lng() - (interaction.lngOffset || 0)
+            },
+            widthM: interaction.startWidthM,
+            heightM: interaction.startHeightM,
+            rotation: interaction.startRotation,
+          }))
+          return
+        }
+
+        if (interaction.type === 'resize') {
+          const dx = event.clientX - interaction.startX
+          const dy = event.clientY - interaction.startY
+          const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotation)
+          const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
+          const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
+          const rawHeight = interaction.startHeightPx + (localY * handle.ySign)
+          const widthPx = Math.max(MIN_FLOOR_SIZE_PX, rawWidth)
+          const heightPx = Math.max(MIN_FLOOR_SIZE_PX, rawHeight)
+          const appliedWidthDelta = widthPx - interaction.startWidthPx
+          const appliedHeightDelta = heightPx - interaction.startHeightPx
+          const localCenterShift = {
+            x: (appliedWidthDelta / 2) * handle.xSign,
+            y: (appliedHeightDelta / 2) * handle.ySign,
+          }
+          const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
+          const nextCenter = clientPointToLatLng(
+            map,
+            interaction.center.x + screenShift.x,
+            interaction.center.y + screenShift.y
+          )
+          if (!nextCenter) return
+
+          onAssetUpdate(normalizeFloorPlanState({
+            ...interaction.object,
+            center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
+            widthM: Number(Math.max(1, widthPx * interaction.metersPerPixel).toFixed(2)),
+            heightM: Number(Math.max(1, heightPx * interaction.metersPerPixel).toFixed(2)),
+            rotation: interaction.startRotation,
+          }))
+          return
+        }
+
+        if (interaction.type === 'rotate') {
+          const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
+          const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
+          onAssetUpdate(normalizeFloorPlanState({
+            ...interaction.object,
+            center: interaction.startCenter,
+            widthM: interaction.startWidthM,
+            heightM: interaction.startHeightM,
+            rotation: Number(normalizeAngle(interaction.startRotation + delta).toFixed(1)),
+          }))
+        }
+      }
+
+      if (interaction.objectType === 'zone' && interaction.type === 'rotate') {
+        if (!Array.isArray(interaction.startPath) || interaction.startPath.length < 3) return
+
+        const center = interaction.startPath.reduce(
+          (acc, point) => ({
+            lat: acc.lat + Number(point.lat || 0),
+            lng: acc.lng + Number(point.lng || 0),
+          }),
+          { lat: 0, lng: 0 }
+        )
+        center.lat /= interaction.startPath.length
+        center.lng /= interaction.startPath.length
+
+        const rect = map.getDiv().getBoundingClientRect()
+        const centerPoint = latLngToContainerPoint(map, center.lat, center.lng)
+        if (!centerPoint) return
+
+        const centerClient = { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y }
+        const startAngle = Math.atan2(interaction.startY - centerClient.y, interaction.startX - centerClient.x)
+        const currentAngle = Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x)
+        const delta = startAngle - currentAngle
+        const cos = Math.cos(delta)
+        const sin = Math.sin(delta)
+
+        const rotatedPath = interaction.startPath.map((point) => {
+          // const dx = Number(point.lng || 0) - center.lng
+          // const dy = Number(point.lat || 0) - center.lat
+          // return {
+          //   lat: center.lat + (dy * cos - dx * sin),
+          //   lng: center.lng + (dx * cos + dy * sin),
+          // }
+          const screenPoint = latLngToContainerPoint(map, point.lat, point.lng)
+          if (!screenPoint) return point
+          const localX = screenPoint.x - centerPoint.x
+          const localY = screenPoint.y - centerPoint.y
+          const rotatedX = localX * cos - localY * sin
+          const rotatedY = localX * sin + localY * cos
+          const nextClientX = rect.left + centerPoint.x + rotatedX
+          const nextClientY = rect.top + centerPoint.y + rotatedY
+          const nextLatLng = clientPointToLatLng(map, nextClientX, nextClientY)
+          return nextLatLng ? { lat: nextLatLng.lat(), lng: nextLatLng.lng() } : point
+        })
+
+        onAssetUpdate({
+          ...interaction.object,
+          path: rotatedPath,
+          rotation: Number(normalizeAngle((interaction.startRotation || 0) + (delta * 180) / Math.PI).toFixed(1)),
+        })
+        return
+      }
+
+      if (interaction.objectType === 'zone' && interaction.type === 'resize') {
+        const dx = event.clientX - interaction.startX
+        const dy = event.clientY - interaction.startY
+        const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotation)
+        const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
+        const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
+        const rawLength = interaction.startLengthPx + (localY * handle.ySign)
+        const widthPx = Math.max(MIN_ZONE_SIZE_PX, rawWidth)
+        const lengthPx = Math.max(MIN_ZONE_SIZE_PX, rawLength)
+        const appliedWidthDelta = widthPx - interaction.startWidthPx
+        const appliedLengthDelta = lengthPx - interaction.startLengthPx
+        const localCenterShift = {
+          x: (appliedWidthDelta / 2) * handle.xSign,
+          y: (appliedLengthDelta / 2) * handle.ySign,
+        }
+        const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
+        const nextCenter = clientPointToLatLng(
+          map,
+          interaction.center.x + screenShift.x,
+          interaction.center.y + screenShift.y
+        )
+        if (!nextCenter) return
+
+        const nextWidthM = Number(Math.max(MIN_ZONE_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2))
+        const nextLengthM = Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2))
+        const nextCenterLatLng = { lat: nextCenter.lat(), lng: nextCenter.lng() }
+
+        onAssetUpdate({
+          ...interaction.object,
+          center: nextCenterLatLng,
+          widthM: nextWidthM,
+          lengthM: nextLengthM,
+          path: buildRectanglePath(
+            nextCenterLatLng,
+            nextWidthM / 2,
+            nextLengthM / 2,
+            window.google,
+            interaction.object.rotation || 0
+          ),
+        })
+        return
+      }
+
+      if (interaction.objectType === 'annotation') {
+        if (interaction.type === 'move') {
+          const latLng = clientPointToLatLng(map, event.clientX, event.clientY)
+          if (!latLng) return
+          const movedAnnotation = buildAnnotationPlacement({
+            ...interaction.object,
+            lat: latLng.lat() - (interaction.latOffset || 0),
+            lng: latLng.lng() - (interaction.lngOffset || 0),
+          })
+          onAssetUpdate(movedAnnotation)
+        }
+      }
+    }
+
+    const handleInteractionUp = () => {
+      if (!interactionRef.current) return
+      interactionRef.current = null
+      document.body.style.userSelect = ''
+    }
+
+    window.addEventListener('mousemove', handleInteractionMove)
+    window.addEventListener('mouseup', handleInteractionUp)
+    window.addEventListener('pointermove', handleInteractionMove)
+    window.addEventListener('pointerup', handleInteractionUp)
+    window.addEventListener('pointercancel', handleInteractionUp)
 
     return () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', end)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', end)
-      window.removeEventListener('pointercancel', end)
+      window.removeEventListener('mousemove', handleInteractionMove)
+      window.removeEventListener('mouseup', handleInteractionUp)
+      window.removeEventListener('pointermove', handleInteractionMove)
+      window.removeEventListener('pointerup', handleInteractionUp)
+      window.removeEventListener('pointercancel', handleInteractionUp)
     }
-  }, [isInteracting, move, end])
+  }, [buildAnnotationPlacement, buildAssetPlacement, onAssetUpdate])
 
   const finalizePolygon = useCallback((path) => {
     if (!window.google || !path || path.length < 3) return
@@ -1037,11 +1256,6 @@ export default function MapCanvas({
     const activeLineDraft = lineDraftRef.current
     const activePolygonDraft = polygonDraftRef.current
 
-    if (placingFloor && tempFloorPoints.length === 1) {
-      setTempFloorPoints([tempFloorPoints[0], hoverPoint])
-      return
-    }
-
     if ((drawMode === 'line' || drawMode === 'route') && layers.lines?.visible !== false && !layers.lines?.locked && activeLineDraft?.points?.length) {
       const previewPath = [...activeLineDraft.points, hoverPoint]
       setLineDraft(prev => prev ? { ...prev, hoverPoint } : prev)
@@ -1062,7 +1276,7 @@ export default function MapCanvas({
       const previewPath = [...measurePointsRef.current, hoverPoint]
       setLineMeasurement(computeLineLength(previewPath, window.google))
     }
-  }, [drawMode, layers.lines, pendingAssetDef, pendingZoneTemplate, placingFloor, tempFloorPoints])
+  }, [drawMode, layers.lines, pendingAssetDef, pendingZoneTemplate])
 
   const placePendingAssetAtLatLng = useCallback((latLng) => {
     if (!latLng) return false
@@ -1115,6 +1329,25 @@ export default function MapCanvas({
     onPendingZoneTemplateClear?.()
     return true
   }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate, zones])
+
+  const handleFloorPlanClick = useCallback((event, plan) => {
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
+
+    const map = mapRef.current
+    const latLng = map && event
+      ? clientPointToLatLng(map, event.clientX, event.clientY)
+      : null
+
+    if (latLng) {
+      if (placePendingZoneTemplateAtLatLng(latLng)) return
+      if (placePendingAssetAtLatLng(latLng)) return
+    }
+
+    if (drawMode === 'select') {
+      onSelect({ type: 'floor', ...plan })
+    }
+  }, [drawMode, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng])
 
   const syncOverlayGeometry = useCallback(() => {
     const map = mapRef.current
@@ -1194,70 +1427,56 @@ export default function MapCanvas({
       return
     }
 
-    const firstFloorPlan = floorPlans[0] || null
-    if (placingFloor && (firstFloorPlan?.imageUrl || (Array.isArray(firstFloorPlan?.imageUrls) && firstFloorPlan.imageUrls.length))) {
-      const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
+    if (pendingFloorImageUrl && window.google) {
+      const clickPoint = { lat: event.latLng.lat(), lng: event.latLng.lng() }
+      
+      const centerLatLng = new window.google.maps.LatLng(clickPoint.lat, clickPoint.lng)
+      const halfSizeM = 25
+      
+      const northLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 0)
+      const southLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 180)
+      const eastLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 90)
+      const westLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, -90)
 
-      if (tempFloorPoints.length === 0) {
-        setTempFloorPoints([point])
-        return
-      }
-
-      const firstPoint = tempFloorPoints[0]
-      const latSign = point.lat >= firstPoint.lat ? 1 : -1
-      const lngSign = point.lng >= firstPoint.lng ? 1 : -1
-      const centerLatEstimate = (firstPoint.lat + point.lat) / 2
-      const cosLat = Math.max(0.15, Math.cos((centerLatEstimate * Math.PI) / 180))
-      const rawHeightM = Math.max(1, Math.abs(point.lat - firstPoint.lat) * 111111)
-      const rawWidthM = Math.max(1, Math.abs(point.lng - firstPoint.lng) * 111111 * cosLat)
-      const aspectRatio = Number(firstFloorPlan.aspectRatio) > 0
-        ? Number(firstFloorPlan.aspectRatio)
-        : (rawWidthM / Math.max(1, rawHeightM))
-      let widthM = rawWidthM
-      let heightM = rawHeightM
-      if ((rawWidthM / Math.max(1, rawHeightM)) >= aspectRatio) {
-        widthM = heightM * aspectRatio
-      } else {
-        heightM = widthM / Math.max(0.0001, aspectRatio)
-      }
-      const latDelta = heightM / 111111
-      const lngDelta = widthM / (111111 * cosLat)
-      const secondLat = firstPoint.lat + (latDelta * latSign)
-      const secondLng = firstPoint.lng + (lngDelta * lngSign)
       const nextBounds = {
-        north: Math.max(firstPoint.lat, secondLat),
-        south: Math.min(firstPoint.lat, secondLat),
-        east: Math.max(firstPoint.lng, secondLng),
-        west: Math.min(firstPoint.lng, secondLng),
+        north: northLatLng.lat(),
+        south: southLatLng.lat(),
+        east: eastLatLng.lng(),
+        west: westLatLng.lng(),
       }
+      
       const nextFloorPlan = normalizeFloorPlanState({
-        ...firstFloorPlan,
+        id: `floor_${Date.now()}`,
+        type: 'floor',
+        imageUrl: pendingFloorImageUrl,
         bounds: nextBounds,
+        opacity: 0.7,
+        rotation: 0,
       })
-      onFloorPlanChange(firstFloorPlan.id, nextFloorPlan)
-      setTempFloorPoints([])
-      onFloorPlacementChange(false)
-      selectWithOverlaySync(nextFloorPlan)
+
+      onFloorPlanCreate(nextFloorPlan)
+      onPendingFloorImageClear()
+      onSelect({ ...nextFloorPlan })
       return
     }
 
-    if (drawMode === 'select' && floorPlans.length && event.domEvent && mapRef.current) {
+    if (placePendingAssetAtLatLng(event.latLng)) {
+      return
+    }
+
+    if (drawMode === 'select' && floorPlans?.length > 0 && event.domEvent && mapRef.current) {
       const rect = mapRef.current.getDiv().getBoundingClientRect()
       const clickPoint = {
         x: event.domEvent.clientX - rect.left,
         y: event.domEvent.clientY - rect.top,
       }
-      for (let i = floorPlans.length - 1; i >= 0; i -= 1) {
-        const candidate = floorPlans[i]
-        if (candidate?.bounds && isPointInsideFloorOverlay(mapRef.current, candidate, clickPoint)) {
-          selectWithOverlaySync(candidate)
+      for (let i = floorPlans.length - 1; i >= 0; i--) {
+        const plan = floorPlans[i]
+        if (plan.bounds && isPointInsideFloorOverlay(mapRef.current, plan, clickPoint)) {
+          onSelect({ type: 'floor', ...plan })
           return
         }
       }
-    }
-
-    if (placePendingAssetAtLatLng(event.latLng)) {
-      return
     }
 
     if ((drawMode === 'line' || drawMode === 'route') && layers.lines?.visible !== false && !layers.lines?.locked && window.google) {
@@ -1329,7 +1548,7 @@ export default function MapCanvas({
     if (drawMode === 'select') {
       onClearSelection?.()
     }
-  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, selectWithOverlaySync, tempFloorPoints, textStyle])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, textStyle])
 
   const handleMapDoubleClick = useCallback((event) => {
     if (drawMode === 'select') {
@@ -1414,7 +1633,7 @@ export default function MapCanvas({
     finalizePolygon(finalPath)
     setPolygonDraft(null)
     setLineMeasurement(null)
-  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, lineMeasurement, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, tempFloorPoints, textStyle, onZoneCreate, selectedZoneType, zones])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, lineMeasurement, onAnnotationCreate, onClearSelection, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, textStyle, onZoneCreate, selectedZoneType, zones])
 
   const handleMapRightClick = useCallback((event) => {
     if (drawMode === 'line' || drawMode === 'route') {
@@ -1468,10 +1687,144 @@ export default function MapCanvas({
     }
   }, [drawMode, layers.lines])
 
-  useEffect(() => {
-    if (!placingFloor) setTempFloorPoints([])
-  }, [placingFloor])
+  const handleStartInteraction = useCallback((event, object, type, resizeHandle = null) => {
+    event.preventDefault()
+    event.stopPropagation()
 
+    const map = mapRef.current
+    if (!map) return
+
+    if (object.type === 'floor' || object.id === 'floor-plan') {
+      if (layers.floor?.locked || !object.bounds) return
+      const floorGeometry = getFloorGeometry(map, object)
+      const rect = map.getDiv().getBoundingClientRect()
+      if (!floorGeometry) return
+
+      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
+      const latOffset = clickLatLng ? clickLatLng.lat() - floorGeometry.centerLat : 0
+      const lngOffset = clickLatLng ? clickLatLng.lng() - floorGeometry.centerLng : 0
+
+      interactionRef.current = {
+        objectType: 'floor',
+        type,
+        object: { ...object, type: 'floor' },
+        startX: event.clientX,
+        startY: event.clientY,
+        center: { x: rect.left + floorGeometry.centerPoint.x, y: rect.top + floorGeometry.centerPoint.y },
+        startCenter: { lat: floorGeometry.centerLat, lng: floorGeometry.centerLng },
+        latOffset,
+        lngOffset,
+        startWidthPx: floorGeometry.widthPx,
+        startHeightPx: floorGeometry.heightPx,
+        startWidthM: floorGeometry.widthM,
+        startHeightM: floorGeometry.heightM,
+        metersPerPixel: floorGeometry.metersPerPixel,
+        startRotation: object.rotation || 0,
+        resizeHandle,
+        startPointerAngle: Math.atan2(
+          event.clientY - (rect.top + floorGeometry.centerPoint.y),
+          event.clientX - (rect.left + floorGeometry.centerPoint.x)
+        ) * 180 / Math.PI,
+      }
+
+      document.body.style.userSelect = 'none'
+      onSelect({ type: 'floor', ...object })
+      return
+    }
+
+    if (object.type === 'zone' && type === 'rotate') {
+      if (layers.zones?.locked || !Array.isArray(object.path) || object.path.length < 3) return
+      interactionRef.current = {
+        objectType: 'zone',
+        type,
+        object,
+        startX: event.clientX,
+        startY: event.clientY,
+        startPath: object.path.map((point) => ({ lat: Number(point.lat || 0), lng: Number(point.lng || 0) })),
+        startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
+      }
+      document.body.style.userSelect = 'none'
+      onSelect(object)
+      return
+    }
+
+    if (object.type === 'zone' && type === 'resize') {
+      if (layers.zones?.locked || object.shapeType !== 'square') return
+      const rect = map.getDiv().getBoundingClientRect()
+      const center = getPathCenter(object.path)
+      const centerPoint = center ? latLngToContainerPoint(map, center.lat, center.lng) : null
+      const zoneSize = getRectangleZoneDimensions(object, window.google)
+      const widthM = Number(zoneSize.widthM)
+      const lengthM = Number(zoneSize.lengthM)
+      const scale = center ? metersPerPixel(center.lat, map.getZoom()) : null
+      if (!center || !centerPoint || !Number.isFinite(widthM) || !Number.isFinite(lengthM) || !Number.isFinite(scale)) return
+
+      interactionRef.current = {
+        objectType: 'zone',
+        type,
+        object,
+        startX: event.clientX,
+        startY: event.clientY,
+        center: { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y },
+        startWidthPx: widthM / scale,
+        startLengthPx: lengthM / scale,
+        startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
+        metersPerPixel: scale,
+        resizeHandle,
+      }
+      document.body.style.userSelect = 'none'
+      onSelect(object)
+      return
+    }
+
+    if (object.type === 'annotation') {
+      if (layers.annotations?.locked) return
+
+      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
+      const latOffset = clickLatLng ? clickLatLng.lat() - object.lat : 0
+      const lngOffset = clickLatLng ? clickLatLng.lng() - object.lng : 0
+
+      interactionRef.current = {
+        objectType: 'annotation',
+        type,
+        object,
+        latOffset,
+        lngOffset,
+      }
+      document.body.style.userSelect = 'none'
+      onSelect(object)
+      return
+    }
+
+    if (layers.assets?.locked) return
+
+    const rect = map.getDiv().getBoundingClientRect()
+    const center = latLngToContainerPoint(map, object.lat, object.lng)
+    const { widthPx, lengthPx, metersPerPixel: scale } = getAssetSize(object, map.getZoom())
+    const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
+    if (!center) return
+
+    const centerClient = { x: rect.left + center.x, y: rect.top + center.y }
+    interactionRef.current = {
+      objectType: 'asset',
+      type,
+      object,
+      startX: event.clientX,
+      startY: event.clientY,
+      center: centerClient,
+      startWidthPx: widthPx,
+      startLengthPx: lengthPx,
+      startRotationDeg: object.rotationDeg || 0,
+      resizeHandle,
+      latOffset: clickLatLng ? clickLatLng.lat() - object.lat : 0,
+      lngOffset: clickLatLng ? clickLatLng.lng() - object.lng : 0,
+      startPointerAngle: Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x) * 180 / Math.PI,
+      metersPerPixel: scale,
+    }
+
+    document.body.style.userSelect = 'none'
+    onSelect(object)
+  }, [layers.annotations, layers.assets, layers.floor, onSelect])
 
   const mapOptions = useMemo(() => ({
     clickableIcons: false,
@@ -1491,7 +1844,7 @@ export default function MapCanvas({
       position: window.google?.maps?.ControlPosition?.RIGHT_BOTTOM,
     },
     scaleControl: false,
-    draggable: !isInteracting,
+    draggable: true,
     minZoom: isViewOnly && Number.isFinite(viewOnlyMinZoom) ? viewOnlyMinZoom : undefined,
     maxZoom: isViewOnly && Number.isFinite(viewOnlyMaxZoom) ? Math.max(viewOnlyMinZoom ?? 0, viewOnlyMaxZoom) : undefined,
     restriction: isViewOnly && viewOnlyRestrictionBounds
@@ -1501,11 +1854,11 @@ export default function MapCanvas({
     gestureHandling: 'greedy',
     draggableCursor: isViewOnly
       ? 'grab'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || !!pendingAssetDef ? 'crosshair' : 'grab',
     draggingCursor: isViewOnly
       ? 'grabbing'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || drawMode === 'square' || drawMode === 'circle' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
-  }), [drawMode, isInteracting, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || !!pendingAssetDef ? 'crosshair' : 'grabbing',
+  }), [drawMode, isViewOnly, pendingAssetDef, pendingZoneTemplate, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
 
   if (!apiKey) {
     return (
@@ -1564,21 +1917,24 @@ export default function MapCanvas({
           />
         )}
 
-        {layers.floor?.visible && floorPlans.map((plan) => (
-          plan?.bounds ? (
+        {layers.floor?.visible && floorPlans.map(plan => {
+          if (!plan.bounds) return null
+          return (
             <FloorPlanOverlay
               key={plan.id}
               floorPlan={plan}
               selected={selectedId === plan.id}
+              interactive={drawMode === 'select'}
+              hasPendingPlacement={Boolean(pendingAssetDef || pendingZoneTemplate)}
               locked={!!layers.floor?.locked}
-              onSelect={selectWithOverlaySync}
+              onSelect={onSelect}
+              onOverlayClick={handleFloorPlanClick}
               onStartInteraction={handleStartInteraction}
               map={mapRef.current}
               zoom={mapZoom}
-              refreshTick={overlaySyncTick}
             />
-          ) : null
-        ))}
+          )
+        })}
 
         {layers.zones?.visible && zones.map(zone => {
           // Skip rendering zone if it or any parent zone is hidden
@@ -2028,30 +2384,6 @@ export default function MapCanvas({
           </>
         )}
 
-        {placingFloor && tempFloorPoints.length > 0 && (
-          <>
-            <InteractionPointsOverlay
-              map={mapRef.current}
-              points={[tempFloorPoints[0]]}
-              color="#38bdf8"
-              scale={6}
-            />
-            {tempFloorPoints.length >= 2 && (
-              <Polygon
-                paths={getBoundsPreviewPath(tempFloorPoints)}
-                options={{
-                  fillColor: '#38bdf8',
-                  fillOpacity: 0.12,
-                  strokeColor: '#38bdf8',
-                  strokeOpacity: 0.95,
-                  strokeWeight: 2,
-                  clickable: false,
-                }}
-              />
-            )}
-          </>
-        )}
-
         {measurePoints.length > 0 && (
           <>
             <Polyline
@@ -2302,12 +2634,6 @@ export default function MapCanvas({
         >
           <span style={{ width: '10px', height: '10px', borderRadius: '999px', background: pendingZoneTemplate.strokeColor || pendingZoneTemplate.fillColor || pendingZoneTemplate.zoneType?.color || '#3d8ef8' }} />
           <span>Click map to place {pendingZoneTemplate.name}</span>
-        </div>
-      )}
-
-      {placingFloor && floorPlans.length > 0 && (
-        <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(13,15,20,0.9)', border: '1px solid var(--accent)', borderRadius: 'var(--radius)', padding: '8px 16px', fontSize: '12px', color: 'var(--accent)', pointerEvents: 'none', backdropFilter: 'blur(8px)' }}>
-          Click the top-left corner, then the bottom-right corner to place the floor plan
         </div>
       )}
 
