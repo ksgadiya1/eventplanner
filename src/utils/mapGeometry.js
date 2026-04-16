@@ -445,6 +445,22 @@ export function getDeepestParentZone(point, zones, google, excludedZoneId = null
   return matches.sort((a, b) => (a.areaM2 || Infinity) - (b.areaM2 || Infinity))[0]
 }
 
+export function getDeepestParentFloor(point, floorPlans, google) {
+  if (!point || !floorPlans?.length) return null
+
+  for (const floorPlan of floorPlans) {
+    const bounds = buildFloorBoundsFromPlacement(floorPlan)
+    if (!bounds) continue
+
+    if (point.lat <= bounds.north && point.lat >= bounds.south &&
+        point.lng <= bounds.east && point.lng >= bounds.west) {
+      return floorPlan
+    }
+  }
+
+  return null
+}
+
 export function getBoundsPreviewPath(points) {
   if (!points?.length) return []
   const first = points[0]
@@ -504,11 +520,12 @@ export function getFloorGeometry(map, floorPlanOrBounds, passedZoom = null) {
   const centerLng = Number(normalized.center?.lng)
   const widthM = Number(normalized.widthM)
   const heightM = Number(normalized.heightM)
-  const centerPoint = latLngToContainerPoint(map, centerLat, centerLng)
+  const mapZoom = Number(map.getZoom?.())
+  const zoom = Number.isFinite(passedZoom) ? passedZoom : (Number.isFinite(mapZoom) ? mapZoom : 15)
+  const centerPoint = latLngToContainerPoint(map, centerLat, centerLng, zoom)
 
   if (!centerPoint || !Number.isFinite(widthM) || !Number.isFinite(heightM)) return null
 
-  const zoom = Number.isFinite(passedZoom) ? passedZoom : (Number.isFinite(map.getZoom?.()) ? map.getZoom() : 15)
   const currentMetersPerPixel = metersPerPixel(centerLat, zoom)
 
   return {
@@ -552,7 +569,7 @@ export function buildViewportBounds(google, points) {
   return bounds
 }
 
-export function computeContentBounds(google, { zones, assets, lines, annotations, floorPlan }) {
+export function computeContentBounds(google, { zones, assets, lines, annotations, floorPlans, floorPlan }) {
   const bounds = new google.maps.LatLngBounds()
   let hasContent = false
 
@@ -580,11 +597,14 @@ export function computeContentBounds(google, { zones, assets, lines, annotations
     hasContent = true
   })
 
-  if (floorPlan?.bounds) {
-    bounds.extend({ lat: floorPlan.bounds.north, lng: floorPlan.bounds.west })
-    bounds.extend({ lat: floorPlan.bounds.south, lng: floorPlan.bounds.east })
-    hasContent = true
-  }
+  const allFloorPlans = Array.isArray(floorPlans) ? floorPlans : (floorPlan ? [floorPlan] : [])
+  allFloorPlans.forEach(plan => {
+    if (plan?.bounds) {
+      bounds.extend({ lat: plan.bounds.north, lng: plan.bounds.west })
+      bounds.extend({ lat: plan.bounds.south, lng: plan.bounds.east })
+      hasContent = true
+    }
+  })
 
   return hasContent ? bounds : null
 }
@@ -702,19 +722,9 @@ export function limitGridSlots(slots, maxPoints = 450) {
   return slots.filter((_, index) => index % step === 0)
 }
 
-export function computeVisibleGridSpacing(gridSizeMeters, latitude, zoom, minPixelSize = 14, maxPixelSize = 160) {
-  const rawSize = Math.max(1, Number(gridSizeMeters) || 1)
-  const mpp = metersPerPixel(latitude, zoom || 15)
-  let spacingM = rawSize
-  let cellPx = spacingM / Math.max(0.0001, mpp)
-
-  while (cellPx < minPixelSize) {
-    spacingM *= 2
-    cellPx = spacingM / Math.max(0.0001, mpp)
-    if (spacingM > 5000 || cellPx >= maxPixelSize) break
-  }
-
-  return spacingM
+export function computeVisibleGridSpacing(gridSizeMeters, latitude, zoom) {
+  // Return the base grid spacing - could be adjusted for zoom visibility in the future
+  return Math.max(0.1, Number(gridSizeMeters) || 1)
 }
 
 export function computeRenderedGridSpacing(gridSizeMeters, latitude, zoom, bounds, limit = 300) {
@@ -748,11 +758,10 @@ export function computeRenderedGridSpacing(gridSizeMeters, latitude, zoom, bound
   return spacingM
 }
 
-export function snapToGrid(lat, lng, gridSizeMeters, referenceLat = lat, widthM = 0, lengthM = 0) {
+export function snapToGrid(lat, lng, gridSizeMeters, referenceLat = lat) {
   const latStep = gridSizeMeters / 111111.0
   const gridLat = Number.isFinite(referenceLat) ? referenceLat : lat
   const lngStep = gridSizeMeters / (111111.0 * Math.cos(gridLat * Math.PI / 180))
-
   return {
     lat: Math.round(lat / latStep) * latStep,
     lng: Math.round(lng / lngStep) * lngStep,
@@ -760,45 +769,27 @@ export function snapToGrid(lat, lng, gridSizeMeters, referenceLat = lat, widthM 
 }
 
 export function snapToZoneGrid(lat, lng, zone, zoom, widthM = 0, lengthM = 0) {
-  if (!zone || !Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return { lat, lng }
-  }
+  if (!zone) return { lat, lng }
 
-  const rawGridSizeMeters = Number(zone.gridSize || zone.rowSpacing || 3)
-  if (!Number.isFinite(rawGridSizeMeters) || rawGridSizeMeters <= 0) {
-    return { lat, lng }
-  }
-
+  const gridSizeMeters = Number(zone.gridSize || zone.rowSpacing || 3)
   const anchor = getZoneAnchor(zone)
-  if (!isValidLatLng(anchor)) {
-    return snapToGrid(lat, lng, rawGridSizeMeters, undefined, widthM, lengthM)
-  }
+  if (!anchor) return { lat, lng }
 
-  const gridSizeMeters = Number.isFinite(zoom)
-    ? computeVisibleGridSpacing(rawGridSizeMeters, anchor.lat, zoom)
-    : rawGridSizeMeters
+  // Calculate offset from anchor
+  const latOffset = lat - anchor.lat
+  const lngOffset = lng - anchor.lng
 
-  const centerLat = anchor.lat
-  const centerLng = anchor.lng
-  const latMetersPerDegree = 111111.0
-  const lngMetersPerDegree = 111111.0 * Math.cos(centerLat * Math.PI / 180)
+  // Snap the offset to grid
+  const latStep = gridSizeMeters / 111111.0
+  const lngStep = gridSizeMeters / (111111.0 * Math.cos(anchor.lat * Math.PI / 180))
 
-  const deltaX = (lng - centerLng) * lngMetersPerDegree
-  const deltaY = (lat - centerLat) * latMetersPerDegree
-  const rotationRad = (Number(zone.gridRotation) || 0) * Math.PI / 180
+  const snappedLatOffset = Math.round(latOffset / latStep) * latStep
+  const snappedLngOffset = Math.round(lngOffset / lngStep) * lngStep
 
-  const alignedX = deltaX * Math.cos(rotationRad) + deltaY * Math.sin(rotationRad)
-  const alignedY = -deltaX * Math.sin(rotationRad) + deltaY * Math.cos(rotationRad)
-
-  const snappedX = Math.round(alignedX / gridSizeMeters) * gridSizeMeters
-  const snappedY = Math.round(alignedY / gridSizeMeters) * gridSizeMeters
-
-  const worldX = snappedX * Math.cos(rotationRad) - snappedY * Math.sin(rotationRad)
-  const worldY = snappedX * Math.sin(rotationRad) + snappedY * Math.cos(rotationRad)
-
+  // Return snapped position
   return {
-    lat: centerLat + worldY / latMetersPerDegree,
-    lng: centerLng + worldX / lngMetersPerDegree,
+    lat: anchor.lat + snappedLatOffset,
+    lng: anchor.lng + snappedLngOffset,
   }
 }
 

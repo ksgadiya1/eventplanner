@@ -16,7 +16,7 @@ import { getRouteStylePreset } from './data/routeTypes'
 //   normalizeFloorPlanState,
 //   serializeZoneTemplateGeometry,
 // } from './utils/mapGeometry'
-import { buildCirclePath, buildRectanglePath, computePolygonMetrics, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry } from './utils/mapGeometry'
+import { buildCirclePath, buildRectanglePath, computePolygonMetrics, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry, getDeepestParentFloor } from './utils/mapGeometry'
 import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
@@ -474,23 +474,35 @@ function findDeepestZoneForPoint(point, zones, excludedZoneId = null) {
     .sort((a, b) => (a.areaM2 || Number.MAX_SAFE_INTEGER) - (b.areaM2 || Number.MAX_SAFE_INTEGER))[0] || null
 }
 
-function normalizeAssetParent(asset, zones) {
+function normalizeAssetParent(asset, zones, floorPlans) {
   if (!asset?.lat || !asset?.lng) return asset
   const parentZone = findDeepestZoneForPoint({ lat: asset.lat, lng: asset.lng }, zones)
-  return { ...asset, parentId: parentZone?.id || null }
+  const parentFloor = getDeepestParentFloor({ lat: asset.lat, lng: asset.lng }, floorPlans, window.google)
+  return { ...asset, parentId: parentZone?.id || parentFloor?.id || null }
 }
 
-function normalizeAnnotationParent(annotation, zones) {
+function normalizeAnnotationParent(annotation, zones, floorPlans) {
   if (!annotation?.lat || !annotation?.lng) return annotation
   const parentZone = findDeepestZoneForPoint({ lat: annotation.lat, lng: annotation.lng }, zones)
-  return { ...annotation, parentId: parentZone?.id || null }
+  const parentFloor = getDeepestParentFloor({ lat: annotation.lat, lng: annotation.lng }, floorPlans, window.google)
+  return { ...annotation, parentId: parentZone?.id || parentFloor?.id || null }
 }
 
-function normalizeLineParent(line, zones) {
-  const anchorPoint = line?.path?.[0]
+function normalizeZoneParent(zone, zones, floorPlans) {
+  if (!zone?.path?.length) return zone
+  const anchorPoint = zone.path[0]
+  if (!anchorPoint) return zone
+  const parentFloor = getDeepestParentFloor(anchorPoint, floorPlans, window.google)
+  return { ...zone, parentId: parentFloor?.id || null }
+}
+
+function normalizeLineParent(line, zones, floorPlans) {
+  if (!line?.path?.length) return line
+  const anchorPoint = getPathCentroid(line.path)
   if (!anchorPoint) return line
   const parentZone = findDeepestZoneForPoint(anchorPoint, zones)
-  return { ...line, parentId: parentZone?.id || null }
+  const parentFloor = parentZone ? null : getDeepestParentFloor(anchorPoint, floorPlans, window.google)
+  return { ...line, parentId: parentZone?.id || parentFloor?.id || null }
 }
 
 function collectRelatedZoneIds(rootZoneId, zones) {
@@ -564,8 +576,8 @@ export default function App() {
   const [assets, setAssets] = useState([])
   const [lines, setLines] = useState([])
   const [annotations, setAnnotations] = useState([])
-  const [floorPlan, setFloorPlan] = useState(null)
-  const [placingFloor, setPlacingFloor] = useState(false)
+  const [floorPlans, setFloorPlans] = useState([])
+  const [pendingFloorImageUrl, setPendingFloorImageUrl] = useState(null)
   const [pendingAssetDef, setPendingAssetDef] = useState(null)
   const [pendingZoneTemplate, setPendingZoneTemplate] = useState(null)
   const [annotationDraftText, setAnnotationDraftText] = useState('New annotation')
@@ -717,7 +729,11 @@ export default function App() {
       setAssets(Array.isArray(parsed.assets) ? parsed.assets : [])
       setLines(Array.isArray(parsed.lines) ? parsed.lines : [])
       setAnnotations(Array.isArray(parsed.annotations) ? parsed.annotations : [])
-      setFloorPlan(parsed.floorPlan || null)
+      const loadedFloorPlans = Array.isArray(parsed.floorPlans) ? parsed.floorPlans : []
+      if (parsed.floorPlan && !loadedFloorPlans.length) {
+         loadedFloorPlans.push(parsed.floorPlan)
+      }
+      setFloorPlans(loadedFloorPlans)
       setLayers({ ...DEFAULT_LAYERS, ...(parsed.layers || {}) })
       setLineStyle(prev => ({ ...prev, ...(parsed.lineStyle || {}) }))
       setTextStyle(prev => ({ ...prev, ...(parsed.textStyle || {}) }))
@@ -757,7 +773,7 @@ export default function App() {
       assets,
       lines,
       annotations,
-      floorPlan,
+      floorPlans,
       layers,
       lineStyle,
       textStyle,
@@ -773,7 +789,7 @@ export default function App() {
     } catch {
       // ignore storage quota failures
     }
-  }, [annotationDraftText, annotations, assets, eventDetails, floorPlan, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
+  }, [annotationDraftText, annotations, assets, eventDetails, floorPlans, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
 
   useEffect(() => {
     if (drawMode !== 'select' && pendingAssetDef) {
@@ -796,7 +812,7 @@ export default function App() {
 
     setPendingAssetDef(null)
     setPendingZoneTemplate(null)
-    setPlacingFloor(false)
+    setPendingFloorImageUrl(null)
   }, [drawMode, isViewOnly])
 
   // Auto-clean zones with invalid labels (empty or "0")
@@ -824,11 +840,12 @@ export default function App() {
       if (lines.find(l => l.id === selectedId)) return { ...foundItem, type: 'line' }
       if (annotations.find(a => a.id === selectedId)) return { ...foundItem, type: 'annotation' }
     }
-    if (selectedId === 'floor-plan' && floorPlan) return { id: 'floor-plan', type: 'floor', ...floorPlan }
+    const plan = floorPlans.find(fp => fp.id === selectedId)
+    if (plan) return { type: 'floor', ...plan }
     return null
-  }, [annotations, assets, floorPlan, lines, selectedId, zones])
+  }, [annotations, assets, floorPlans, lines, selectedId, zones])
 
-  const snapshot = useCallback(() => ({ zones, assets, lines, annotations, floorPlan }), [zones, assets, lines, annotations, floorPlan])
+  const snapshot = useCallback(() => ({ zones, assets, lines, annotations, floorPlans }), [zones, assets, lines, annotations, floorPlans])
 
   const snapshotRef = useRef(snapshot)
   useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
@@ -841,19 +858,20 @@ export default function App() {
   // Zone created by drawing
   const handleZoneCreate = useCallback((zone) => {
     pushHistory()
-    setZones(prev => [...prev, { ...zone, capacity: computeZoneCapacity(zone) }])
+    const normalizedZone = normalizeZoneParent(zone, zones, floorPlans)
+    setZones(prev => [...prev, { ...normalizedZone, capacity: computeZoneCapacity(normalizedZone) }])
     setSelectedId(zone.id)
     setDrawMode('select')
-  }, [pushHistory])
+  }, [pushHistory, zones, floorPlans])
 
   // Asset dropped onto map
   const handleAssetDrop = useCallback((asset) => {
     pushHistory()
-    const normalizedAsset = normalizeAssetParent(asset, zones)
+    const normalizedAsset = normalizeAssetParent(asset, zones, floorPlans)
     setAssets(prev => [...prev, normalizedAsset])
     setSelectedId(normalizedAsset.id)
     setPendingAssetDef(null)
-  }, [pushHistory, zones])
+  }, [floorPlans, pushHistory, zones])
 
   const handleImportAssets = useCallback((payload) => {
     if (payload?.mode === 'library-image') {
@@ -926,7 +944,7 @@ export default function App() {
           label: asset?.label || asset?.assetDef?.name || 'Imported Asset',
           status: asset?.status || 'planned',
           notes: asset?.notes || '',
-        }, zones)
+        }, zones, floorPlans)
       })
       .filter(Boolean)
 
@@ -940,7 +958,7 @@ export default function App() {
     setSelectedId(importedAssets[importedAssets.length - 1].id)
     setDrawMode('select')
     window.alert(`${importedAssets.length} asset(s) imported successfully.`)
-  }, [pushHistory, zones])
+  }, [floorPlans, pushHistory, zones])
 
   const handleSaveCustomAsset = useCallback((asset, options = {}) => {
     const categoryLabel = String(asset?.assetDef?.category || asset?.category || 'Custom Assets').trim() || 'Custom Assets'
@@ -986,6 +1004,7 @@ export default function App() {
       || 'lines' in payload
       || 'annotations' in payload
       || 'floorPlan' in payload
+      || 'floorPlans' in payload
       || 'eventDetails' in payload
     )
 
@@ -994,21 +1013,25 @@ export default function App() {
       return
     }
 
+    const importedFloorPlans = Array.isArray(payload.floorPlans)
+      ? payload.floorPlans.map(plan => normalizeFloorPlanState(plan)).filter(Boolean)
+      : (payload.floorPlan ? [normalizeFloorPlanState(payload.floorPlan)].filter(Boolean) : [])
+
     const importedZones = (Array.isArray(payload.zones) ? payload.zones : [])
       .filter(Boolean)
-      .map(zone => ({
+      .map(zone => normalizeZoneParent({
         ...zone,
         type: 'zone',
         capacity: zone?.capacity ?? computeZoneCapacity(zone, zone?.density || 0.5),
-      }))
+      }, [], importedFloorPlans))
 
     const importedAssets = (Array.isArray(payload.assets) ? payload.assets : [])
       .filter(Boolean)
-      .map(asset => normalizeAssetParent({ ...asset, type: 'asset' }, importedZones))
+      .map(asset => normalizeAssetParent({ ...asset, type: 'asset' }, importedZones, importedFloorPlans))
 
     const importedLines = (Array.isArray(payload.lines) ? payload.lines : [])
       .filter(Boolean)
-      .map(line => normalizeLineParent({ ...line, type: 'line' }, importedZones))
+      .map(line => normalizeLineParent({ ...line, type: 'line' }, importedZones, importedFloorPlans))
 
     const importedAnnotations = (Array.isArray(payload.annotations) ? payload.annotations : [])
       .filter(Boolean)
@@ -1016,7 +1039,7 @@ export default function App() {
         ...annotation,
         type: 'annotation',
         text: annotation?.text || annotation?.label || 'New annotation',
-      }, importedZones))
+      }, importedZones, importedFloorPlans))
 
     const importedMapViewMode = payload.mapViewMode === '2d'
       ? 'roadmap'
@@ -1029,7 +1052,7 @@ export default function App() {
     setAssets(importedAssets)
     setLines(importedLines)
     setAnnotations(importedAnnotations)
-    setFloorPlan(payload.floorPlan || null)
+    setFloorPlans(importedFloorPlans)
     setLayers({ ...DEFAULT_LAYERS, ...(payload.layers || {}) })
     setLineStyle(prev => ({ ...prev, ...(payload.lineStyle || {}) }))
     setTextStyle(prev => ({ ...prev, ...(payload.textStyle || {}) }))
@@ -1048,7 +1071,7 @@ export default function App() {
     })
     setSelectedId(null)
     setPendingAssetDef(null)
-    setPlacingFloor(false)
+    setPendingFloorImageUrl(null)
     setDrawMode('select')
     window.alert('Map JSON imported successfully.')
   }, [assetData.zoneTypes, pushHistory])
@@ -1092,17 +1115,19 @@ export default function App() {
 
   const handleLineCreate = useCallback((line) => {
     pushHistory()
-    setLines(prev => [...prev, line])
-    setSelectedId(line.id)
+    const normalizedLine = normalizeLineParent(line, zones, floorPlans)
+    setLines(prev => [...prev, normalizedLine])
+    setSelectedId(normalizedLine.id)
     setDrawMode('select')
-  }, [pushHistory])
+  }, [floorPlans, pushHistory, zones])
 
   const handleAnnotationCreate = useCallback((annotation) => {
     pushHistory()
-    setAnnotations(prev => [...prev, annotation])
-    setSelectedId(annotation.id)
+    const normalizedAnnotation = normalizeAnnotationParent(annotation, zones, floorPlans)
+    setAnnotations(prev => [...prev, normalizedAnnotation])
+    setSelectedId(normalizedAnnotation.id)
     setDrawMode('select')
-  }, [pushHistory])
+  }, [floorPlans, pushHistory, zones])
 
   // Asset drag start
   const handleAssetDragStart = useCallback((e, assetDef) => {
@@ -1132,6 +1157,11 @@ export default function App() {
     setPendingZoneTemplate(null)
     setSelectedId(item.id)
     setDrawMode('select')
+
+    // Auto-expand sidebar if collapsed
+    if (leftSidebarCollapsed) {
+      setLeftSidebarCollapsed(false)
+    }
 
     // Auto-zoom to selected item on map
     if (mapRef.current && window.google) {
@@ -1181,7 +1211,7 @@ export default function App() {
         }
       }
     }
-  }, [])
+  }, [leftSidebarCollapsed])
 
   const handleSaveZoneTemplate = useCallback((zone, options = {}) => {
     if (!zone || zone.type !== 'zone') return
@@ -1457,26 +1487,77 @@ export default function App() {
           )))
         } else {
           setZones(nextZones)
-          setAssets(assets.map(asset => normalizeAssetParent(asset, nextZones)))
-          setAnnotations(annotations.map(annotation => normalizeAnnotationParent(annotation, nextZones)))
-          setLines(lines.map(line => normalizeLineParent(line, nextZones)))
+          setAssets(assets.map(asset => normalizeAssetParent(asset, nextZones, floorPlans)))
+          setAnnotations(annotations.map(annotation => normalizeAnnotationParent(annotation, nextZones, floorPlans)))
+          setLines(lines.map(line => normalizeLineParent(line, nextZones, floorPlans)))
         }
       } else {
-        setZones(prev => prev.map(z => z.id === updated.id ? nextZoneRecord : z))
+        const normalizedZone = normalizeZoneParent(nextZoneRecord, zones, floorPlans)
+        setZones(prev => prev.map(z => z.id === updated.id ? normalizedZone : z))
       }
     } else if (updated.type === 'line') {
-      const normalizedLine = normalizeLineParent(updated, zones)
+      const normalizedLine = normalizeLineParent(updated, zones, floorPlans)
       setLines(prev => prev.map(line => line.id === updated.id ? normalizedLine : line))
     } else if (updated.type === 'annotation') {
-      const normalizedAnnotation = normalizeAnnotationParent(updated, zones)
+      const normalizedAnnotation = normalizeAnnotationParent(updated, zones, floorPlans)
       setAnnotations(prev => prev.map(annotation => annotation.id === updated.id ? normalizedAnnotation : annotation))
     } else if (updated.type === 'floor') {
-      setFloorPlan(prev => prev ? normalizeFloorPlanState({ ...prev, ...updated }) : prev)
+      const previousFloor = normalizeFloorPlanState(floorPlans.find(f => f.id === updated.id))
+      const nextFloor = normalizeFloorPlanState({ ...previousFloor, ...updated })
+      const isMoved = previousFloor && nextFloor?.center && (
+        Math.abs((previousFloor.center.lat || 0) - nextFloor.center.lat) > 1e-9 ||
+        Math.abs((previousFloor.center.lng || 0) - nextFloor.center.lng) > 1e-9
+      )
+
+      if (isMoved) {
+        const translation = {
+          lat: nextFloor.center.lat - (previousFloor.center.lat || 0),
+          lng: nextFloor.center.lng - (previousFloor.center.lng || 0),
+        }
+        
+        const descendants = new Set()
+        zones.forEach(z => {
+          if (z.parentId === updated.id) {
+            descendants.add(z.id)
+            const nested = collectRelatedZoneIds(z.id, zones)
+            nested.forEach(n => descendants.add(n))
+          }
+        })
+
+        const nextZones = zones.map(zone => {
+          if (!descendants.has(zone.id)) return zone
+          return {
+            ...zone,
+            path: translatePath(zone.path, translation),
+            center: zone.center ? translatePoint(zone.center, translation) : undefined,
+          }
+        })
+        setZones(nextZones)
+
+        setAssets(assets.map(asset => (
+          (asset.parentId === updated.id || descendants.has(asset.parentId))
+            ? { ...asset, ...translatePoint(asset, translation) }
+            : asset
+        )))
+
+        setAnnotations(annotations.map(annotation => (
+          (annotation.parentId === updated.id || descendants.has(annotation.parentId))
+            ? { ...annotation, ...translatePoint(annotation, translation) }
+            : annotation
+        )))
+
+        setLines(lines.map(line => (
+          (line.parentId === updated.id || descendants.has(line.parentId))
+            ? { ...line, path: translatePath(line.path, translation) }
+            : line
+        )))
+      }
+      setFloorPlans(prev => prev.map(p => p.id === updated.id ? normalizeFloorPlanState({ ...p, ...updated }) : p))
     } else {
-      const normalizedAsset = normalizeAssetParent(updated, zones)
+      const normalizedAsset = normalizeAssetParent(updated, zones, floorPlans)
       setAssets(prev => prev.map(a => a.id === updated.id ? normalizedAsset : a))
     }
-  }, [annotations, assets, lines, pushHistory, selectedId, zones])
+  }, [annotations, assets, floorPlans, lines, pushHistory, selectedId, zones])
 
   const handleToggleTheme = useCallback(() => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark')
@@ -1582,75 +1663,80 @@ export default function App() {
   }, [])
 
   const handleFloorPlanUpload = useCallback((imageUrl) => {
-    setFloorPlan({
-      id: 'floor-plan',
-      type: 'floor',
-      imageUrl,
-      bounds: null,
-      center: null,
-      widthM: null,
-      heightM: null,
-      opacity: 0.7,
-      rotation: 0,
-    })
-    setPlacingFloor(true)
-  }, [])
-
-  const handleFloorPlanChange = useCallback((updater) => {
-    setFloorPlan(prev => normalizeFloorPlanState(typeof updater === 'function' ? updater(prev) : updater))
+    setPendingFloorImageUrl(imageUrl)
   }, [])
 
   // Delete selected
   const handleDelete = useCallback(() => {
     if (!selectedId) return
     pushHistory()
-    if (zones.some(zone => zone.id === selectedId)) {
-      const cascadeState = buildCascadeDeleteState(selectedId, zones, assets, lines, annotations)
-      setZones(cascadeState.nextZones)
-      setAssets(prev => prev.filter(asset => asset.id !== selectedId && !cascadeState.zoneIdsToDelete.has(asset.parentId)))
-      setLines(prev => prev.filter(line => line.id !== selectedId && !cascadeState.zoneIdsToDelete.has(line.parentId)))
-      setAnnotations(prev => prev.filter(annotation => annotation.id !== selectedId && !cascadeState.zoneIdsToDelete.has(annotation.parentId)))
+    const isFloorPlan = floorPlans.some(plan => plan.id === selectedId)
+    const isZone = zones.some(zone => zone.id === selectedId)
+    const isCascadeTarget = isFloorPlan || isZone
+
+    if (isCascadeTarget) {
+      if (isFloorPlan) {
+        const floorZoneIds = new Set()
+        zones.forEach(zone => {
+          if (zone.parentId === selectedId) {
+            floorZoneIds.add(zone.id)
+            collectRelatedZoneIds(zone.id, zones).forEach(zoneId => floorZoneIds.add(zoneId))
+          }
+        })
+
+        setZones(prev => prev.filter(zone => zone.parentId !== selectedId && !floorZoneIds.has(zone.id)))
+        setAssets(prev => prev.filter(asset => asset.parentId !== selectedId && !floorZoneIds.has(asset.parentId)))
+        setLines(prev => prev.filter(line => line.parentId !== selectedId && !floorZoneIds.has(line.parentId)))
+        setAnnotations(prev => prev.filter(annotation => annotation.parentId !== selectedId && !floorZoneIds.has(annotation.parentId)))
+      } else {
+        // Delete zone and cascade to descendants
+        const cascadeState = buildCascadeDeleteState(selectedId, zones, assets, lines, annotations)
+        setZones(cascadeState.nextZones)
+        setAssets(prev => prev.filter(asset => asset.id !== selectedId && !cascadeState.zoneIdsToDelete.has(asset.parentId)))
+        setLines(prev => prev.filter(line => line.id !== selectedId && !cascadeState.zoneIdsToDelete.has(line.parentId)))
+        setAnnotations(prev => prev.filter(annotation => annotation.id !== selectedId && !cascadeState.zoneIdsToDelete.has(annotation.parentId)))
+      }
     } else {
       setZones(prev => prev.filter(z => z.id !== selectedId))
       setAssets(prev => prev.filter(a => a.id !== selectedId))
       setLines(prev => prev.filter(line => line.id !== selectedId))
       setAnnotations(prev => prev.filter(annotation => annotation.id !== selectedId))
     }
-    if (selectedId === 'floor-plan') setFloorPlan(null)
+    setFloorPlans(prev => prev.filter(p => p.id !== selectedId))
     setSelectedId(null)
-  }, [annotations, assets, lines, pushHistory, selectedId, zones])
+  }, [annotations, assets, floorPlans, lines, pushHistory, selectedId, zones])
 
   const handleUndo = useCallback(() => {
     setUndoStack(stack => {
       if (!stack.length) return stack
       const prev = stack[stack.length - 1]
-      const current = { zones, assets, lines, annotations, floorPlan }
+      const current = { zones, assets, lines, annotations, floorPlans }
       setRedoStack(r => [...r.slice(-50), current])
       setZones(prev.zones)
       setAssets(prev.assets)
       setLines(prev.lines || [])
       setAnnotations(prev.annotations || [])
-      setFloorPlan(prev.floorPlan || null)
+      setFloorPlans(prev.floorPlans || [])
       setSelectedId(null)
       return stack.slice(0, -1)
     })
-  }, [zones, assets, lines, annotations, floorPlan])
+  }, [zones, assets, lines, annotations, floorPlans])
 
   const handleRedo = useCallback(() => {
     setRedoStack(stack => {
       if (!stack.length) return stack
       const next = stack[stack.length - 1]
-      const current = { zones, assets, lines, annotations, floorPlan }
+      const current = { zones, assets, lines, annotations, floorPlans }
       setUndoStack(u => [...u.slice(-50), current])
       setZones(next.zones)
       setAssets(next.assets)
       setLines(next.lines || [])
       setAnnotations(next.annotations || [])
-      setFloorPlan(next.floorPlan || null)
+      setFloorPlans(next.floorPlans || [])
       setSelectedId(null)
       return stack.slice(0, -1)
     })
-  }, [zones, assets, lines, annotations, floorPlan])
+  }, [zones, assets, lines, annotations, floorPlans])
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1960,20 +2046,23 @@ export default function App() {
         await drawBaseMapFromDom()
       }
 
-      if (layers.floor?.visible !== false && floorPlan?.bounds && floorPlan?.imageUrl) {
-        try {
-          const floorImage = await loadImage(floorPlan.imageUrl)
-          const geometry = getFloorGeometry(map, floorPlan)
-          if (geometry) {
-            ctx.save()
-            ctx.translate(geometry.centerPoint.x, geometry.centerPoint.y)
-            ctx.rotate(((floorPlan.rotation || 0) * Math.PI) / 180)
-            ctx.globalAlpha = floorPlan.opacity ?? 0.7
-            ctx.drawImage(floorImage, -geometry.widthPx / 2, -geometry.heightPx / 2, geometry.widthPx, geometry.heightPx)
-            ctx.restore()
+      if (layers.floor?.visible !== false && floorPlans.length > 0) {
+        for (const plan of floorPlans) {
+          if (!plan.bounds || !plan.imageUrl) continue
+          try {
+            const floorImage = await loadImage(plan.imageUrl)
+            const geometry = getFloorGeometry(map, plan)
+            if (geometry) {
+              ctx.save()
+              ctx.translate(geometry.centerPoint.x, geometry.centerPoint.y)
+              ctx.rotate(((plan.rotation || 0) * Math.PI) / 180)
+              ctx.globalAlpha = plan.opacity ?? 0.7
+              ctx.drawImage(floorImage, -geometry.widthPx / 2, -geometry.heightPx / 2, geometry.widthPx, geometry.heightPx)
+              ctx.restore()
+            }
+          } catch (error) {
+            console.warn('Could not draw floor plan in export.', error)
           }
-        } catch (error) {
-          console.warn('Could not draw floor plan in export.', error)
         }
       }
 
@@ -2119,7 +2208,7 @@ export default function App() {
         requestAnimationFrame(() => setSelectedId(previousSelectedId))
       }
     }
-  }, [annotations, assets, floorPlan, layers, lines, mapViewMode, selectedId, zones])
+  }, [annotations, assets, floorPlans, layers, lines, mapViewMode, selectedId, zones])
 
   // Export current viewport as PNG / PDF / JSON
   const handleExport = useCallback(async (format = 'png') => {
@@ -2132,7 +2221,7 @@ export default function App() {
         assets,
         lines,
         annotations,
-        floorPlan,
+        floorPlans,
         layers,
         lineStyle,
         textStyle,
@@ -2774,7 +2863,7 @@ export default function App() {
       console.error('Export failed:', err)
       window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
     }
-  }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, mapViewport, measurementUnit, selectedZoneType, textStyle, zones])
+  }, [annotations, assets, captureMapImage, eventDetails, floorPlans, layers, lineStyle, lines, mapViewMode, mapViewport, measurementUnit, selectedZoneType, textStyle, zones])
 
   const updateEventMeta = useCallback((id, patch = null) => {
     if (!id) return
@@ -2829,6 +2918,7 @@ export default function App() {
       assets: patch.assets ?? currentData.assets ?? [],
       lines: patch.lines ?? currentData.lines ?? [],
       annotations: patch.annotations ?? currentData.annotations ?? [],
+      floorPlans: patch.floorPlans ?? currentData.floorPlans ?? [],
       archived: nextArchived,
     }
 
@@ -2943,7 +3033,7 @@ export default function App() {
         setLayers(prev => ({ ...prev, ...(data.layers || {}) }))
         setLineStyle(data.settings?.lineStyle || getRouteStylePreset('custom'))
         setTextStyle(prev => ({ ...prev, ...(data.settings?.textStyle || {}) }))
-        setFloorPlan(data.settings?.floorPlan || null)
+        setFloorPlans(data.floorPlans || (data.settings?.floorPlan ? [normalizeFloorPlanState(data.settings.floorPlan)] : []))
       })
       .catch(err => {
         console.error('Error resuming event:', err)
@@ -2980,8 +3070,8 @@ export default function App() {
         settings: {
           lineStyle,
           textStyle,
-          floorPlan,
         },
+        floorPlans,
       } : {}
 
       await persistEventPatch(id, {
@@ -3095,9 +3185,9 @@ export default function App() {
           settings: {
             lineStyle,
             textStyle,
-            floorPlan,
             archived: !!eventDetails.isArchived,
           },
+          floorPlans,
           zones,
           assets,
           lines,
@@ -3200,17 +3290,13 @@ export default function App() {
             selectedId={selectedId}
             onSelectItem={handleSelect}
             onUpdateAsset={handleUpdate}
-            floorPlan={floorPlan}
-            placingFloor={placingFloor}
+            floorPlans={floorPlans}
+            pendingFloorImageUrl={pendingFloorImageUrl}
             onFloorPlanUpload={handleFloorPlanUpload}
-            onStartFloorPlacement={() => {
-              if (!floorPlan?.imageUrl) return
-              setFloorPlan(prev => prev ? { ...prev, bounds: null } : prev)
-              setPlacingFloor(true)
+            onStartFloorPlacement={(plan) => {
+              if (plan?.id) setFloorPlans(prev => prev.map(p => p.id === plan.id ? { ...p, bounds: null } : p))
             }}
-            onFloorOpacityChange={(opacity) => {
-              setFloorPlan(prev => prev ? { ...prev, opacity } : prev)
-            }}
+            onFloorOpacityChange={() => {}}
             layers={layers}
             onToggleLayer={handleToggleLayer}
             onToggleLock={handleToggleLock}
@@ -3236,8 +3322,8 @@ export default function App() {
           assets={assets}
           lines={lines}
           annotations={annotations}
-          floorPlan={floorPlan}
-          placingFloor={placingFloor}
+          floorPlans={floorPlans}
+          pendingFloorImageUrl={pendingFloorImageUrl}
           selectedId={selectedId}
           onSelect={handleSelect}
           onClearSelection={() => setSelectedId(null)}
@@ -3251,8 +3337,8 @@ export default function App() {
           onPendingAssetClear={() => setPendingAssetDef(null)}
           pendingZoneTemplate={pendingZoneTemplate}
           onPendingZoneTemplateClear={() => setPendingZoneTemplate(null)}
-          onFloorPlanChange={handleFloorPlanChange}
-          onFloorPlacementChange={setPlacingFloor}
+          onFloorPlanCreate={(newPlan) => setFloorPlans(prev => [...prev, newPlan])}
+          onPendingFloorImageClear={() => setPendingFloorImageUrl(null)}
           eventDetails={eventDetails}
           onEventDetailsChange={setEventDetails}
           mapViewMode={mapViewMode}

@@ -413,7 +413,7 @@ export default function Sidebar({
   selectedId,
   onSelectItem,
   onUpdateAsset,
-  floorPlan,
+  floorPlans = [],
   onFloorPlanUpload,
   layers,
   onToggleLayer,
@@ -916,7 +916,7 @@ export default function Sidebar({
         {activeTab === 'assets' && (
           <>
             <div style={styles.floorCard}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Floor Plan Overlay</div>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)' }}>Floor Plan Overlays</div>
               <input
                 type="file"
                 accept="image/*"
@@ -933,7 +933,9 @@ export default function Sidebar({
                   e.target.value = ''
                 }}
               />
-
+              <div style={{ ...styles.floorMeta, marginTop: '6px' }}>
+                Upload an image, then click on the map to place it. You can add multiple floor plans.
+              </div>
             </div>
 
             {drawMode === 'text' && (
@@ -1151,7 +1153,7 @@ export default function Sidebar({
                 { id: 'assets', name: 'Assets', items: assets.length, visibleKey: 'assets' },
                 { id: 'annotations', name: 'Annotations', items: annotations.length, visibleKey: 'annotations' },
                 { id: 'lines', name: lines.some(line => line.routeType) ? 'Routes' : 'Lines', items: lines.length, visibleKey: 'lines' },
-                { id: 'floor', name: 'Floor Plan', items: floorPlan ? 1 : 0, visibleKey: 'floor' },
+                { id: 'floor', name: 'Floor Plans', items: floorPlans.length, visibleKey: 'floor' },
               ].filter(folder => folder.items > 0).map(folder => {
                 const lstate = layers[folder.visibleKey] || { visible: true, locked: false }
                 const expanded = expandedFolders[folder.id] ?? true
@@ -1253,13 +1255,15 @@ export default function Sidebar({
                       </div>
                     )}
 
-                    {expanded && folder.id === 'floor' && floorPlan && (
+                    {expanded && folder.id === 'floor' && floorPlans.length > 0 && (
                       <div style={styles.treeChildren}>
-                        <div style={{ ...styles.treeNode, background: selectedId === 'floor-plan' ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.({ id: 'floor-plan', type: 'floor', ...floorPlan })}>
-                          <span style={{ fontSize: '14px' }}>#</span>
-                          <span style={styles.treeLabel}>Floor Plan Overlay</span>
-                          <span style={styles.treeMeta}>Floor</span>
-                        </div>
+                        {floorPlans.map((plan, i) => (
+                          <div key={plan.id} style={{ ...styles.treeNode, background: selectedId === plan.id ? 'var(--bg-hover)' : 'transparent' }} onClick={() => onSelectItem?.({ type: 'floor', ...plan })}>
+                            <span style={{ fontSize: '14px' }}>#</span>
+                            <span style={styles.treeLabel}>Floor Plan {i + 1}</span>
+                            <span style={styles.treeMeta}>Floor</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1375,9 +1379,9 @@ export default function Sidebar({
                 </button>
               </div>
 
-              {rootZones.length === 0 && !assets.length && !annotations.length && !lines.length && !floorPlan && (
+              {rootZones.length === 0 && !assets.length && !annotations.length && !lines.length && !floorPlans.length && (
                 <div style={{ fontSize: '11px', color: 'var(--text-dim)', lineHeight: 1.6, padding: '8px 2px' }}>
-                  Layers will appear here after you place zones, assets, lines, annotations, or floor plan.
+                  Layers will appear here after you place zones, assets, lines, annotations, or floor plans.
                 </div>
               )}
             </div>

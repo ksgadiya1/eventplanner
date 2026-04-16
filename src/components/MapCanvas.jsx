@@ -14,6 +14,7 @@ import {
   computePolygonMetrics,
   extractPathFromOverlay,
   getDeepestParentZone,
+  getDeepestParentFloor,
   getFloorGeometry,
   getZoneAnchor,
   clientRectToBounds,
@@ -221,8 +222,8 @@ export default function MapCanvas({
   assets,
   lines,
   annotations,
-  floorPlan,
-  placingFloor,
+  floorPlans = [],
+  pendingFloorImageUrl,
   selectedId,
   onSelect,
   onClearSelection,
@@ -235,8 +236,8 @@ export default function MapCanvas({
   onPendingAssetClear,
   pendingZoneTemplate,
   onPendingZoneTemplateClear,
-  onFloorPlanChange,
-  onFloorPlacementChange,
+  onFloorPlanCreate,
+  onPendingFloorImageClear,
   eventDetails,
   onEventDetailsChange,
   mapViewMode = 'roadmap',
@@ -269,7 +270,6 @@ export default function MapCanvas({
   const lineOverlayRefs = useRef({})
   const lastLineSnapshotRef = useRef({})
   const [mapZoom, setMapZoom] = useState(14)
-  const [tempFloorPoints, setTempFloorPoints] = useState([])
   const [lineDraft, setLineDraft] = useState(null)
   const [polygonDraft, setPolygonDraft] = useState(null)
   const [shapeDraft, setShapeDraft] = useState(null)
@@ -372,7 +372,6 @@ export default function MapCanvas({
       return overlay ? [overlay] : []
     })
   }, [isLoaded, isZoneOrParentHidden, layers.zones?.visible, mapZoom, zones])
-  const floorSelected = selectedId === 'floor-plan'
   const visibleAssets = useMemo(() => {
     if (layers.assets?.visible === false) return []
 
@@ -393,9 +392,9 @@ export default function MapCanvas({
   const viewOnlyRestrictionBounds = useMemo(() => {
     if (!isViewOnly || !window.google) return null
     return eventDetails?.resolvedLocation?.restrictionBounds
-      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+      || computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlans })
       || null
-  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlan, isViewOnly, lines, zones])
+  }, [annotations, assets, eventDetails?.resolvedLocation?.restrictionBounds, floorPlans, isViewOnly, lines, zones])
 
   const hoveredTooltipPosition = useMemo(() => {
     if (!hoveredItem || drawMode !== 'select') return null
@@ -445,14 +444,14 @@ export default function MapCanvas({
 
   const updateMapViewport = useCallback(() => {
     if (!mapRef.current || !window.google) return
-    const contentBounds = computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlan })
+    const contentBounds = computeContentBounds(window.google, { zones, assets, lines, annotations, floorPlans })
     if (contentBounds) {
       mapRef.current.fitBounds(contentBounds, 80)
       return
     }
     const locationBounds = eventDetails?.resolvedLocation?.restrictionBounds
     if (locationBounds) mapRef.current.fitBounds(locationBounds, 60)
-  }, [annotations, assets, eventDetails, floorPlan, lines, zones])
+  }, [annotations, assets, eventDetails, floorPlans, lines, zones])
 
   const rafRef = useRef(null)
 
@@ -591,6 +590,7 @@ export default function MapCanvas({
   function buildAssetPlacement(assetBase) {
     if (!window.google) return assetBase
     const parentZone = getDeepestParentZone({ lat: assetBase.lat, lng: assetBase.lng }, zones, window.google)
+    const parentFloor = parentZone ? null : getDeepestParentFloor({ lat: assetBase.lat, lng: assetBase.lng }, floorPlans, window.google)
 
     if (parentZone?.contentLocked && !isAssetAllowedInZone(parentZone, assetBase.assetDef?.id)) {
       const allowed = getZoneAllowedAssetTypes(parentZone).map(getAssetName)
@@ -600,7 +600,7 @@ export default function MapCanvas({
 
     const placement = {
       ...assetBase,
-      parentId: parentZone?.id || null,
+      parentId: parentZone?.id || parentFloor?.id || null,
     }
 
     const baseGridSnap = Boolean(layers.grid?.visible && layers.grid?.snap)
@@ -638,11 +638,12 @@ export default function MapCanvas({
   const buildAnnotationPlacement = useCallback((annotationBase) => {
     if (!window.google) return annotationBase
     const parentZone = getDeepestParentZone({ lat: annotationBase.lat, lng: annotationBase.lng }, zones, window.google)
+    const parentFloor = parentZone ? null : getDeepestParentFloor({ lat: annotationBase.lat, lng: annotationBase.lng }, floorPlans, window.google)
     return {
       ...annotationBase,
-      parentId: parentZone?.id || null,
+      parentId: parentZone?.id || parentFloor?.id || null,
     }
-  }, [zones])
+  }, [floorPlans, zones])
 
   useEffect(() => {
     const handleInteractionMove = (event) => {
@@ -713,8 +714,8 @@ export default function MapCanvas({
           const nextCenter = clientPointToLatLng(map, event.clientX, event.clientY)
           if (!nextCenter) return
 
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
-            ...prev,
+          onAssetUpdate(normalizeFloorPlanState({
+            ...interaction.object,
             center: {
               lat: nextCenter.lat() - (interaction.latOffset || 0),
               lng: nextCenter.lng() - (interaction.lngOffset || 0)
@@ -722,7 +723,7 @@ export default function MapCanvas({
             widthM: interaction.startWidthM,
             heightM: interaction.startHeightM,
             rotation: interaction.startRotation,
-          }) : prev)
+          }))
           return
         }
 
@@ -749,26 +750,26 @@ export default function MapCanvas({
           )
           if (!nextCenter) return
 
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
-            ...prev,
+          onAssetUpdate(normalizeFloorPlanState({
+            ...interaction.object,
             center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
             widthM: Number(Math.max(1, widthPx * interaction.metersPerPixel).toFixed(2)),
             heightM: Number(Math.max(1, heightPx * interaction.metersPerPixel).toFixed(2)),
             rotation: interaction.startRotation,
-          }) : prev)
+          }))
           return
         }
 
         if (interaction.type === 'rotate') {
           const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
           const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
-            ...prev,
+          onAssetUpdate(normalizeFloorPlanState({
+            ...interaction.object,
             center: interaction.startCenter,
             widthM: interaction.startWidthM,
             heightM: interaction.startHeightM,
             rotation: Number(normalizeAngle(interaction.startRotation + delta).toFixed(1)),
-          }) : prev)
+          }))
         }
       }
 
@@ -899,7 +900,7 @@ export default function MapCanvas({
       window.removeEventListener('pointerup', handleInteractionUp)
       window.removeEventListener('pointercancel', handleInteractionUp)
     }
-  }, [buildAnnotationPlacement, buildAssetPlacement, onAssetUpdate, onFloorPlanChange])
+  }, [buildAnnotationPlacement, buildAssetPlacement, onAssetUpdate])
 
   const finalizePolygon = useCallback((path) => {
     if (!window.google || !path || path.length < 3) return
@@ -1104,11 +1105,6 @@ export default function MapCanvas({
     const activeLineDraft = lineDraftRef.current
     const activePolygonDraft = polygonDraftRef.current
 
-    if (placingFloor && tempFloorPoints.length === 1) {
-      setTempFloorPoints([tempFloorPoints[0], hoverPoint])
-      return
-    }
-
     if ((drawMode === 'line' || drawMode === 'route') && layers.lines?.visible !== false && !layers.lines?.locked && activeLineDraft?.points?.length) {
       const previewPath = [...activeLineDraft.points, hoverPoint]
       setLineDraft(prev => prev ? { ...prev, hoverPoint } : prev)
@@ -1129,7 +1125,7 @@ export default function MapCanvas({
       const previewPath = [...measurePointsRef.current, hoverPoint]
       setLineMeasurement(computeLineLength(previewPath, window.google))
     }
-  }, [drawMode, layers.lines, pendingAssetDef, pendingZoneTemplate, placingFloor, tempFloorPoints])
+  }, [drawMode, layers.lines, pendingAssetDef, pendingZoneTemplate])
 
   const placePendingAssetAtLatLng = useCallback((latLng) => {
     if (!latLng) return false
@@ -1182,6 +1178,25 @@ export default function MapCanvas({
     onPendingZoneTemplateClear?.()
     return true
   }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate, zones])
+
+  const handleFloorPlanClick = useCallback((event, plan) => {
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
+
+    const map = mapRef.current
+    const latLng = map && event
+      ? clientPointToLatLng(map, event.clientX, event.clientY)
+      : null
+
+    if (latLng) {
+      if (placePendingZoneTemplateAtLatLng(latLng)) return
+      if (placePendingAssetAtLatLng(latLng)) return
+    }
+
+    if (drawMode === 'select') {
+      onSelect({ type: 'floor', ...plan })
+    }
+  }, [drawMode, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng])
 
   const handleMapClick = useCallback((event) => {
     if (!event.latLng) return
@@ -1253,46 +1268,56 @@ export default function MapCanvas({
       return
     }
 
-    if (placingFloor && floorPlan?.imageUrl) {
-      const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
+    if (pendingFloorImageUrl && window.google) {
+      const clickPoint = { lat: event.latLng.lat(), lng: event.latLng.lng() }
+      
+      const centerLatLng = new window.google.maps.LatLng(clickPoint.lat, clickPoint.lng)
+      const halfSizeM = 25
+      
+      const northLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 0)
+      const southLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 180)
+      const eastLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 90)
+      const westLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, -90)
 
-      if (tempFloorPoints.length === 0) {
-        setTempFloorPoints([point])
-        return
-      }
-
-      const firstPoint = tempFloorPoints[0]
       const nextBounds = {
-        north: Math.max(firstPoint.lat, point.lat),
-        south: Math.min(firstPoint.lat, point.lat),
-        east: Math.max(firstPoint.lng, point.lng),
-        west: Math.min(firstPoint.lng, point.lng),
+        north: northLatLng.lat(),
+        south: southLatLng.lat(),
+        east: eastLatLng.lng(),
+        west: westLatLng.lng(),
       }
+      
       const nextFloorPlan = normalizeFloorPlanState({
-        ...floorPlan,
+        id: `floor_${Date.now()}`,
+        type: 'floor',
+        imageUrl: pendingFloorImageUrl,
         bounds: nextBounds,
+        opacity: 0.7,
+        rotation: 0,
       })
-      onFloorPlanChange(nextFloorPlan)
-      setTempFloorPoints([])
-      onFloorPlacementChange(false)
-      onSelect({ id: 'floor-plan', type: 'floor', ...nextFloorPlan })
+
+      onFloorPlanCreate(nextFloorPlan)
+      onPendingFloorImageClear()
+      onSelect({ ...nextFloorPlan })
       return
     }
 
-    if (drawMode === 'select' && floorPlan?.bounds && event.domEvent && mapRef.current) {
+    if (placePendingAssetAtLatLng(event.latLng)) {
+      return
+    }
+
+    if (drawMode === 'select' && floorPlans?.length > 0 && event.domEvent && mapRef.current) {
       const rect = mapRef.current.getDiv().getBoundingClientRect()
       const clickPoint = {
         x: event.domEvent.clientX - rect.left,
         y: event.domEvent.clientY - rect.top,
       }
-      if (isPointInsideFloorOverlay(mapRef.current, floorPlan, clickPoint)) {
-        onSelect({ id: 'floor-plan', type: 'floor', ...floorPlan })
-        return
+      for (let i = floorPlans.length - 1; i >= 0; i--) {
+        const plan = floorPlans[i]
+        if (plan.bounds && isPointInsideFloorOverlay(mapRef.current, plan, clickPoint)) {
+          onSelect({ type: 'floor', ...plan })
+          return
+        }
       }
-    }
-
-    if (placePendingAssetAtLatLng(event.latLng)) {
-      return
     }
 
     if ((drawMode === 'line' || drawMode === 'route') && layers.lines?.visible !== false && !layers.lines?.locked && window.google) {
@@ -1364,7 +1389,7 @@ export default function MapCanvas({
     if (drawMode === 'select') {
       onClearSelection?.()
     }
-  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlan, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onFloorPlacementChange, onFloorPlanChange, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, placingFloor, tempFloorPoints, textStyle])
+  }, [annotationDraftText, buildAnnotationPlacement, drawMode, floorPlans, layers.annotations, layers.lines, layers.zones, onAnnotationCreate, onClearSelection, onSelect, placePendingAssetAtLatLng, placePendingZoneTemplateAtLatLng, textStyle])
 
   const handleMapDoubleClick = useCallback((event) => {
     if (drawMode === 'select') {
@@ -1503,10 +1528,6 @@ export default function MapCanvas({
     }
   }, [drawMode, layers.lines])
 
-  useEffect(() => {
-    if (!placingFloor) setTempFloorPoints([])
-  }, [placingFloor])
-
   const handleStartInteraction = useCallback((event, object, type, resizeHandle = null) => {
     event.preventDefault()
     event.stopPropagation()
@@ -1527,6 +1548,7 @@ export default function MapCanvas({
       interactionRef.current = {
         objectType: 'floor',
         type,
+        object: { ...object, type: 'floor' },
         startX: event.clientX,
         startY: event.clientY,
         center: { x: rect.left + floorGeometry.centerPoint.x, y: rect.top + floorGeometry.centerPoint.y },
@@ -1547,7 +1569,7 @@ export default function MapCanvas({
       }
 
       document.body.style.userSelect = 'none'
-      onSelect({ id: 'floor-plan', type: 'floor', ...object })
+      onSelect({ type: 'floor', ...object })
       return
     }
 
@@ -1673,11 +1695,11 @@ export default function MapCanvas({
     gestureHandling: 'greedy',
     draggableCursor: isViewOnly
       ? 'grab'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grab',
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || !!pendingAssetDef ? 'crosshair' : 'grab',
     draggingCursor: isViewOnly
       ? 'grabbing'
-      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || placingFloor || !!pendingAssetDef ? 'crosshair' : 'grabbing',
-  }), [drawMode, isViewOnly, pendingAssetDef, placingFloor, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
+      : drawMode === 'polygon' || drawMode === 'line' || drawMode === 'route' || drawMode === 'text' || drawMode === 'measure' || !!pendingAssetDef ? 'crosshair' : 'grabbing',
+  }), [drawMode, isViewOnly, pendingAssetDef, viewOnlyMaxZoom, viewOnlyMinZoom, viewOnlyRestrictionBounds])
 
   if (!apiKey) {
     return (
@@ -1736,17 +1758,24 @@ export default function MapCanvas({
           />
         )}
 
-        {layers.floor?.visible && floorPlan?.bounds && (
-          <FloorPlanOverlay
-            floorPlan={floorPlan}
-            selected={floorSelected}
-            locked={!!layers.floor?.locked}
-            onSelect={onSelect}
-            onStartInteraction={handleStartInteraction}
-            map={mapRef.current}
-            zoom={mapZoom}
-          />
-        )}
+        {layers.floor?.visible && floorPlans.map(plan => {
+          if (!plan.bounds) return null
+          return (
+            <FloorPlanOverlay
+              key={plan.id}
+              floorPlan={plan}
+              selected={selectedId === plan.id}
+              interactive={drawMode === 'select'}
+              hasPendingPlacement={Boolean(pendingAssetDef || pendingZoneTemplate)}
+              locked={!!layers.floor?.locked}
+              onSelect={onSelect}
+              onOverlayClick={handleFloorPlanClick}
+              onStartInteraction={handleStartInteraction}
+              map={mapRef.current}
+              zoom={mapZoom}
+            />
+          )
+        })}
 
         {layers.zones?.visible && zones.map(zone => {
           // Skip rendering zone if it or any parent zone is hidden
@@ -2204,31 +2233,6 @@ export default function MapCanvas({
           </>
         )}
 
-        {placingFloor && tempFloorPoints.length > 0 && (
-          <>
-            <CircleDot
-              position={tempFloorPoints[0]}
-              scale={6}
-              fillColor="#ffffff"
-              strokeColor="#38bdf8"
-              strokeWeight={2}
-            />
-            {tempFloorPoints.length >= 2 && (
-              <Polygon
-                paths={getBoundsPreviewPath(tempFloorPoints)}
-                options={{
-                  fillColor: '#38bdf8',
-                  fillOpacity: 0.12,
-                  strokeColor: '#38bdf8',
-                  strokeOpacity: 0.95,
-                  strokeWeight: 2,
-                  clickable: false,
-                }}
-              />
-            )}
-          </>
-        )}
-
         {measurePoints.length > 0 && (
           <>
             <Polyline
@@ -2478,12 +2482,6 @@ export default function MapCanvas({
         >
           <span style={{ width: '10px', height: '10px', borderRadius: '999px', background: pendingZoneTemplate.strokeColor || pendingZoneTemplate.fillColor || pendingZoneTemplate.zoneType?.color || '#3d8ef8' }} />
           <span>Click map to place {pendingZoneTemplate.name}</span>
-        </div>
-      )}
-
-      {placingFloor && floorPlan?.imageUrl && (
-        <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(13,15,20,0.9)', border: '1px solid var(--accent)', borderRadius: 'var(--radius)', padding: '8px 16px', fontSize: '12px', color: 'var(--accent)', pointerEvents: 'none', backdropFilter: 'blur(8px)' }}>
-          Click the top-left corner, then the bottom-right corner to place the floor plan
         </div>
       )}
 
