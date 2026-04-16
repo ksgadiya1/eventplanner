@@ -851,11 +851,10 @@ export default function MapCanvas({
       const center = getPathCenter(finalPath)
       const dimensions = getRectangleZoneDimensions({ path: finalPath }, window.google)
       updateData.center = center
-      updateData.bounds = getBoundsFromPath(path)
-      const lockedSideM = Number(Math.max(widthM, lengthM).toFixed(2))
-      updateData.widthM = lockedSideM
-      updateData.lengthM = lockedSideM
-      updateData.path = buildSquarePath(center, lockedSideM / 2, window.google, Number(zone.rotation || 0))
+      if (dimensions) {
+        updateData.widthM = Number(dimensions.widthM.toFixed(2))
+        updateData.lengthM = Number(dimensions.lengthM.toFixed(2))
+      }
     }
 
     onAssetUpdate(updateData)
