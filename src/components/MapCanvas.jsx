@@ -38,23 +38,73 @@ import { AssetOverlay, FloorPlanOverlay, AnnotationOverlay, MeasurementOverlay, 
 import MapLayers from './MapLayers'
 import GridLayer from './GridLayer'
 import AssetGlyph from './AssetGlyph'
+import { useMapInteraction } from '../hooks/useMapInteraction'
 
 const MAP_CENTER = { lat: 23.0225, lng: 72.5714 }
 const LIBRARIES = ['drawing', 'geometry', 'places']
 
-const CircleDot = React.memo(function CircleDot({ position, scale = 4, fillColor = '#fff', fillOpacity = 1, strokeColor = '#000', strokeWeight = 2 }) {
-  const size = scale * 2 + strokeWeight
-  return (
-    <OverlayView
-      position={position}
-      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-      getPixelPositionOffset={() => ({ x: -size / 2, y: -size / 2 })}
-    >
-      <svg width={size} height={size} style={{ pointerEvents: 'none', display: 'block' }}>
-        <circle cx={size / 2} cy={size / 2} r={scale} fill={fillColor} fillOpacity={fillOpacity} stroke={strokeColor} strokeWidth={strokeWeight} />
-      </svg>
-    </OverlayView>
-  )
+/**
+ * High-performance vertex overlay that syncs directly with Google Maps' native draw loop.
+ * This prevents the "jitter" or "drift" seen when using standard React overlays during zoom/pan.
+ */
+const InteractionPointsOverlay = React.memo(function InteractionPointsOverlay({
+  map, points = [], color = '#38bdf8', scale = 4, strokeWeight = 2, isMeasure = false
+}) {
+  useEffect(() => {
+    if (!map || !points.length || !window.google) return
+
+    const overlay = new window.google.maps.OverlayView()
+    const container = document.createElement('div')
+    container.style.position = 'absolute'
+    container.style.pointerEvents = 'none'
+    container.style.zIndex = '1000'
+
+    const dots = points.map((point, index) => {
+      const dot = document.createElement('div')
+      const dotScale = index === 0 && !isMeasure ? scale + 2 : scale
+      const size = dotScale * 2 + strokeWeight
+
+      dot.style.position = 'absolute'
+      dot.style.width = `${size}px`
+      dot.style.height = `${size}px`
+      dot.style.borderRadius = '50%'
+      dot.style.backgroundColor = (index === 0 && !isMeasure) ? color : '#ffffff'
+      dot.style.border = `${strokeWeight}px solid ${color}`
+      dot.style.boxShadow = '0 1px 3px rgba(0,0,0,0.3)'
+      dot.style.transform = 'translate(-50%, -50%)'
+
+      container.appendChild(dot)
+      return { dot, latLng: new window.google.maps.LatLng(point.lat, point.lng) }
+    })
+
+    overlay.onAdd = function () {
+      this.getPanes().overlayMouseTarget.appendChild(container)
+    }
+
+    overlay.draw = function () {
+      const projection = this.getProjection()
+      if (!projection) return
+
+      dots.forEach(({ dot, latLng }) => {
+        const pixel = projection.fromLatLngToDivPixel(latLng)
+        if (pixel) {
+          dot.style.left = `${pixel.x}px`
+          dot.style.top = `${pixel.y}px`
+        }
+      })
+    }
+
+    overlay.onRemove = function () {
+      if (container.parentNode) {
+        container.parentNode.removeChild(container)
+      }
+    }
+
+    overlay.setMap(map)
+    return () => overlay.setMap(null)
+  }, [map, points, color, scale, strokeWeight, isMeasure])
+
+  return null
 })
 const MIN_ASSET_SIZE_M = 0.5
 const MIN_ASSET_SIZE_PX = 28
@@ -458,11 +508,7 @@ export default function MapCanvas({
     if (!isViewOnly && window.google?.maps?.drawing) {
       const dm = new window.google.maps.drawing.DrawingManager({
         drawingMode: null,
-        drawingControl: true,
-        drawingControlOptions: {
-          position: window.google.maps.ControlPosition.TOP_CENTER,
-          drawingModes: [window.google.maps.drawing.OverlayType.RECTANGLE],
-        },
+        drawingControl: false,
         rectangleOptions: {
           fillColor: '#3d8ef8',
           fillOpacity: 0.2,
@@ -700,263 +746,45 @@ export default function MapCanvas({
     }
   }, [zones])
 
+
+  const { startInteraction, move, end, isInteracting } = useMapInteraction({
+    map: mapRef.current,
+    gridSize: Number(layers.grid?.size || 3),
+    snapEnabled: Boolean(layers.grid?.snap),
+    onUpdate: (updated) => {
+      if (updated.type === 'asset' || updated.type === 'zone' || updated.type === 'annotation') {
+        onAssetUpdate(updated)
+      } else if (!updated.type) {
+        // Floor plan doesn't have a type property usually in this state
+        onFloorPlanChange(prev => updated)
+      }
+    },
+    onComplete: (final) => {
+      // Any final cleanup if needed
+    }
+  })
+
+  const handleStartInteraction = useCallback((e, object, type, metadata) => {
+    startInteraction(e, object, type, metadata)
+  }, [startInteraction])
+
   useEffect(() => {
-    const handleInteractionMove = (event) => {
-      const interaction = interactionRef.current
-      const map = mapRef.current
-      if (!interaction || !map || !onAssetUpdate) return
+    if (!isInteracting) return
 
-      if (interaction.objectType === 'asset') {
-        if (interaction.type === 'move') {
-          const latLng = clientPointToLatLng(map, event.clientX, event.clientY)
-          if (!latLng) return
-          const movedAsset = buildAssetPlacement({
-            ...interaction.object,
-            lat: latLng.lat() - (interaction.latOffset || 0),
-            lng: latLng.lng() - (interaction.lngOffset || 0),
-          })
-          if (!movedAsset) return
-          onAssetUpdate(movedAsset)
-          return
-        }
-
-        if (interaction.type === 'resize') {
-          const dx = event.clientX - interaction.startX
-          const dy = event.clientY - interaction.startY
-          const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotationDeg)
-          const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
-          const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
-          const rawLength = interaction.startLengthPx + (localY * handle.ySign)
-          const widthPx = Math.max(MIN_ASSET_SIZE_PX, rawWidth)
-          const lengthPx = Math.max(MIN_ASSET_SIZE_PX, rawLength)
-          const appliedWidthDelta = widthPx - interaction.startWidthPx
-          const appliedLengthDelta = lengthPx - interaction.startLengthPx
-          const localCenterShift = {
-            x: (appliedWidthDelta / 2) * handle.xSign,
-            y: (appliedLengthDelta / 2) * handle.ySign,
-          }
-          const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotationDeg)
-          const nextCenterLatLng = clientPointToLatLng(
-            map,
-            interaction.center.x + screenShift.x,
-            interaction.center.y + screenShift.y
-          )
-          if (!nextCenterLatLng) return
-
-          onAssetUpdate({
-            ...interaction.object,
-            lat: nextCenterLatLng.lat(),
-            lng: nextCenterLatLng.lng(),
-            widthM: Number(Math.max(MIN_ASSET_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2)),
-            lengthM: Number(Math.max(MIN_ASSET_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2)),
-          })
-          return
-        }
-
-        if (interaction.type === 'rotate') {
-          const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
-          const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
-          onAssetUpdate({
-            ...interaction.object,
-            rotationDeg: Number(normalizeAngle(interaction.startRotationDeg + delta).toFixed(1)),
-          })
-        }
-        return
-      }
-
-      if (interaction.objectType === 'floor') {
-        if (interaction.type === 'move') {
-          const nextCenter = clientPointToLatLng(map, event.clientX, event.clientY)
-          if (!nextCenter) return
-
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
-            ...prev,
-            center: {
-              lat: nextCenter.lat() - (interaction.latOffset || 0),
-              lng: nextCenter.lng() - (interaction.lngOffset || 0)
-            },
-            widthM: interaction.startWidthM,
-            heightM: interaction.startHeightM,
-            rotation: interaction.startRotation,
-          }) : prev)
-          return
-        }
-
-        if (interaction.type === 'resize') {
-          const dx = event.clientX - interaction.startX
-          const dy = event.clientY - interaction.startY
-          const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotation)
-          const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
-          const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
-          const rawHeight = interaction.startHeightPx + (localY * handle.ySign)
-          const widthPx = Math.max(MIN_FLOOR_SIZE_PX, rawWidth)
-          const heightPx = Math.max(MIN_FLOOR_SIZE_PX, rawHeight)
-          const appliedWidthDelta = widthPx - interaction.startWidthPx
-          const appliedHeightDelta = heightPx - interaction.startHeightPx
-          const localCenterShift = {
-            x: (appliedWidthDelta / 2) * handle.xSign,
-            y: (appliedHeightDelta / 2) * handle.ySign,
-          }
-          const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
-          const nextCenter = clientPointToLatLng(
-            map,
-            interaction.center.x + screenShift.x,
-            interaction.center.y + screenShift.y
-          )
-          if (!nextCenter) return
-
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
-            ...prev,
-            center: { lat: nextCenter.lat(), lng: nextCenter.lng() },
-            widthM: Number(Math.max(1, widthPx * interaction.metersPerPixel).toFixed(2)),
-            heightM: Number(Math.max(1, heightPx * interaction.metersPerPixel).toFixed(2)),
-            rotation: interaction.startRotation,
-          }) : prev)
-          return
-        }
-
-        if (interaction.type === 'rotate') {
-          const nextAngle = Math.atan2(event.clientY - interaction.center.y, event.clientX - interaction.center.x) * 180 / Math.PI
-          const delta = shortestAngleDelta(interaction.startPointerAngle, nextAngle)
-          onFloorPlanChange(prev => prev ? normalizeFloorPlanState({
-            ...prev,
-            center: interaction.startCenter,
-            widthM: interaction.startWidthM,
-            heightM: interaction.startHeightM,
-            rotation: Number(normalizeAngle(interaction.startRotation + delta).toFixed(1)),
-          }) : prev)
-        }
-      }
-
-      if (interaction.objectType === 'zone' && interaction.type === 'rotate') {
-        if (!Array.isArray(interaction.startPath) || interaction.startPath.length < 3) return
-
-        const center = interaction.startPath.reduce(
-          (acc, point) => ({
-            lat: acc.lat + Number(point.lat || 0),
-            lng: acc.lng + Number(point.lng || 0),
-          }),
-          { lat: 0, lng: 0 }
-        )
-        center.lat /= interaction.startPath.length
-        center.lng /= interaction.startPath.length
-
-        const rect = map.getDiv().getBoundingClientRect()
-        const centerPoint = latLngToContainerPoint(map, center.lat, center.lng)
-        if (!centerPoint) return
-
-        const centerClient = { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y }
-        const startAngle = Math.atan2(interaction.startY - centerClient.y, interaction.startX - centerClient.x)
-        const currentAngle = Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x)
-        const delta = startAngle - currentAngle
-        const cos = Math.cos(delta)
-        const sin = Math.sin(delta)
-
-        const rotatedPath = interaction.startPath.map((point) => {
-          // const dx = Number(point.lng || 0) - center.lng
-          // const dy = Number(point.lat || 0) - center.lat
-          // return {
-          //   lat: center.lat + (dy * cos - dx * sin),
-          //   lng: center.lng + (dx * cos + dy * sin),
-          // }
-          const screenPoint = latLngToContainerPoint(map, point.lat, point.lng)
-          if (!screenPoint) return point
-          const localX = screenPoint.x - centerPoint.x
-          const localY = screenPoint.y - centerPoint.y
-          const rotatedX = localX * cos - localY * sin
-          const rotatedY = localX * sin + localY * cos
-          const nextClientX = rect.left + centerPoint.x + rotatedX
-          const nextClientY = rect.top + centerPoint.y + rotatedY
-          const nextLatLng = clientPointToLatLng(map, nextClientX, nextClientY)
-          return nextLatLng ? { lat: nextLatLng.lat(), lng: nextLatLng.lng() } : point
-        })
-
-        onAssetUpdate({
-          ...interaction.object,
-          path: rotatedPath,
-          rotation: Number(normalizeAngle((interaction.startRotation || 0) + (delta * 180) / Math.PI).toFixed(1)),
-        })
-        return
-      }
-
-      if (interaction.objectType === 'zone' && interaction.type === 'resize') {
-        const dx = event.clientX - interaction.startX
-        const dy = event.clientY - interaction.startY
-        const { localX, localY } = projectScreenDelta(dx, dy, interaction.startRotation)
-        const handle = interaction.resizeHandle || { xSign: 1, ySign: 1 }
-        const rawWidth = interaction.startWidthPx + (localX * handle.xSign)
-        const rawLength = interaction.startLengthPx + (localY * handle.ySign)
-        let widthPx = Math.max(MIN_ZONE_SIZE_PX, rawWidth)
-        let lengthPx = Math.max(MIN_ZONE_SIZE_PX, rawLength)
-
-        const appliedWidthDelta = widthPx - interaction.startWidthPx
-        const appliedLengthDelta = lengthPx - interaction.startLengthPx
-        const localCenterShift = {
-          x: (appliedWidthDelta / 2) * handle.xSign,
-          y: (appliedLengthDelta / 2) * handle.ySign,
-        }
-        const screenShift = localDeltaToScreen(localCenterShift.x, localCenterShift.y, interaction.startRotation)
-        const nextCenter = clientPointToLatLng(
-          map,
-          interaction.center.x + screenShift.x,
-          interaction.center.y + screenShift.y
-        )
-        if (!nextCenter) return
-
-        const nextWidthM = Number(Math.max(MIN_ZONE_SIZE_M, widthPx * interaction.metersPerPixel).toFixed(2))
-        const nextLengthM = Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2))
-        const nextCenterLatLng = { lat: nextCenter.lat(), lng: nextCenter.lng() }
-
-        onAssetUpdate({
-          ...interaction.object,
-          center: nextCenterLatLng,
-          widthM: nextWidthM,
-          lengthM: nextLengthM,
-          path: buildRectanglePath(
-            nextCenterLatLng,
-            nextWidthM / 2,
-            nextLengthM / 2,
-            window.google,
-            interaction.object.rotation || 0
-          ),
-        })
-        return
-      }
-
-      if (interaction.objectType === 'annotation') {
-        if (interaction.type === 'move') {
-          const latLng = clientPointToLatLng(map, event.clientX, event.clientY)
-          if (!latLng) return
-          const movedAnnotation = buildAnnotationPlacement({
-            ...interaction.object,
-            lat: latLng.lat() - (interaction.latOffset || 0),
-            lng: latLng.lng() - (interaction.lngOffset || 0),
-          })
-          onAssetUpdate(movedAnnotation)
-        }
-      }
-    }
-
-    const handleInteractionUp = () => {
-      if (!interactionRef.current) return
-      interactionRef.current = null
-      document.body.style.userSelect = ''
-    }
-
-    window.addEventListener('mousemove', handleInteractionMove)
-    window.addEventListener('mouseup', handleInteractionUp)
-    window.addEventListener('pointermove', handleInteractionMove)
-    window.addEventListener('pointerup', handleInteractionUp)
-    window.addEventListener('pointercancel', handleInteractionUp)
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', end)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+    window.addEventListener('pointercancel', end)
 
     return () => {
-      window.removeEventListener('mousemove', handleInteractionMove)
-      window.removeEventListener('mouseup', handleInteractionUp)
-      window.removeEventListener('pointermove', handleInteractionMove)
-      window.removeEventListener('pointerup', handleInteractionUp)
-      window.removeEventListener('pointercancel', handleInteractionUp)
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', end)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+      window.removeEventListener('pointercancel', end)
     }
-  }, [buildAnnotationPlacement, buildAssetPlacement, onAssetUpdate, onFloorPlanChange])
+  }, [isInteracting, move, end])
 
   const finalizePolygon = useCallback((path) => {
     if (!window.google || !path || path.length < 3) return
@@ -1559,143 +1387,6 @@ export default function MapCanvas({
     if (!placingFloor) setTempFloorPoints([])
   }, [placingFloor])
 
-  const handleStartInteraction = useCallback((event, object, type, resizeHandle = null) => {
-    event.preventDefault()
-    event.stopPropagation()
-
-    const map = mapRef.current
-    if (!map) return
-
-    if (object.type === 'floor' || object.id === 'floor-plan') {
-      if (layers.floor?.locked || !object.bounds) return
-      const floorGeometry = getFloorGeometry(map, object)
-      const rect = map.getDiv().getBoundingClientRect()
-      if (!floorGeometry) return
-
-      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
-      const latOffset = clickLatLng ? clickLatLng.lat() - floorGeometry.centerLat : 0
-      const lngOffset = clickLatLng ? clickLatLng.lng() - floorGeometry.centerLng : 0
-
-      interactionRef.current = {
-        objectType: 'floor',
-        type,
-        startX: event.clientX,
-        startY: event.clientY,
-        center: { x: rect.left + floorGeometry.centerPoint.x, y: rect.top + floorGeometry.centerPoint.y },
-        startCenter: { lat: floorGeometry.centerLat, lng: floorGeometry.centerLng },
-        latOffset,
-        lngOffset,
-        startWidthPx: floorGeometry.widthPx,
-        startHeightPx: floorGeometry.heightPx,
-        startWidthM: floorGeometry.widthM,
-        startHeightM: floorGeometry.heightM,
-        metersPerPixel: floorGeometry.metersPerPixel,
-        startRotation: object.rotation || 0,
-        resizeHandle,
-        startPointerAngle: Math.atan2(
-          event.clientY - (rect.top + floorGeometry.centerPoint.y),
-          event.clientX - (rect.left + floorGeometry.centerPoint.x)
-        ) * 180 / Math.PI,
-      }
-
-      document.body.style.userSelect = 'none'
-      onSelect({ id: 'floor-plan', type: 'floor', ...object })
-      return
-    }
-
-    if (object.type === 'zone' && type === 'rotate') {
-      if (layers.zones?.locked || !Array.isArray(object.path) || object.path.length < 3) return
-      interactionRef.current = {
-        objectType: 'zone',
-        type,
-        object,
-        startX: event.clientX,
-        startY: event.clientY,
-        startPath: object.path.map((point) => ({ lat: Number(point.lat || 0), lng: Number(point.lng || 0) })),
-        startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
-      }
-      document.body.style.userSelect = 'none'
-      onSelect(object)
-      return
-    }
-
-    if (object.type === 'zone' && type === 'resize') {
-      if (layers.zones?.locked || object.shapeType !== 'rectangle') return
-      const rect = map.getDiv().getBoundingClientRect()
-      const center = getPathCenter(object.path)
-      const centerPoint = center ? latLngToContainerPoint(map, center.lat, center.lng) : null
-      const zoneSize = getRectangleZoneDimensions(object, window.google)
-      const widthM = Number(zoneSize.widthM)
-      const lengthM = Number(zoneSize.lengthM)
-      const scale = center ? metersPerPixel(center.lat, map.getZoom()) : null
-      if (!center || !centerPoint || !Number.isFinite(widthM) || !Number.isFinite(lengthM) || !Number.isFinite(scale)) return
-
-      interactionRef.current = {
-        objectType: 'zone',
-        type,
-        object,
-        startX: event.clientX,
-        startY: event.clientY,
-        center: { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y },
-        startWidthPx: widthM / scale,
-        startLengthPx: lengthM / scale,
-        startRotation: Number.isFinite(object.rotation) ? object.rotation : 0,
-        metersPerPixel: scale,
-        resizeHandle,
-      }
-      document.body.style.userSelect = 'none'
-      onSelect(object)
-      return
-    }
-
-    if (object.type === 'annotation') {
-      if (layers.annotations?.locked) return
-
-      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
-      const latOffset = clickLatLng ? clickLatLng.lat() - object.lat : 0
-      const lngOffset = clickLatLng ? clickLatLng.lng() - object.lng : 0
-
-      interactionRef.current = {
-        objectType: 'annotation',
-        type,
-        object,
-        latOffset,
-        lngOffset,
-      }
-      document.body.style.userSelect = 'none'
-      onSelect(object)
-      return
-    }
-
-    if (layers.assets?.locked) return
-
-    const rect = map.getDiv().getBoundingClientRect()
-    const center = latLngToContainerPoint(map, object.lat, object.lng)
-    const { widthPx, lengthPx, metersPerPixel: scale } = getAssetSize(object, map.getZoom())
-    const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
-    if (!center) return
-
-    const centerClient = { x: rect.left + center.x, y: rect.top + center.y }
-    interactionRef.current = {
-      objectType: 'asset',
-      type,
-      object,
-      startX: event.clientX,
-      startY: event.clientY,
-      center: centerClient,
-      startWidthPx: widthPx,
-      startLengthPx: lengthPx,
-      startRotationDeg: object.rotationDeg || 0,
-      resizeHandle,
-      latOffset: clickLatLng ? clickLatLng.lat() - object.lat : 0,
-      lngOffset: clickLatLng ? clickLatLng.lng() - object.lng : 0,
-      startPointerAngle: Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x) * 180 / Math.PI,
-      metersPerPixel: scale,
-    }
-
-    document.body.style.userSelect = 'none'
-    onSelect(object)
-  }, [layers.annotations, layers.assets, layers.floor, onSelect])
 
   const mapOptions = useMemo(() => ({
     clickableIcons: false,
@@ -2119,43 +1810,40 @@ export default function MapCanvas({
                 icons: getLinePatternIcons(lineStyle?.pattern || 'dashed', lineStyle?.color || '#38bdf8'),
               }}
             />
+            <InteractionPointsOverlay
+              map={mapRef.current}
+              points={lineDraft.points}
+              color={lineStyle?.color || '#38bdf8'}
+              scale={4}
+            />
             {lineDraft.points.map((point, index) => {
               const segDist = index === 0 ? null : window.google.maps.geometry.spherical.computeDistanceBetween(
                 new window.google.maps.LatLng(lineDraft.points[index - 1].lat, lineDraft.points[index - 1].lng),
                 new window.google.maps.LatLng(point.lat, point.lng)
               )
               const showLabel = segDist !== null && (lineDraft.points.length <= 6 || index % 2 === 0)
+              if (!showLabel) return null
               return (
-                <React.Fragment key={`line-draft-${index}`}>
-                  <CircleDot
-                    position={point}
-                    scale={index === 0 ? 6 : 4}
-                    fillColor={index === 0 ? (lineStyle?.color || '#38bdf8') : '#ffffff'}
-                    strokeColor={lineStyle?.color || '#38bdf8'}
-                    strokeWeight={2}
-                  />
-                  {showLabel && (
-                    <OverlayView
-                      position={point}
-                      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-                      getPixelPositionOffset={() => ({ x: 8, y: -26 })}
-                    >
-                      <div style={{
-                        background: 'rgba(0,0,0,0.72)',
-                        color: '#fff',
-                        padding: '2px 7px',
-                        borderRadius: '10px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        whiteSpace: 'nowrap',
-                        pointerEvents: 'none',
-                        border: `1px solid ${lineStyle?.color || '#38bdf8'}`,
-                      }}>
-                        {formatDistance(segDist, measurementUnit)}
-                      </div>
-                    </OverlayView>
-                  )}
-                </React.Fragment>
+                <OverlayView
+                  key={`line-draft-label-${index}`}
+                  position={point}
+                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                  getPixelPositionOffset={() => ({ x: 8, y: -26 })}
+                >
+                  <div style={{
+                    background: 'rgba(0,0,0,0.72)',
+                    color: '#fff',
+                    padding: '2px 7px',
+                    borderRadius: '10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                    pointerEvents: 'none',
+                    border: `1px solid ${lineStyle?.color || '#38bdf8'}`,
+                  }}>
+                    {formatDistance(segDist, measurementUnit)}
+                  </div>
+                </OverlayView>
               )
             })}
           </>
@@ -2183,16 +1871,12 @@ export default function MapCanvas({
                 }}
               />
             )}
-            {polygonDraft.points.map((point, index) => (
-              <CircleDot
-                key={`polygon-draft-${index}`}
-                position={point}
-                scale={5}
-                fillColor="#ffffff"
-                strokeColor={selectedZoneType?.color || '#3d8ef8'}
-                strokeWeight={2}
-              />
-            ))}
+            <InteractionPointsOverlay
+              map={mapRef.current}
+              points={polygonDraft.points}
+              color={selectedZoneType?.color || '#3d8ef8'}
+              scale={5}
+            />
             {lineMeasurement !== null && polygonDraft.points.length > 2 && (
               <OverlayView
                 position={polygonDraft.points[polygonDraft.points.length - 1]}
@@ -2230,12 +1914,11 @@ export default function MapCanvas({
                 }}
               />
             )}
-            <CircleDot
-              position={shapeDraft.center}
+            <InteractionPointsOverlay
+              map={mapRef.current}
+              points={[shapeDraft.center]}
+              color="#000"
               scale={6}
-              fillColor="#ffffff"
-              strokeColor="#000"
-              strokeWeight={2}
             />
             <OverlayView
               position={shapeDraft.center}
@@ -2259,12 +1942,11 @@ export default function MapCanvas({
 
         {placingFloor && tempFloorPoints.length > 0 && (
           <>
-            <CircleDot
-              position={tempFloorPoints[0]}
+            <InteractionPointsOverlay
+              map={mapRef.current}
+              points={[tempFloorPoints[0]]}
+              color="#38bdf8"
               scale={6}
-              fillColor="#ffffff"
-              strokeColor="#38bdf8"
-              strokeWeight={2}
             />
             {tempFloorPoints.length >= 2 && (
               <Polygon
@@ -2298,42 +1980,40 @@ export default function MapCanvas({
                 }],
               }}
             />
+            <InteractionPointsOverlay
+              map={mapRef.current}
+              points={measurePoints}
+              color="#ef4444"
+              scale={4}
+              isMeasure={true}
+            />
             {measurePoints.map((point, index) => {
               const segDist = index === 0 ? null : window.google.maps.geometry.spherical.computeDistanceBetween(
                 new window.google.maps.LatLng(measurePoints[index - 1].lat, measurePoints[index - 1].lng),
                 new window.google.maps.LatLng(point.lat, point.lng)
               )
+              if (segDist === null) return null
               return (
-                <React.Fragment key={`measure-${index}`}>
-                  <CircleDot
-                    position={point}
-                    scale={index === 0 ? 6 : 4}
-                    fillColor={index === 0 ? '#ef4444' : '#ffffff'}
-                    strokeColor="#ef4444"
-                    strokeWeight={2}
-                  />
-                  {segDist !== null && (
-                    <OverlayView
-                      position={point}
-                      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
-                      getPixelPositionOffset={() => ({ x: 8, y: -26 })}
-                    >
-                      <div style={{
-                        background: 'rgba(0,0,0,0.78)',
-                        color: '#fff',
-                        padding: '2px 7px',
-                        borderRadius: '10px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        whiteSpace: 'nowrap',
-                        pointerEvents: 'none',
-                        border: '1px solid #ef4444',
-                      }}>
-                        {formatDistance(segDist, measurementUnit)}
-                      </div>
-                    </OverlayView>
-                  )}
-                </React.Fragment>
+                <OverlayView
+                  key={`measure-label-${index}`}
+                  position={point}
+                  mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                  getPixelPositionOffset={() => ({ x: 8, y: -26 })}
+                >
+                  <div style={{
+                    background: 'rgba(0,0,0,0.78)',
+                    color: '#fff',
+                    padding: '2px 7px',
+                    borderRadius: '10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                    pointerEvents: 'none',
+                    border: '1px solid #ef4444',
+                  }}>
+                    {formatDistance(segDist, measurementUnit)}
+                  </div>
+                </OverlayView>
               )
             })}
           </>
