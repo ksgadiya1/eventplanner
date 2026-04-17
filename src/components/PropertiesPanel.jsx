@@ -281,6 +281,20 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const usedZoneCapacity = isZone ? childAssets.length : 0
   const remainingZoneCapacity = effectiveZoneCapacity !== null ? Math.max(effectiveZoneCapacity - usedZoneCapacity, 0) : null
   const capLabel = isZone ? getZoneCapacityLabel(selected) : { title: 'CAPACITY', unit: 'units' }
+  const promptForCustomAssetName = (defaultName) => {
+    const fallbackName = String(defaultName || 'Custom Asset').trim() || 'Custom Asset'
+    const enteredName = window.prompt('Enter a name for this custom asset.', fallbackName)
+
+    if (enteredName === null) return null
+
+    const trimmedName = enteredName.trim()
+    if (!trimmedName) {
+      window.alert('Asset name is required to save a custom asset.')
+      return null
+    }
+
+    return trimmedName
+  }
 
   return (
     <div style={styles.panel}>
@@ -967,7 +981,11 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               <button
                 type="button"
                 style={styles.actionBtn}
-                onClick={() => onSaveCustomAsset?.(selected, { mode: 'new' })}
+                onClick={() => {
+                  const customName = promptForCustomAssetName(selected?.label || selected?.assetDef?.name)
+                  if (!customName) return
+                  onSaveCustomAsset?.(selected, { mode: 'new', customName })
+                }}
               >
                 Save As New
               </button>
@@ -997,7 +1015,10 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 }}
                 onClick={() => {
                   if (!customAssetDefs.length || !replaceCustomAssetId) return
-                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId })
+                  const selectedCustomAsset = customAssetDefs.find(asset => asset.id === replaceCustomAssetId)
+                  const customName = promptForCustomAssetName(selectedCustomAsset?.name || selected?.label || selected?.assetDef?.name)
+                  if (!customName) return
+                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId, customName })
                 }}
                 disabled={!customAssetDefs.length || !replaceCustomAssetId}
               >

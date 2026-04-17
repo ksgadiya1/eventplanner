@@ -644,6 +644,109 @@ export function buildSquarePath(center, halfSideM, google, rotationDeg = 0) {
   return buildRectanglePath(center, halfSideM, halfSideM, google, rotationDeg)
 }
 
+function buildAssetBoundsVertices(asset, referenceLat) {
+  const lat = Number(asset?.lat)
+  const lng = Number(asset?.lng)
+  const widthM = Math.max(0.01, Number(asset?.widthM ?? asset?.assetDef?.defaultWidth ?? 4) || 0.01)
+  const lengthM = Math.max(0.01, Number(asset?.lengthM ?? asset?.assetDef?.defaultLength ?? widthM) || widthM)
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return []
+
+  const centerLat = Number.isFinite(referenceLat) ? referenceLat : lat
+  const lngMetersPerDegree = 111111.0 * Math.max(0.000001, Math.cos(centerLat * Math.PI / 180))
+  const centerX = lng * lngMetersPerDegree
+  const centerY = lat * 111111.0
+  const halfWidth = widthM / 2
+  const halfLength = lengthM / 2
+  const rotationRad = (Number(asset?.rotationDeg) || 0) * Math.PI / 180
+  const cos = Math.cos(rotationRad)
+  const sin = Math.sin(rotationRad)
+  const corners = [
+    { x: halfWidth, y: halfLength },
+    { x: -halfWidth, y: halfLength },
+    { x: -halfWidth, y: -halfLength },
+    { x: halfWidth, y: -halfLength },
+  ]
+
+  return corners.map(({ x, y }) => ({
+    x: centerX + (x * cos - y * sin),
+    y: centerY + (x * sin + y * cos),
+  }))
+}
+
+function getPolygonAxes(vertices) {
+  const axes = []
+
+  for (let index = 0; index < vertices.length; index += 1) {
+    const current = vertices[index]
+    const next = vertices[(index + 1) % vertices.length]
+    const edgeX = next.x - current.x
+    const edgeY = next.y - current.y
+    const length = Math.hypot(edgeX, edgeY)
+
+    if (!length) continue
+
+    axes.push({
+      x: -edgeY / length,
+      y: edgeX / length,
+    })
+  }
+
+  return axes
+}
+
+function projectPolygonOntoAxis(vertices, axis) {
+  let min = Infinity
+  let max = -Infinity
+
+  vertices.forEach((vertex) => {
+    const projection = vertex.x * axis.x + vertex.y * axis.y
+    min = Math.min(min, projection)
+    max = Math.max(max, projection)
+  })
+
+  return { min, max }
+}
+
+export function assetsOverlap(assetA, assetB, epsilonM = 0.01) {
+  const latA = Number(assetA?.lat)
+  const latB = Number(assetB?.lat)
+
+  if (!Number.isFinite(latA) || !Number.isFinite(latB)) return false
+
+  const referenceLat = (latA + latB) / 2
+  const verticesA = buildAssetBoundsVertices(assetA, referenceLat)
+  const verticesB = buildAssetBoundsVertices(assetB, referenceLat)
+
+  if (verticesA.length < 4 || verticesB.length < 4) return false
+
+  const axes = [
+    ...getPolygonAxes(verticesA),
+    ...getPolygonAxes(verticesB),
+  ]
+
+  return axes.every((axis) => {
+    const projectionA = projectPolygonOntoAxis(verticesA, axis)
+    const projectionB = projectPolygonOntoAxis(verticesB, axis)
+
+    return !(
+      projectionA.max <= projectionB.min + epsilonM
+      || projectionB.max <= projectionA.min + epsilonM
+    )
+  })
+}
+
+export function findOverlappingAsset(asset, assets = [], options = {}) {
+  const excludeAssetId = options.excludeAssetId || null
+
+  return (Array.isArray(assets) ? assets : []).find(otherAsset => (
+    otherAsset
+    && otherAsset.id !== excludeAssetId
+    && otherAsset.id !== asset?.id
+    && assetsOverlap(asset, otherAsset)
+  )) || null
+}
+
 export function snapAssetCenterToZoneVertex(
   lat,
   lng,

@@ -403,6 +403,7 @@ export default function Sidebar({
   pendingZoneTemplate,
   onZoneTemplateClickPlace,
   onDeleteZoneTemplate,
+  onDeleteCustomAsset,
   onImportAssets,
   onImportProject,
   onDownloadAssetList,
@@ -620,6 +621,7 @@ export default function Sidebar({
 
   const renderAssetCard = (asset, compact = false) => {
     const isZoneTemplate = asset.itemKind === 'zone-template'
+    const isCustomLibraryAsset = !isZoneTemplate && Array.isArray(asset.libraryTags) && asset.libraryTags.includes('custom')
     const assetColor = assetColorOverride || asset.color
     const isActive = isZoneTemplate
       ? pendingZoneTemplate?.id === asset.id
@@ -649,12 +651,16 @@ export default function Sidebar({
           startAssetPlacement(asset)
         }}
       >
-        {isZoneTemplate && !compact && (
+        {!compact && (isZoneTemplate || isCustomLibraryAsset) && (
           <button
             type="button"
             onClick={(event) => {
               event.stopPropagation()
-              onDeleteZoneTemplate?.(asset.id)
+              if (isZoneTemplate) {
+                onDeleteZoneTemplate?.(asset.id)
+                return
+              }
+              onDeleteCustomAsset?.(asset.id)
             }}
             style={{
               ...styles.iconBtn,

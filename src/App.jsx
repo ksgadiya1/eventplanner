@@ -16,7 +16,7 @@ import { getRouteStylePreset } from './data/routeTypes'
 //   normalizeFloorPlanState,
 //   serializeZoneTemplateGeometry,
 // } from './utils/mapGeometry'
-import { buildCirclePath, buildRectanglePath, computePolygonMetrics, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry, getDeepestParentFloor } from './utils/mapGeometry'
+import { buildCirclePath, buildRectanglePath, computePolygonMetrics, findOverlappingAsset, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry, getDeepestParentFloor } from './utils/mapGeometry'
 import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
@@ -147,7 +147,7 @@ const DEFAULT_LAYERS = {
   annotations: { visible: true, locked: false },
   lines: { visible: true, locked: false },
   floor: { visible: true, locked: false },
-  grid: { visible: false, locked: false, snap: false },
+  grid: { visible: false, locked: false, snap: false, size: 3 },
 }
 
 function getExportStatusColor(status) {
@@ -285,6 +285,19 @@ function mergeAssetCategoryMaps(baseCategories = {}, extraCategories = {}) {
   })
 
   return merged
+}
+
+function removeAssetFromCategoryMaps(categories = {}, assetId) {
+  return Object.entries(categories || {}).reduce((nextCategories, [category, assets]) => {
+    const safeAssets = Array.isArray(assets) ? assets : []
+    const remainingAssets = safeAssets.filter(asset => asset?.id !== assetId)
+
+    if (remainingAssets.length) {
+      nextCategories[category] = remainingAssets
+    }
+
+    return nextCategories
+  }, {})
 }
 
 function readCustomAssetCategories() {
@@ -962,7 +975,7 @@ export default function App() {
 
   const handleSaveCustomAsset = useCallback((asset, options = {}) => {
     const categoryLabel = String(asset?.assetDef?.category || asset?.category || 'Custom Assets').trim() || 'Custom Assets'
-    const baseName = String(asset?.label || asset?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
+    const baseName = String(options.customName || asset?.label || asset?.assetDef?.name || 'Custom Asset').trim() || 'Custom Asset'
     const assetType = String(asset?.assetDef?.assetType || asset?.assetType || 'custom').trim() || 'custom'
 
     const assetDefinition = {
@@ -996,6 +1009,26 @@ export default function App() {
       : `Custom asset "${baseName}" added to ${categoryLabel}.`
     )
   }, [])
+
+  const handleDeleteCustomAsset = useCallback((assetId) => {
+    if (!assetId) return
+
+    const customAsset = Object.values(assetData.categories || {})
+      .flat()
+      .find(asset => asset?.id === assetId && Array.isArray(asset.libraryTags) && asset.libraryTags.includes('custom'))
+
+    if (!customAsset) return
+
+    if (!window.confirm(`Delete the "${customAsset.name}" custom asset?`)) return
+
+    setAssetData(prev => {
+      const nextCategories = removeAssetFromCategoryMaps(prev.categories, assetId)
+      writeCustomAssetCategories(nextCategories)
+      return { ...prev, categories: nextCategories }
+    })
+
+    setPendingAssetDef(prev => (prev?.id === assetId ? null : prev))
+  }, [assetData.categories])
 
   const handleImportProject = useCallback((payload) => {
     const isSupportedPayload = payload && typeof payload === 'object' && (
@@ -1555,6 +1588,8 @@ export default function App() {
       setFloorPlans(prev => prev.map(p => p.id === updated.id ? normalizeFloorPlanState({ ...p, ...updated }) : p))
     } else {
       const normalizedAsset = normalizeAssetParent(updated, zones, floorPlans)
+      const overlappingAsset = findOverlappingAsset(normalizedAsset, assets, { excludeAssetId: updated.id })
+      if (overlappingAsset) return
       setAssets(prev => prev.map(a => a.id === updated.id ? normalizedAsset : a))
     }
   }, [annotations, assets, floorPlans, lines, pushHistory, selectedId, zones])
@@ -1797,6 +1832,12 @@ export default function App() {
       lat: offsetTarget ? offsetTarget.lat() : selectedAsset.lat + 0.00004,
       lng: offsetTarget ? offsetTarget.lng() : selectedAsset.lng + 0.00004,
       label: getNextVersionName(selectedAsset.label || 'Asset', assets.map(a => a.label)),
+    }
+
+    const overlappingAsset = findOverlappingAsset(duplicated, assets)
+    if (overlappingAsset) {
+      window.alert(`Cannot duplicate this asset because it would overlap "${overlappingAsset.label || overlappingAsset.assetDef?.name || 'another asset'}".`)
+      return
     }
 
     setAssets(prev => [...prev, duplicated])
@@ -3280,6 +3321,7 @@ export default function App() {
             pendingZoneTemplate={pendingZoneTemplate}
             onZoneTemplateClickPlace={handleZoneTemplateClickPlace}
             onDeleteZoneTemplate={handleDeleteZoneTemplate}
+            onDeleteCustomAsset={handleDeleteCustomAsset}
             onImportAssets={handleImportAssets}
             onImportProject={handleImportProject}
             onDownloadAssetList={handleDownloadAssetList}

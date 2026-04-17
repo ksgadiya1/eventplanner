@@ -28,6 +28,7 @@ import {
   getLinePatternIcons,
   getBoundsPreviewPath,
   instantiateZoneFromTemplate,
+  findOverlappingAsset,
   snapToGrid,
   snapToZoneGrid,
   computeVisibleGridSpacing,
@@ -587,8 +588,9 @@ export default function MapCanvas({
     if (resolved.restrictionBounds) map.fitBounds(resolved.restrictionBounds, 60)
   }, [eventDetails?.resolvedLocation])
 
-  function buildAssetPlacement(assetBase) {
+  function buildAssetPlacement(assetBase, options = {}) {
     if (!window.google) return assetBase
+    const { excludeAssetId = null, notifyOnOverlap = false } = options
     const parentZone = getDeepestParentZone({ lat: assetBase.lat, lng: assetBase.lng }, zones, window.google)
     const parentFloor = parentZone ? null : getDeepestParentFloor({ lat: assetBase.lat, lng: assetBase.lng }, floorPlans, window.google)
 
@@ -614,25 +616,33 @@ export default function MapCanvas({
     const zoneAnchorLat = zoneAnchor?.lat ?? assetBase.lat
     const zoneGridSize = computeVisibleGridSpacing(rawZoneGridSize, zoneAnchorLat, mapZoom)
 
+    let resolvedPlacement = placement
+
     if (zoneGridSnap && Number.isFinite(assetBase.lat) && Number.isFinite(assetBase.lng)) {
       const snapped = snapToZoneGrid(assetBase.lat, assetBase.lng, parentZone, mapZoom, assetBase.widthM, assetBase.lengthM)
-      return {
+      resolvedPlacement = {
         ...placement,
         lat: snapped.lat,
         lng: snapped.lng,
       }
-    }
-
-    if (baseGridSnap && Number.isFinite(assetBase.lat) && Number.isFinite(assetBase.lng)) {
+    } else if (baseGridSnap && Number.isFinite(assetBase.lat) && Number.isFinite(assetBase.lng)) {
       const snapped = snapToGrid(assetBase.lat, assetBase.lng, baseGridSize, baseCenterLat, assetBase.widthM, assetBase.lengthM)
-      return {
+      resolvedPlacement = {
         ...placement,
         lat: snapped.lat,
         lng: snapped.lng,
       }
     }
 
-    return placement
+    const overlappingAsset = findOverlappingAsset(resolvedPlacement, assets, { excludeAssetId })
+    if (overlappingAsset) {
+      if (notifyOnOverlap) {
+        window.alert(`Cannot place this asset on top of "${overlappingAsset.label || overlappingAsset.assetDef?.name || 'another asset'}".`)
+      }
+      return null
+    }
+
+    return resolvedPlacement
   }
 
   const buildAnnotationPlacement = useCallback((annotationBase) => {
@@ -659,7 +669,7 @@ export default function MapCanvas({
             ...interaction.object,
             lat: latLng.lat() - (interaction.latOffset || 0),
             lng: latLng.lng() - (interaction.lngOffset || 0),
-          })
+          }, { excludeAssetId: interaction.object.id })
           if (!movedAsset) return
           onAssetUpdate(movedAsset)
           return
@@ -1064,7 +1074,7 @@ export default function MapCanvas({
       label: asset.name,
       status: 'planned',
       notes: '',
-    })
+    }, { notifyOnOverlap: true })
     if (!placedAsset) return
     onAssetDrop(placedAsset)
   }, [buildAssetPlacement, onAssetDrop])
@@ -1143,7 +1153,7 @@ export default function MapCanvas({
       label: pendingAssetDef.name,
       status: 'planned',
       notes: '',
-    })
+    }, { notifyOnOverlap: true })
 
     if (!placedAsset) return true
 
@@ -2293,7 +2303,7 @@ export default function MapCanvas({
         <GridLayer
           map={mapRef.current}
           visible={layers.grid?.visible}
-          size={layers.grid?.size || 10}
+          size={layers.grid?.size || 3}
           opacity={layers.grid?.opacity}
           color={layers.grid?.color}
         />
