@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar'
 import MapCanvas from './components/MapCanvas'
 import PropertiesPanel from './components/PropertiesPanel'
 import StatsBar from './components/StatsBar'
+import ToastContainer from './components/ToastContainer'
 import HomeScreen from './components/HomeScreen'
 import { computeZoneCapacity } from './data/assets'
 import { getRouteStylePreset } from './data/routeTypes'
@@ -611,8 +612,17 @@ export default function App() {
     const saved = window.localStorage.getItem('eventwiz-measurement-unit')
     return (saved === 'feet' || saved === 'meters') ? saved : 'meters'
   })
+  const [toasts, setToasts] = useState([])
   const mapRef = useRef(null)
   const hasHydratedRef = useRef(false)
+  const notify = useCallback((message, type = 'success') => {
+    const id = Date.now()
+    setToasts(prev => [...prev.slice(-4), { id, message, type }])
+  }, [])
+
+  const handleRemoveToast = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [])
 
   const viewOnlyMinZoom = useMemo(() => {
     const baseZoom = Number.isFinite(sharedView.zoom)
@@ -915,7 +925,7 @@ export default function App() {
         return { ...prev, categories: nextCategories }
       })
 
-      window.alert(`Custom asset "${baseName}" added to ${categoryLabel}.`)
+      notify(`Custom asset "${baseName}" added to ${categoryLabel}.`)
       return
     }
 
@@ -926,7 +936,7 @@ export default function App() {
         writeCustomAssetCategories(nextCategories)
         return { ...prev, categories: nextCategories }
       })
-      window.alert('Asset library imported successfully.')
+      notify('Asset library imported successfully.')
       return
     }
 
@@ -935,7 +945,7 @@ export default function App() {
       : (Array.isArray(payload?.assets) ? payload.assets : [])
 
     if (!incomingAssets.length) {
-      window.alert('No asset data found in the selected file.')
+      notify('No asset data found in the selected file.', 'error')
       return
     }
 
@@ -962,7 +972,7 @@ export default function App() {
       .filter(Boolean)
 
     if (!importedAssets.length) {
-      window.alert('No valid asset positions were found to import.')
+      notify('No valid asset positions were found to import.', 'error')
       return
     }
 
@@ -970,8 +980,8 @@ export default function App() {
     setAssets(prev => [...prev, ...importedAssets])
     setSelectedId(importedAssets[importedAssets.length - 1].id)
     setDrawMode('select')
-    window.alert(`${importedAssets.length} asset(s) imported successfully.`)
-  }, [floorPlans, pushHistory, zones])
+    notify(`${importedAssets.length} asset(s) imported successfully.`)
+  }, [floorPlans, pushHistory, zones, notify])
 
   const handleSaveCustomAsset = useCallback((asset, options = {}) => {
     const categoryLabel = String(asset?.assetDef?.category || asset?.category || 'Custom Assets').trim() || 'Custom Assets'
@@ -1004,11 +1014,11 @@ export default function App() {
       return { ...prev, categories: nextCategories }
     })
 
-    window.alert(options.mode === 'replace'
+    notify(options.mode === 'replace'
       ? `Custom asset "${baseName}" updated in ${categoryLabel}.`
       : `Custom asset "${baseName}" added to ${categoryLabel}.`
     )
-  }, [])
+  }, [notify])
 
   const handleDeleteCustomAsset = useCallback((assetId) => {
     if (!assetId) return
@@ -1028,7 +1038,8 @@ export default function App() {
     })
 
     setPendingAssetDef(prev => (prev?.id === assetId ? null : prev))
-  }, [assetData.categories])
+    notify(`Deleted custom asset "${customAsset.name}".`)
+  }, [assetData.categories, notify])
 
   const handleImportProject = useCallback((payload) => {
     const isSupportedPayload = payload && typeof payload === 'object' && (
@@ -1042,7 +1053,7 @@ export default function App() {
     )
 
     if (!isSupportedPayload) {
-      window.alert('Please select a valid EventWiz map JSON export.')
+      notify('Please select a valid EventWiz map JSON export.', 'error')
       return
     }
 
@@ -1106,12 +1117,12 @@ export default function App() {
     setPendingAssetDef(null)
     setPendingFloorImageUrl(null)
     setDrawMode('select')
-    window.alert('Map JSON imported successfully.')
-  }, [assetData.zoneTypes, pushHistory])
+    notify('Map JSON imported successfully.')
+  }, [assetData.zoneTypes, pushHistory, notify])
 
   const handleDownloadAssetList = useCallback(() => {
     if (!assets.length) {
-      window.alert('No assets available to download.')
+      notify('No assets available to download.', 'error')
       return
     }
 
@@ -1144,7 +1155,7 @@ export default function App() {
     link.download = `eventwiz-assets-${Date.now()}.csv`
     link.click()
     URL.revokeObjectURL(url)
-  }, [assets, zones])
+  }, [assets, zones, notify])
 
   const handleLineCreate = useCallback((line) => {
     pushHistory()
@@ -1249,13 +1260,13 @@ export default function App() {
   const handleSaveZoneTemplate = useCallback((zone, options = {}) => {
     if (!zone || zone.type !== 'zone') return
     if (!window.google) {
-      window.alert('Map is still loading. Please try again in a moment.')
+      notify('Map is still loading. Please try again in a moment.', 'error')
       return
     }
 
     const geometry = serializeZoneTemplateGeometry(zone, window.google)
     if (!geometry || !Array.isArray(geometry.pathOffsets) || geometry.pathOffsets.length < 3) {
-      window.alert('This area could not be saved as a reusable template.')
+      notify('This area could not be saved as a reusable template.', 'error')
       return
     }
 
@@ -1266,7 +1277,7 @@ export default function App() {
       : null
 
     if (options.mode === 'replace' && !existingTemplate) {
-      window.alert('Please choose a saved template to replace.')
+      notify('Please choose a saved template to replace.', 'error')
       return
     }
 
@@ -1276,13 +1287,13 @@ export default function App() {
     if (options.mode !== 'replace') {
       const baseName = `${zone.label || zone.zoneType?.name || 'Zone'} Template`
       const suggestedName = getNextVersionName(baseName, zoneTemplates.map(template => template.name))
-      const nextName = window.prompt('Template name', suggestedName)
+      const nextName = options.customName || window.prompt('Template name', suggestedName)
 
       if (nextName == null) return
 
       const trimmedName = nextName.trim()
       if (!trimmedName) {
-        window.alert('Template name is required.')
+        notify('Template name is required.', 'error')
         return
       }
 
@@ -1317,13 +1328,13 @@ export default function App() {
       setZoneTemplates(prev => prev.map(template => (
         template.id === existingTemplate.id ? nextTemplate : template
       )))
-      window.alert(`Replaced "${existingTemplate.name}".`)
+      notify(`Replaced "${existingTemplate.name}".`)
       return
     }
 
     setZoneTemplates(prev => [nextTemplate, ...prev])
-    window.alert(`Saved "${templateName}" to Area Templates.`)
-  }, [zoneTemplates])
+    notify(`Saved "${templateName}" to Area Templates.`)
+  }, [zoneTemplates, notify])
 
   const handleDeleteZoneTemplate = useCallback((templateId) => {
     const template = zoneTemplates.find(item => item.id === templateId)
@@ -1836,7 +1847,7 @@ export default function App() {
 
     const overlappingAsset = findOverlappingAsset(duplicated, assets)
     if (overlappingAsset) {
-      window.alert(`Cannot duplicate this asset because it would overlap "${overlappingAsset.label || overlappingAsset.assetDef?.name || 'another asset'}".`)
+      notify(`Cannot duplicate this asset because it would overlap "${overlappingAsset.label || overlappingAsset.assetDef?.name || 'another asset'}".`, 'error')
       return
     }
 
@@ -2902,7 +2913,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('Export failed:', err)
-      window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
+      notify(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`, 'error')
     }
   }, [annotations, assets, captureMapImage, eventDetails, floorPlans, layers, lineStyle, lines, mapViewMode, mapViewport, measurementUnit, selectedZoneType, textStyle, zones])
 
@@ -3421,6 +3432,8 @@ export default function App() {
       </div>
 
       <StatsBar zones={zones} assets={assets} annotations={annotations} selectedId={selectedId} measurementUnit={measurementUnit} />
+      
+      <ToastContainer toasts={toasts} onRemove={handleRemoveToast} />
     </div>
   )
 }

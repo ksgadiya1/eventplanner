@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GoogleMap, useJsApiLoader, Polygon, Circle, OverlayView, Polyline, MarkerF } from '@react-google-maps/api'
+import { GoogleMap, useJsApiLoader, Polygon, Circle, Rectangle, OverlayView, Polyline, MarkerF } from '@react-google-maps/api'
 import { computeZoneCapacity, getAssetName, getZoneAllowedAssetTypes, isAssetAllowedInZone } from '../data/assets'
 import {
   metersPerPixel,
@@ -57,6 +57,144 @@ const CircleDot = React.memo(function CircleDot({ position, scale = 4, fillColor
     </OverlayView>
   )
 })
+
+/**
+ * Self-contained native Google Maps Rectangle for square zones.
+ * Uses two-level useMemo to produce a STABLE `bounds` object reference
+ * (only a new reference when coordinate values actually change).
+ * This is the only reliable way to stop @react-google-maps/api from
+ * calling instance.setBounds() on every React re-render, which would
+ * fire onBoundsChanged and create an infinite update loop.
+ */
+const ZoneRectangle = React.memo(function ZoneRectangle({
+  zone,
+  selectedId,
+  layersLocked,
+  drawMode,
+  onZoneClick,
+  onZoneMouseOver,
+  onZoneMouseOut,
+  onBoundsChange,   // stable ref: (n, s, e, w) => void
+  rectRefs,         // shared ref from parent to prevent duplicates
+}) {
+  const gmRectRef = useRef(null)
+  const lastBoundsRef = useRef(null) // { n, s, e, w } — last bounds we acted on
+
+  // Keep onBoundsChange in a ref so handleBoundsChanged never needs to change
+  // reference (prevents @react-google-maps/api from re-registering the listener
+  // on every render, which would fire an extra onBoundsChanged each time).
+  const onBoundsChangeRef = useRef(onBoundsChange)
+  useEffect(() => { onBoundsChangeRef.current = onBoundsChange }, [onBoundsChange])
+
+  // ── Level 1: compute scalar values from zone data ──────────────────────────
+  // zone.path is a new array reference on every update, but the primitive
+  // numbers inside it only change when the user actually moves the rectangle.
+  const path = zone.path
+  const centerLat = zone.center?.lat
+  const centerLng = zone.center?.lng
+  const widthM = zone.widthM
+  const lengthM = zone.lengthM
+
+  const [bn, bs, be, bw] = useMemo(() => {
+    const pts = Array.isArray(path) && path.length >= 4 ? path : null
+    if (pts) {
+      const lats = pts.map(p => Number(p.lat))
+      const lngs = pts.map(p => Number(p.lng))
+      return [Math.max(...lats), Math.min(...lats), Math.max(...lngs), Math.min(...lngs)]
+    }
+    const lat = Number(centerLat) || 0
+    const lng = Number(centerLng) || 0
+    const hw = (Number(widthM) || 10) / 2
+    const hl = (Number(lengthM) || 10) / 2
+    const latD = hl / 111111
+    const lngD = hw / (111111 * Math.max(1e-6, Math.cos(lat * Math.PI / 180)))
+    return [lat + latD, lat - latD, lng + lngD, lng - lngD]
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, centerLat, centerLng, widthM, lengthM])
+
+  // ── Level 2: stable bounds OBJECT — only new reference when values change ──
+  // When the user drags the rectangle, values change → new object → @react-google-maps/api
+  // calls setBounds, firing onBoundsChanged once. The guard below stops it there.
+  // When React re-renders due to our OWN onAssetUpdate (values identical) → same
+  // object reference → @react-google-maps/api skips setBounds → no onBoundsChanged. ✓
+  const stableBounds = useMemo(
+    () => ({ north: bn, south: bs, east: be, west: bw }),
+    [bn, bs, be, bw]
+  )
+
+  // Stable handler — empty deps because we use refs for mutable values
+  const handleBoundsChanged = useCallback(() => {
+    const rect = gmRectRef.current
+    if (!rect || !window.google) return
+    const b = rect.getBounds()
+    if (!b) return
+    const n = b.getNorthEast().lat()
+    const e = b.getNorthEast().lng()
+    const s = b.getSouthWest().lat()
+    const w = b.getSouthWest().lng()
+    // Guard: same coords as last saved → this is a re-fire from our own update
+    const last = lastBoundsRef.current
+    const EPS = 1e-9
+    if (
+      last &&
+      Math.abs(last.n - n) < EPS &&
+      Math.abs(last.s - s) < EPS &&
+      Math.abs(last.e - e) < EPS &&
+      Math.abs(last.w - w) < EPS
+    ) return
+    lastBoundsRef.current = { n, s, e, w }
+    onBoundsChangeRef.current(n, s, e, w)
+  }, []) // intentionally empty — reads from refs
+
+  const isSelected = selectedId === zone.id
+  const color = zone.strokeColor || zone.zoneType?.color || '#3d8ef8'
+  const fillColor = zone.fillColor || zone.zoneType?.color || '#3d8ef8'
+  const fillOpacity = isSelected
+    ? Math.min((zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2) + 0.08, 1)
+    : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2)
+
+  return (
+    <Rectangle
+      bounds={stableBounds}
+      options={{
+        fillColor,
+        fillOpacity,
+        strokeColor: color,
+        strokeWeight: isSelected ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
+        editable: isSelected && !layersLocked,
+        draggable: isSelected && !layersLocked,
+        clickable: drawMode === 'select' || drawMode === 'erase',
+        zIndex: isSelected ? 1 : 0,
+      }}
+      onClick={onZoneClick}
+      onMouseOver={onZoneMouseOver}
+      onMouseOut={onZoneMouseOut}
+      onBoundsChanged={handleBoundsChanged}
+      onLoad={(rect) => {
+        // --- Ghost Prevention ---
+        // If there's an old rectangle instance for this zone ID lying around, kill it.
+        const previousRect = rectRefs?.current?.[zone.id]
+        if (previousRect && previousRect !== rect) {
+          previousRect.setMap?.(null)
+        }
+        if (rectRefs) rectRefs.current[zone.id] = rect
+        gmRectRef.current = rect
+        
+        // Seed the snapshot so the first onBoundsChanged (from initial setBounds) is ignored
+        lastBoundsRef.current = { n: bn, s: bs, e: be, w: bw }
+      }}
+      onUnmount={(rect) => {
+        rect?.setMap?.(null)
+        if (rectRefs && rectRefs.current[zone.id] === rect) {
+          delete rectRefs.current[zone.id]
+        }
+        gmRectRef.current = null
+        lastBoundsRef.current = null
+      }}
+    />
+  )
+})
+
 const MIN_ASSET_SIZE_M = 0.5
 const MIN_ASSET_SIZE_PX = 28
 const MIN_FLOOR_SIZE_PX = 80
@@ -267,6 +405,7 @@ export default function MapCanvas({
   const shapeDraftRef = useRef(null)
   const zoneOverlayRefs = useRef({})
   const zoneCircleRefs = useRef({})
+  const zoneRectRefs = useRef({})
   const lastCircleSnapshotRef = useRef({})
   const lineOverlayRefs = useRef({})
   const lastLineSnapshotRef = useRef({})
@@ -952,6 +1091,97 @@ export default function MapCanvas({
     if (!window.google || !overlay) return
     const path = extractPathFromOverlay(overlay)
     if (path.length < 3) return
+
+    // For square/rectangle zones, reconstruct a valid rectangle from the dragged vertex
+    // to prevent Google Maps polygon editing from turning it into a free-form polygon.
+    if (zone.shapeType === 'square' && path.length === 4) {
+      const prevPath = zone.path
+      let movedIdx = 0
+
+      // Find which vertex moved the most (the one the user dragged)
+      if (Array.isArray(prevPath) && prevPath.length === 4) {
+        let maxDist = -1
+        for (let i = 0; i < 4; i++) {
+          const dLat = (path[i]?.lat || 0) - (prevPath[i]?.lat || 0)
+          const dLng = (path[i]?.lng || 0) - (prevPath[i]?.lng || 0)
+          const dist = Math.sqrt(dLat * dLat + dLng * dLng)
+          if (dist > maxDist) { maxDist = dist; movedIdx = i }
+        }
+      }
+
+      // The diagonal opposite vertex stays fixed as the anchor corner
+      const oppositeIdx = (movedIdx + 2) % 4
+      const draggedCorner = path[movedIdx]
+      const fixedCorner = path[oppositeIdx]
+
+      if (draggedCorner && fixedCorner && window.google.maps.geometry?.spherical) {
+        const spherical = window.google.maps.geometry.spherical
+
+        // Rebuild center from midpoint of the two diagonal corners
+        const newCenter = {
+          lat: (draggedCorner.lat + fixedCorner.lat) / 2,
+          lng: (draggedCorner.lng + fixedCorner.lng) / 2,
+        }
+
+        // Compute the original rectangle's rotation from prevPath (or zone),
+        // then derive new halfWidth/halfHeight from the dragged diagonal distance
+        const prevRotationDeg = (() => {
+          if (Array.isArray(prevPath) && prevPath.length >= 2) {
+            const p0 = prevPath[0]
+            const p1 = prevPath[1]
+            if (p0 && p1) {
+              // edge p0->p1 corresponds to the "width" direction
+              const dLat = (p1.lat - p0.lat) * 111111
+              const dLng = (p1.lng - p0.lng) * 111111 * Math.cos(p0.lat * Math.PI / 180)
+              return (Math.atan2(dLng, dLat) * 180 / Math.PI + 360) % 360
+            }
+          }
+          return 0
+        })()
+
+        // Project the diagonal half-vector onto width/height axes
+        const halfDiagLat = (draggedCorner.lat - newCenter.lat) * 111111
+        const halfDiagLng = (draggedCorner.lng - newCenter.lng) * 111111 * Math.cos(newCenter.lat * Math.PI / 180)
+        const rotRad = prevRotationDeg * Math.PI / 180
+
+        // Width direction: rotated by prevRotationDeg; height direction: perpendicular
+        const halfWidthM = Math.abs(halfDiagLng * Math.cos(rotRad) - halfDiagLat * Math.sin(rotRad))
+        const halfHeightM = Math.abs(halfDiagLng * Math.sin(rotRad) + halfDiagLat * Math.cos(rotRad))
+
+        const constrainedPath = buildRectanglePath(
+          newCenter,
+          Math.max(0.5, halfWidthM),
+          Math.max(0.5, halfHeightM),
+          window.google,
+          prevRotationDeg
+        )
+
+        if (constrainedPath.length === 4) {
+          // Push the constrained path back into the Google Maps polygon overlay
+          const gmPath = overlay.getPath?.()
+          if (gmPath && gmPath.getLength() === 4) {
+            constrainedPath.forEach((pt, idx) => {
+              gmPath.setAt(idx, new window.google.maps.LatLng(pt.lat, pt.lng))
+            })
+          }
+
+          const { areaM2, perimeterM } = computePolygonMetrics(constrainedPath, window.google)
+          onAssetUpdate({
+            ...zone,
+            path: constrainedPath,
+            center: newCenter,
+            widthM: Number((halfWidthM * 2).toFixed(2)),
+            lengthM: Number((halfHeightM * 2).toFixed(2)),
+            areaM2,
+            perimeterM,
+            parentId: zone.parentId || null,
+            capacity: computeZoneCapacity({ ...zone, path: constrainedPath, areaM2 }),
+          })
+          return
+        }
+      }
+    }
+
     const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
 
     const updateData = {
@@ -963,17 +1193,41 @@ export default function MapCanvas({
       capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
     }
 
-    // For square zones, synchronize center and dimensions with the new path
-    if (zone.shapeType === 'square') {
-      const center = getPathCenter(path)
-      const dimensions = getRectangleZoneDimensions({ path }, window.google)
-      updateData.center = center
-      if (dimensions.widthM) updateData.widthM = Number(dimensions.widthM.toFixed(2))
-      if (dimensions.lengthM) updateData.lengthM = Number(dimensions.lengthM.toFixed(2))
-    }
-
     onAssetUpdate(updateData)
   }, [onAssetUpdate, zones])
+
+  // Commit a bounds change from a ZoneRectangle drag/resize to app state
+  const handleRectZoneUpdate = useCallback((zone, n, s, e, w) => {
+    if (!window.google) return
+    const newPath = [
+      { lat: n, lng: w },
+      { lat: n, lng: e },
+      { lat: s, lng: e },
+      { lat: s, lng: w },
+    ]
+    const newCenter = { lat: (n + s) / 2, lng: (e + w) / 2 }
+    const spherical = window.google.maps.geometry.spherical
+    const widthM = spherical.computeDistanceBetween(
+      new window.google.maps.LatLng(newCenter.lat, w),
+      new window.google.maps.LatLng(newCenter.lat, e)
+    )
+    const lengthM = spherical.computeDistanceBetween(
+      new window.google.maps.LatLng(s, newCenter.lng),
+      new window.google.maps.LatLng(n, newCenter.lng)
+    )
+    const { areaM2, perimeterM } = computePolygonMetrics(newPath, window.google)
+    onAssetUpdate({
+      ...zone,
+      path: newPath,
+      center: newCenter,
+      widthM: Number(widthM.toFixed(2)),
+      lengthM: Number(lengthM.toFixed(2)),
+      areaM2,
+      perimeterM,
+      parentId: zone.parentId || null,
+      capacity: computeZoneCapacity({ ...zone, path: newPath, areaM2 }),
+    })
+  }, [onAssetUpdate])
 
   const handleCircleZoneChange = useCallback((zone) => {
     const circle = zoneCircleRefs.current[zone.id]
@@ -1890,6 +2144,27 @@ export default function MapCanvas({
                     delete zoneCircleRefs.current[zone.id]
                     delete lastCircleSnapshotRef.current[zone.id]
                   }}
+                />
+              ) : zone.shapeType === 'square' ? (
+                <ZoneRectangle
+                  zone={zone}
+                  selectedId={selectedId}
+                  layersLocked={!!layers.zones?.locked}
+                  drawMode={drawMode}
+                  rectRefs={zoneRectRefs}
+                  onZoneClick={(event) => {
+                    if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
+                    if (placePendingAssetAtLatLng(event?.latLng)) return
+                    if (drawMode === 'erase') { onEraseAsset(zone, 'zone'); return }
+                    if (drawMode !== 'select') return
+                    onSelect(zone)
+                  }}
+                  onZoneMouseOver={() => {
+                    if (drawMode !== 'select') return
+                    setHoveredItem({ type: 'zone', data: zone })
+                  }}
+                  onZoneMouseOut={() => setHoveredItem(null)}
+                  onBoundsChange={(n, s, e, w) => handleRectZoneUpdate(zone, n, s, e, w)}
                 />
               ) : (
                 <Polygon

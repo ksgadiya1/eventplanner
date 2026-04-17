@@ -4,6 +4,26 @@ import { computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZon
 import { ROUTE_TYPE_OPTIONS, getRouteStylePreset } from '../data/routeTypes'
 import { formatArea, formatDistance, getUnitLabel, convertDistance, convertToMeters } from '../utils/units'
 
+/**
+ * Generates a unique name for a new version of an item based on existing names.
+ * Adds or increments a "vN" suffix if the base name is already taken.
+ */
+function getNextVersionName(baseName, existingNames) {
+  const nameSet = new Set(existingNames.map(n => String(n || '').toLowerCase().trim()))
+  const cleanBase = String(baseName || '').replace(/\s+v\d+$/i, '').trim()
+  
+  if (!nameSet.has(cleanBase.toLowerCase())) return cleanBase
+
+  let version = 2
+  while (true) {
+    const candidate = `${cleanBase} v${version}`
+    if (!nameSet.has(candidate.toLowerCase())) return candidate
+    version++
+    // Safety break
+    if (version > 999) return `${cleanBase} ${Date.now()}`
+  }
+}
+
 const styles = {
   panel: {
     width: '260px',
@@ -208,6 +228,10 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const [radiusInput, setRadiusInput] = useState('')
   const [rotationInput, setRotationInput] = useState('')
   const [replaceCustomAssetId, setReplaceCustomAssetId] = useState('')
+  const [templateDraftName, setTemplateDraftName] = useState('')
+  const [assetDraftName, setAssetDraftName] = useState('')
+  const [templateNameError, setTemplateNameError] = useState(false)
+  const [assetNameError, setAssetNameError] = useState(false)
 
   useEffect(() => {
     if (selected?.shapeType === 'square') {
@@ -264,6 +288,25 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
     setReplaceCustomAssetId(customAssetDefs[0]?.id || '')
   }, [customAssetDefs, replaceCustomAssetId])
 
+  // Draft name initialization / suggested naming
+  useEffect(() => {
+    if (isZone && selectedId) {
+      const baseName = `${selected.label || selected.zoneType?.name || 'Zone'} Template`
+      const suggested = getNextVersionName(baseName, zoneTemplates.map(t => t.name))
+      setTemplateDraftName(suggested)
+      setTemplateNameError(false)
+    }
+  }, [selectedId, isZone, zoneTemplates, selected?.label, selected?.zoneType?.name])
+
+  useEffect(() => {
+    if (isAsset && selectedId) {
+      const baseName = selected.label || selected.assetDef?.name || 'Custom Asset'
+      const suggested = getNextVersionName(baseName, customAssetDefs.map(a => a.name))
+      setAssetDraftName(suggested)
+      setAssetNameError(false)
+    }
+  }, [selectedId, isAsset, customAssetDefs, selected?.label, selected?.assetDef?.name])
+
   if (collapsed) {
     return null
   }
@@ -282,18 +325,8 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const remainingZoneCapacity = effectiveZoneCapacity !== null ? Math.max(effectiveZoneCapacity - usedZoneCapacity, 0) : null
   const capLabel = isZone ? getZoneCapacityLabel(selected) : { title: 'CAPACITY', unit: 'units' }
   const promptForCustomAssetName = (defaultName) => {
-    const fallbackName = String(defaultName || 'Custom Asset').trim() || 'Custom Asset'
-    const enteredName = window.prompt('Enter a name for this custom asset.', fallbackName)
-
-    if (enteredName === null) return null
-
-    const trimmedName = enteredName.trim()
-    if (!trimmedName) {
-      window.alert('Asset name is required to save a custom asset.')
-      return null
-    }
-
-    return trimmedName
+    // Deprecated: Naming is now handled via inline inputs in the sidebar.
+    return null
   }
 
   return (
@@ -513,10 +546,36 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 
             <div style={styles.statCard}>
               <div style={styles.blockTitle}>Template Actions</div>
+              
+              <div style={{ ...styles.field, marginBottom: '10px' }}>
+                <label style={styles.label}>New Template Name</label>
+                <input
+                  style={{ ...styles.input, borderColor: templateNameError ? 'var(--danger)' : 'var(--border)' }}
+                  value={templateDraftName}
+                  onChange={e => {
+                    setTemplateDraftName(e.target.value)
+                    if (e.target.value.trim()) setTemplateNameError(false)
+                  }}
+                  placeholder="Enter template name..."
+                />
+                {templateNameError && (
+                  <div style={{ fontSize: '10px', color: 'var(--danger)', marginTop: '4px', fontWeight: 600 }}>
+                    Name is required to save a template.
+                  </div>
+                )}
+              </div>
+
               <button
                 type="button"
                 style={styles.actionBtn}
-                onClick={() => onSaveZoneTemplate?.(selected, { mode: 'new' })}
+                onClick={() => {
+                  const name = templateDraftName.trim()
+                  if (!name) {
+                    setTemplateNameError(true)
+                    return
+                  }
+                  onSaveZoneTemplate?.(selected, { mode: 'new', customName: name })
+                }}
               >
                 Save As New
               </button>
@@ -978,13 +1037,35 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             <div style={styles.sectionDivider} />
             <div style={styles.statCard}>
               <div style={styles.blockTitle}>Custom Asset Actions</div>
+              
+              <div style={{ ...styles.field, marginBottom: '10px' }}>
+                <label style={styles.label}>Custom Asset Name</label>
+                <input
+                  style={{ ...styles.input, borderColor: assetNameError ? 'var(--danger)' : 'var(--border)' }}
+                  value={assetDraftName}
+                  onChange={e => {
+                    setAssetDraftName(e.target.value)
+                    if (e.target.value.trim()) setAssetNameError(false)
+                  }}
+                  placeholder="Enter custom name..."
+                />
+                {assetNameError && (
+                  <div style={{ fontSize: '10px', color: 'var(--danger)', marginTop: '4px', fontWeight: 600 }}>
+                    Name is required to save an asset.
+                  </div>
+                )}
+              </div>
+
               <button
                 type="button"
                 style={styles.actionBtn}
                 onClick={() => {
-                  const customName = promptForCustomAssetName(selected?.label || selected?.assetDef?.name)
-                  if (!customName) return
-                  onSaveCustomAsset?.(selected, { mode: 'new', customName })
+                  const name = assetDraftName.trim()
+                  if (!name) {
+                    setAssetNameError(true)
+                    return
+                  }
+                  onSaveCustomAsset?.(selected, { mode: 'new', customName: name })
                 }}
               >
                 Save As New
@@ -1015,10 +1096,12 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 }}
                 onClick={() => {
                   if (!customAssetDefs.length || !replaceCustomAssetId) return
-                  const selectedCustomAsset = customAssetDefs.find(asset => asset.id === replaceCustomAssetId)
-                  const customName = promptForCustomAssetName(selectedCustomAsset?.name || selected?.label || selected?.assetDef?.name)
-                  if (!customName) return
-                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId, customName })
+                  const name = assetDraftName.trim()
+                  if (!name) {
+                    setAssetNameError(true)
+                    return
+                  }
+                  onSaveCustomAsset?.(selected, { mode: 'replace', assetId: replaceCustomAssetId, customName: name })
                 }}
                 disabled={!customAssetDefs.length || !replaceCustomAssetId}
               >
