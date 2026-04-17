@@ -431,7 +431,8 @@ function detectPathTranslation(previousPath, nextPath, tolerance = 1e-6) {
       && Math.abs(((nextPoint.lng || 0) - (point.lng || 0)) - delta.lng) <= tolerance
   })
 
-  return isConsistent ? delta : null
+  const isSignificant = Math.abs(delta.lat) > 1e-8 || Math.abs(delta.lng) > 1e-8
+  return (isConsistent && isSignificant) ? delta : null
 }
 
 function detectPathTranslationByCentroid(previousPath, nextPath) {

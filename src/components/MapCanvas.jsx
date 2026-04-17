@@ -79,6 +79,7 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
 }) {
   const gmRectRef = useRef(null)
   const lastBoundsRef = useRef(null) // { n, s, e, w } — last bounds we acted on
+  const pendingUpdateRef = useRef(null) // RAF ID for decoupled update cycle
 
   // Keep onBoundsChange in a ref so handleBoundsChanged never needs to change
   // reference (prevents @react-google-maps/api from re-registering the listener
@@ -108,7 +109,10 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
     const hl = (Number(lengthM) || 10) / 2
     const latD = hl / 111111
     const lngD = hw / (111111 * Math.max(1e-6, Math.cos(lat * Math.PI / 180)))
-    return [lat + latD, lat - latD, lng + lngD, lng - lngD]
+    // Truncate to 10 decimal places to eliminate microscopic noise differences
+    // across different re-renders or math paths.
+    const tr = (val) => Math.round(val * 1e10) / 1e10
+    return [tr(lat + latD), tr(lat - latD), tr(lng + lngD), tr(lng - lngD)]
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, centerLat, centerLng, widthM, lengthM])
 
@@ -122,19 +126,22 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
     [bn, bs, be, bw]
   )
 
-  // Stable handler — empty deps because we use refs for mutable values
+  // Stable handler — decoupled via RAF to break the synchronous loop
   const handleBoundsChanged = useCallback(() => {
     const rect = gmRectRef.current
     if (!rect || !window.google) return
     const b = rect.getBounds()
     if (!b) return
+
+    // Immediately extract coords to maintain the current user interaction state
     const n = b.getNorthEast().lat()
     const e = b.getNorthEast().lng()
     const s = b.getSouthWest().lat()
     const w = b.getSouthWest().lng()
-    // Guard: same coords as last saved → this is a re-fire from our own update
+
+    // Guard: same coords as last saved → this is a re-fire from our own update.
     const last = lastBoundsRef.current
-    const EPS = 1e-9
+    const EPS = 1e-7
     if (
       last &&
       Math.abs(last.n - n) < EPS &&
@@ -142,8 +149,14 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
       Math.abs(last.e - e) < EPS &&
       Math.abs(last.w - w) < EPS
     ) return
-    lastBoundsRef.current = { n, s, e, w }
-    onBoundsChangeRef.current(n, s, e, w)
+
+    // Decouple from Google Maps internal event cycle
+    if (pendingUpdateRef.current) cancelAnimationFrame(pendingUpdateRef.current)
+    pendingUpdateRef.current = requestAnimationFrame(() => {
+      pendingUpdateRef.current = null
+      lastBoundsRef.current = { n, s, e, w }
+      onBoundsChangeRef.current(n, s, e, w)
+    })
   }, []) // intentionally empty — reads from refs
 
   const isSelected = selectedId === zone.id
@@ -1199,22 +1212,33 @@ export default function MapCanvas({
   // Commit a bounds change from a ZoneRectangle drag/resize to app state
   const handleRectZoneUpdate = useCallback((zone, n, s, e, w) => {
     if (!window.google) return
+    const tr = (val) => Math.round(val * 1e10) / 1e10
+    const [tn, ts, te, tw] = [tr(n), tr(s), tr(e), tr(w)]
+
     const newPath = [
-      { lat: n, lng: w },
-      { lat: n, lng: e },
-      { lat: s, lng: e },
-      { lat: s, lng: w },
+      { lat: tn, lng: tw },
+      { lat: tn, lng: te },
+      { lat: ts, lng: te },
+      { lat: ts, lng: tw },
     ]
-    const newCenter = { lat: (n + s) / 2, lng: (e + w) / 2 }
+    const newCenter = { lat: tr((tn + ts) / 2), lng: tr((te + tw) / 2) }
     const spherical = window.google.maps.geometry.spherical
     const widthM = spherical.computeDistanceBetween(
-      new window.google.maps.LatLng(newCenter.lat, w),
-      new window.google.maps.LatLng(newCenter.lat, e)
+      new window.google.maps.LatLng(newCenter.lat, tw),
+      new window.google.maps.LatLng(newCenter.lat, te)
     )
     const lengthM = spherical.computeDistanceBetween(
-      new window.google.maps.LatLng(s, newCenter.lng),
-      new window.google.maps.LatLng(n, newCenter.lng)
+      new window.google.maps.LatLng(ts, newCenter.lng),
+      new window.google.maps.LatLng(tn, newCenter.lng)
     )
+
+    // Significance Guard: If the box hasn't moved at least 0.0001mm, ignore it.
+    // This breaks potential circular updates between React and Google Maps.
+    const prevN = tr(Math.max(...(zone.path?.map(p => p.lat) || [0])))
+    const prevW = tr(Math.min(...(zone.path?.map(p => p.lng) || [0])))
+    const diff = Math.max(Math.abs(prevN - tn), Math.abs(prevW - tw))
+    if (diff < 1e-10) return
+
     const { areaM2, perimeterM } = computePolygonMetrics(newPath, window.google)
     onAssetUpdate({
       ...zone,
