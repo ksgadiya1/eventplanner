@@ -682,7 +682,8 @@ function normalizeAnnotationParent(annotation, zones, floorPlans) {
 
 function normalizeZoneParent(zone, zones, floorPlans) {
   if (!zone?.path?.length) return zone
-  const anchorPoint = zone.path[0]
+  const centroid = getPathCentroid(zone.path)
+  const anchorPoint = centroid || zone.path[0]
   if (!anchorPoint) return zone
   const parentFloor = getDeepestParentFloor(anchorPoint, floorPlans, window.google)
   return { ...zone, parentId: parentFloor?.id || null }

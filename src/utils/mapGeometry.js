@@ -48,14 +48,11 @@ export function getAssetSize(asset, zoom) {
   const resolvedZoom = Number.isFinite(zoom) ? zoom : 15
   const scale = metersPerPixel(asset.lat, resolvedZoom)
 
-  const smoothZoomFactor = Math.max(0, resolvedZoom - 10)
-  const minSizePx = Math.max(12, Math.min(28, 12 + smoothZoomFactor * 2.6))
-
   return {
     widthM,
     lengthM,
-    widthPx: Math.max(minSizePx, widthM / scale),
-    lengthPx: Math.max(minSizePx, lengthM / scale),
+    widthPx: Math.max(1, widthM / scale),
+    lengthPx: Math.max(1, lengthM / scale),
     metersPerPixel: scale,
   }
 }

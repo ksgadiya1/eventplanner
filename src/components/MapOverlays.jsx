@@ -429,19 +429,12 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
 })
 
 export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom }) {
-  
   const baseZoom = 18
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   const geometry = getFloorGeometry(map, floorPlan, baseZoom)
   if (!geometry) return null
   const scale = Math.max(0.01, Math.pow(2, liveZoom - baseZoom))
-
   const rotation = floorPlan.rotation || 0
-  const floorImages = Array.isArray(floorPlan.imageUrls) && floorPlan.imageUrls.length
-    ? floorPlan.imageUrls
-    : (floorPlan.imageUrl ? [floorPlan.imageUrl] : [])
-  const primaryImage = floorImages[0] || ''
-  const perImageOpacity = floorPlan.opacity ?? 0.7
   const resizeHandles = [
     { key: 'nw', left: '-8px', top: '-8px', cursor: 'nwse-resize', xSign: -1, ySign: -1 },
     { key: 'ne', right: '-8px', top: '-8px', cursor: 'nesw-resize', xSign: 1, ySign: -1 },
@@ -452,7 +445,7 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
   return (
     <OverlayView
       position={{ lat: geometry.centerLat, lng: geometry.centerLng }}
-      mapPaneName={selected ? OverlayView.OVERLAY_MOUSE_TARGET : OverlayView.OVERLAY_LAYER}
+      mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
       getPixelPositionOffset={() => ({
         x: -(geometry.widthPx / 2),
         y: -(geometry.heightPx / 2),
@@ -465,7 +458,16 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
         pointerEvents: 'none',
         transformOrigin: 'center center',
       }}>
-        <div style={{ position: 'absolute', inset: 0, transform: `scale(${scale}) rotate(${rotation}deg)`, transformOrigin: 'center center', willChange: 'transform' }}>
+        {/* Image layer — sits below zone polygons via zIndex */}
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          transform: `scale(${scale}) rotate(${rotation}deg)`,
+          transformOrigin: 'center center',
+          willChange: 'transform',
+          zIndex: 1,
+          pointerEvents: 'none',
+        }}>
           <img
             src={floorPlan.imageUrl}
             alt="Floor plan"
@@ -479,7 +481,17 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
               pointerEvents: 'none',
             }}
           />
+        </div>
 
+        {/* Interactive controls layer — sits above zones */}
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          transform: `scale(${scale}) rotate(${rotation}deg)`,
+          transformOrigin: 'center center',
+          zIndex: 30,
+          pointerEvents: 'none',
+        }}>
           <button
             type="button"
             onClick={(event) => {
@@ -559,13 +571,20 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
   )
 })
 
+
+
+
+
+
+
 export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotation, selected, locked, interactive, onSelect, onStartInteraction, onUpdate, drawMode = 'select', onEraseAsset, zoom, onHover, refreshTick }) {
   const [isEditing, setIsEditing] = useState(false)
   const [draftText, setDraftText] = useState(annotation.text || '')
-  const [isHovered, setIsHovered] = useState(false)
+
 
   useEffect(() => {
     if (!isEditing) {
+      setDraftText(annotation.text || '')
       setDraftText(annotation.text || '')
     }
   }, [annotation.id, annotation.text, isEditing])
@@ -573,10 +592,6 @@ export const AnnotationOverlay = React.memo(function AnnotationOverlay({ annotat
   const isSelected = Boolean(selected)
   const zoomValue = Number(zoom || 15)
   const minVisibleZoom = isEditing || isSelected ? 0 : 10
-
-  if (!isSelected && zoomValue < minVisibleZoom) {
-    return null
-  }
 
   const pinLabel = String(annotation.label || annotation.text || 'Drop Pin').trim() || 'Drop Pin'
   const pinColor = annotation.pinColor || '#ea4335'
@@ -922,7 +937,7 @@ export const ZoneOverlay = React.memo(function ZoneOverlay({ zone, selected, loc
           )
         })}
 
-        {/* Center move handle - invisible drag target */}
+        {/* Center move handle */}
         {!locked && (
           <div
             onPointerDown={(e) => {

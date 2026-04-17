@@ -2090,7 +2090,7 @@ export default function MapCanvas({
                     editable: selectedId === zone.id && !layers.zones?.locked,
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
-                    zIndex: selectedId === zone.id ? 1 : 0,
+                    zIndex: selectedId === zone.id ? 21 : 20,
                   }}
                   onClick={(event) => {
                     if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
@@ -2139,7 +2139,7 @@ export default function MapCanvas({
                     editable: selectedId === zone.id && !layers.zones?.locked,
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
-                    zIndex: selectedId === zone.id ? 1 : 0,
+                    zIndex: selectedId === zone.id ? 21 : 20,
                   }}
                   onClick={(event) => {
                     if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
@@ -2188,7 +2188,7 @@ export default function MapCanvas({
                     editable: selectedId === zone.id && !layers.zones?.locked && zone.shapeType !== 'rectangle',
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
-                    zIndex: selectedId === zone.id ? 1 : 0,
+                    zIndex: selectedId === zone.id ? 21 : 20,
                   }}
                   onClick={(event) => {
                     if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
