@@ -185,17 +185,23 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
 
   const onPointerUpFn = useCallback((e) => {
     if (!dragState.current) return
-    try { e.target.releasePointerCapture(e.pointerId) } catch { }
-    e.target.removeEventListener('pointermove', onPointerMoveFn)
-    e.target.removeEventListener('pointerup', onPointerUpFn)
+    try { dragState.current.targetElement?.releasePointerCapture?.(e.pointerId) } catch { }
+    window.removeEventListener('pointermove', onPointerMoveFn)
+    window.removeEventListener('pointerup', onPointerUpFn)
     dragState.current = null
     document.body.style.userSelect = ''
   }, [onPointerMoveFn])
 
   const startCapture = useCallback((el, pointerId) => {
-    el.setPointerCapture(pointerId)
-    el.addEventListener('pointermove', onPointerMoveFn)
-    el.addEventListener('pointerup', onPointerUpFn)
+    if (el?.setPointerCapture) {
+      try { el.setPointerCapture(pointerId) } catch { }
+    }
+    dragState.current = {
+      ...dragState.current,
+      targetElement: el,
+    }
+    window.addEventListener('pointermove', onPointerMoveFn)
+    window.addEventListener('pointerup', onPointerUpFn)
     document.body.style.userSelect = 'none'
   }, [onPointerMoveFn, onPointerUpFn])
 
@@ -837,12 +843,32 @@ export const ZoneOverlay = React.memo(function ZoneOverlay({ zone, selected, loc
   if (!centerPx) return null
 
   // Compute each corner's pixel offset relative to center
-  const corners = zone.path.slice(0, 4).map(p => {
+  const pointPositions = zone.path.slice(0, 4).map(p => {
     const px = latLngToContainerPoint(map, p.lat, p.lng)
     if (!px) return null
     return { x: px.x - centerPx.x, y: px.y - centerPx.y }
   })
 
+  if (pointPositions.some(pos => !pos)) return null
+
+  const cornerMap = {
+    nw: null,
+    ne: null,
+    se: null,
+    sw: null,
+  }
+
+  pointPositions.forEach((pos) => {
+    const isWest = pos.x <= 0
+    const isNorth = pos.y <= 0
+    const quadrant = isNorth ? (isWest ? 'nw' : 'ne') : (isWest ? 'sw' : 'se')
+    const current = cornerMap[quadrant]
+    if (!current || (Math.hypot(pos.x, pos.y) < Math.hypot(current.x, current.y))) {
+      cornerMap[quadrant] = pos
+    }
+  })
+
+  const corners = [cornerMap.nw, cornerMap.ne, cornerMap.se, cornerMap.sw]
   if (corners.some(c => !c)) return null
 
   // Bounding box of corners to size the container

@@ -275,6 +275,23 @@ function collectDescendantZoneIds(rootZoneId, zones) {
   return descendantZoneIds
 }
 
+function collectDescendantFloorPlanIds(rootFloorPlanId, floorPlans) {
+  const descendantFloorPlanIds = new Set()
+  const stack = [rootFloorPlanId]
+
+  while (stack.length) {
+    const currentFloorPlanId = stack.pop()
+    floorPlans.forEach(floorPlan => {
+      if (floorPlan.parentId === currentFloorPlanId && !descendantFloorPlanIds.has(floorPlan.id)) {
+        descendantFloorPlanIds.add(floorPlan.id)
+        stack.push(floorPlan.id)
+      }
+    })
+  }
+
+  return descendantFloorPlanIds
+}
+
 function buildCascadeDeleteState(rootZoneId, zones, assets, lines, annotations) {
   const zoneIdsToDelete = new Set([rootZoneId, ...collectDescendantZoneIds(rootZoneId, zones)])
 
@@ -284,6 +301,28 @@ function buildCascadeDeleteState(rootZoneId, zones, assets, lines, annotations) 
     nextAssets: assets.filter(asset => !zoneIdsToDelete.has(asset.parentId)),
     nextLines: lines.filter(line => !zoneIdsToDelete.has(line.parentId)),
     nextAnnotations: annotations.filter(annotation => !zoneIdsToDelete.has(annotation.parentId)),
+  }
+}
+
+function buildCascadeDeleteStateForFloorPlans(rootFloorPlanId, floorPlans, zones, assets, lines, annotations) {
+  const floorPlanIdsToDelete = new Set([rootFloorPlanId, ...collectDescendantFloorPlanIds(rootFloorPlanId, floorPlans)])
+  const zoneIdsToDelete = new Set()
+
+  zones.forEach((zone) => {
+    if (floorPlanIdsToDelete.has(zone.parentId)) {
+      zoneIdsToDelete.add(zone.id)
+      collectDescendantZoneIds(zone.id, zones).forEach((descendantId) => zoneIdsToDelete.add(descendantId))
+    }
+  })
+
+  return {
+    floorPlanIdsToDelete,
+    zoneIdsToDelete,
+    nextFloorPlans: floorPlans.filter(floorPlan => !floorPlanIdsToDelete.has(floorPlan.id)),
+    nextZones: zones.filter(zone => !zoneIdsToDelete.has(zone.id)),
+    nextAssets: assets.filter(asset => !floorPlanIdsToDelete.has(asset.parentId) && !zoneIdsToDelete.has(asset.parentId)),
+    nextLines: lines.filter(line => !floorPlanIdsToDelete.has(line.parentId) && !zoneIdsToDelete.has(line.parentId)),
+    nextAnnotations: annotations.filter(annotation => !floorPlanIdsToDelete.has(annotation.parentId) && !zoneIdsToDelete.has(annotation.parentId)),
   }
 }
 
@@ -456,6 +495,57 @@ function detectPathTranslationByCentroid(previousPath, nextPath) {
   }
 }
 
+function detectBoundsTranslation(previousBounds, nextBounds, tolerance = 1e-6) {
+  if (!previousBounds || !nextBounds) return null
+
+  const prevCenter = {
+    lat: (previousBounds.north + previousBounds.south) / 2,
+    lng: (previousBounds.east + previousBounds.west) / 2,
+  }
+  const nextCenter = {
+    lat: (nextBounds.north + nextBounds.south) / 2,
+    lng: (nextBounds.east + nextBounds.west) / 2,
+  }
+
+  const delta = {
+    lat: nextCenter.lat - prevCenter.lat,
+    lng: nextCenter.lng - prevCenter.lng,
+  }
+
+  // Check if the bounds have moved consistently (all corners moved by the same delta)
+  const corners = [
+    { lat: previousBounds.north, lng: previousBounds.west },
+    { lat: previousBounds.north, lng: previousBounds.east },
+    { lat: previousBounds.south, lng: previousBounds.west },
+    { lat: previousBounds.south, lng: previousBounds.east },
+  ]
+
+  const nextCorners = [
+    { lat: nextBounds.north, lng: nextBounds.west },
+    { lat: nextBounds.north, lng: nextBounds.east },
+    { lat: nextBounds.south, lng: nextBounds.west },
+    { lat: nextBounds.south, lng: nextBounds.east },
+  ]
+
+  const isConsistent = corners.every((corner, index) => {
+    const nextCorner = nextCorners[index]
+    return Math.abs((nextCorner.lat - corner.lat) - delta.lat) <= tolerance
+      && Math.abs((nextCorner.lng - corner.lng) - delta.lng) <= tolerance
+  })
+
+  return isConsistent ? delta : null
+}
+
+function translateBounds(bounds, delta) {
+  if (!bounds || !delta) return bounds
+  return {
+    north: bounds.north + delta.lat,
+    south: bounds.south + delta.lat,
+    east: bounds.east + delta.lng,
+    west: bounds.west + delta.lng,
+  }
+}
+
 function translatePoint(point, delta) {
   if (!point || !delta) return point
   return {
@@ -530,6 +620,10 @@ function normalizeLineParent(line, zones, floorPlans) {
 
 function collectRelatedZoneIds(rootZoneId, zones) {
   return new Set([rootZoneId, ...collectDescendantZoneIds(rootZoneId, zones)])
+}
+
+function collectRelatedFloorPlanIds(rootFloorPlanId, floorPlans) {
+  return new Set([rootFloorPlanId, ...collectDescendantFloorPlanIds(rootFloorPlanId, floorPlans)])
 }
 
 /**
@@ -1340,21 +1434,18 @@ export default function App() {
         const center = updated.center || getPathCenter(previousZone?.path || updated.path)
         const nextWidthM = Number(updated.widthM)
         const nextLengthM = Number(updated.lengthM)
-        const sideM = Math.max(nextWidthM, nextLengthM)
-        const widthM = sideM
-        const lengthM = sideM
         const rotationDeg = Number(updated.rotation || 0)
 
-        if (center && Number.isFinite(widthM) && Number.isFinite(lengthM)) {
-          const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, rotationDeg)
+        if (center && Number.isFinite(nextWidthM) && Number.isFinite(nextLengthM)) {
+          const path = buildRectanglePath(center, nextWidthM / 2, nextLengthM / 2, window.google, rotationDeg)
           if (path.length >= 3) {
             const metrics = computePolygonMetrics(path, window.google)
             nextZoneRecord = {
               ...nextZoneRecord,
               path,
               center,
-              widthM,
-              lengthM,
+              widthM: nextWidthM,
+              lengthM: nextLengthM,
               areaM2: metrics.areaM2,
               perimeterM: metrics.perimeterM,
             }
@@ -1516,9 +1607,58 @@ export default function App() {
       const normalizedAnnotation = normalizeAnnotationParent(updated, zones, floorPlans)
       setAnnotations(prev => prev.map(annotation => annotation.id === updated.id ? normalizedAnnotation : annotation))
     } else if (updated.type === 'floor') {
-      setFloorPlans(prev => prev.map(plan => (
-        plan.id === updated.id ? normalizeFloorPlanState({ ...plan, ...updated }) : plan
-      )))
+      const previousPlan = floorPlans.find(plan => plan.id === updated.id)
+      const nextFloorPlan = normalizeFloorPlanState({ ...previousPlan, ...updated })
+      const translation = detectBoundsTranslation(previousPlan?.bounds, nextFloorPlan?.bounds)
+      const floorPlanIdsToMove = translation ? collectRelatedFloorPlanIds(updated.id, floorPlans) : null
+
+      if (translation) {
+        const zoneRootsToMove = zones.filter(zone => floorPlanIdsToMove.has(zone.parentId))
+        const zoneIdsToMove = new Set(zoneRootsToMove.flatMap(zone => [zone.id, ...collectDescendantZoneIds(zone.id, zones)]))
+
+        setFloorPlans(prev => prev.map(plan => {
+          if (plan.id === updated.id) return nextFloorPlan
+          if (floorPlanIdsToMove.has(plan.id)) {
+            return normalizeFloorPlanState({
+              ...plan,
+              bounds: translateBounds(plan.bounds, translation),
+            })
+          }
+          return plan
+        }))
+
+        setZones(prev => prev.map(zone => {
+          if (!zoneIdsToMove.has(zone.id)) return zone
+          const movedPath = translatePath(zone.path, translation)
+          return {
+            ...zone,
+            path: movedPath,
+            areaM2: zone.areaM2,
+            perimeterM: zone.perimeterM,
+            capacity: computeZoneCapacity({ ...zone, path: movedPath, areaM2: zone.areaM2 }),
+          }
+        }))
+
+        setAssets(prev => prev.map(asset => (
+          floorPlanIdsToMove.has(asset.parentId) || zoneIdsToMove.has(asset.parentId)
+            ? translatePoint(asset, translation)
+            : asset
+        )))
+        setAnnotations(prev => prev.map(annotation => (
+          floorPlanIdsToMove.has(annotation.parentId) || zoneIdsToMove.has(annotation.parentId)
+            ? translatePoint(annotation, translation)
+            : annotation
+        )))
+        setLines(prev => prev.map(line => (
+          floorPlanIdsToMove.has(line.parentId) || zoneIdsToMove.has(line.parentId)
+            ? { ...line, path: translatePath(line.path, translation) }
+            : line
+        )))
+      } else {
+        setFloorPlans(prev => prev.map(plan => (
+          plan.id === updated.id ? nextFloorPlan : plan
+        )))
+      }
     } else {
       const normalizedAsset = normalizeAssetParent(updated, zones, floorPlans)
       setAssets(prev => prev.map(a => a.id === updated.id ? normalizedAsset : a))
@@ -1713,12 +1853,58 @@ export default function App() {
 
   const handleFloorPlanChange = useCallback((floorPlanId, updater) => {
     if (!floorPlanId) return
-    setFloorPlans(prev => prev.map((plan) => {
-      if (plan.id !== floorPlanId) return plan
-      const nextPlan = typeof updater === 'function' ? updater(plan) : updater
-      return normalizeFloorPlanState(nextPlan)
-    }))
-  }, [])
+
+    setFloorPlans(prev => {
+      const previousPlan = prev.find(plan => plan.id === floorPlanId)
+      const updatedPlans = prev.map((plan) => {
+        if (plan.id !== floorPlanId) return plan
+        const nextPlan = typeof updater === 'function' ? updater(plan) : updater
+        return normalizeFloorPlanState(nextPlan)
+      })
+      const updatedPlan = updatedPlans.find(plan => plan.id === floorPlanId)
+
+      // Detect movement and cascade to children
+      const translation = detectBoundsTranslation(previousPlan?.bounds, updatedPlan?.bounds)
+      if (translation) {
+        const floorPlanIdsToMove = collectRelatedFloorPlanIds(floorPlanId, prev)
+
+        // Move child floor plans
+        const movedPlans = updatedPlans.map(plan => {
+          if (plan.id === floorPlanId) return plan
+          if (!floorPlanIdsToMove.has(plan.parentId)) return plan
+
+          const movedBounds = {
+            north: plan.bounds.north + translation.lat,
+            south: plan.bounds.south + translation.lat,
+            east: plan.bounds.east + translation.lng,
+            west: plan.bounds.west + translation.lng,
+          }
+          return normalizeFloorPlanState({ ...plan, bounds: movedBounds })
+        })
+
+        // Move child assets, lines, annotations
+        setAssets(assets => assets.map(asset => (
+          floorPlanIdsToMove.has(asset.parentId)
+            ? translatePoint(asset, translation)
+            : asset
+        )))
+        setLines(lines => lines.map(line => (
+          floorPlanIdsToMove.has(line.parentId)
+            ? { ...line, path: translatePath(line.path, translation) }
+            : line
+        )))
+        setAnnotations(annotations => annotations.map(annotation => (
+          floorPlanIdsToMove.has(annotation.parentId)
+            ? translatePoint(annotation, translation)
+            : annotation
+        )))
+
+        return movedPlans
+      }
+
+      return updatedPlans
+    })
+  }, [annotations, assets, lines])
 
   // Delete selected
   const handleDelete = useCallback(() => {
@@ -1730,18 +1916,12 @@ export default function App() {
 
     if (isCascadeTarget) {
       if (isFloorPlan) {
-        const floorZoneIds = new Set()
-        zones.forEach(zone => {
-          if (zone.parentId === selectedId) {
-            floorZoneIds.add(zone.id)
-            collectRelatedZoneIds(zone.id, zones).forEach(zoneId => floorZoneIds.add(zoneId))
-          }
-        })
-
-        setZones(prev => prev.filter(zone => zone.parentId !== selectedId && !floorZoneIds.has(zone.id)))
-        setAssets(prev => prev.filter(asset => asset.parentId !== selectedId && !floorZoneIds.has(asset.parentId)))
-        setLines(prev => prev.filter(line => line.parentId !== selectedId && !floorZoneIds.has(line.parentId)))
-        setAnnotations(prev => prev.filter(annotation => annotation.parentId !== selectedId && !floorZoneIds.has(annotation.parentId)))
+        const cascadeState = buildCascadeDeleteStateForFloorPlans(selectedId, floorPlans, zones, assets, lines, annotations)
+        setFloorPlans(cascadeState.nextFloorPlans)
+        setZones(cascadeState.nextZones)
+        setAssets(cascadeState.nextAssets)
+        setLines(cascadeState.nextLines)
+        setAnnotations(cascadeState.nextAnnotations)
       } else {
         // Delete zone and cascade to descendants
         const cascadeState = buildCascadeDeleteState(selectedId, zones, assets, lines, annotations)
@@ -1918,13 +2098,20 @@ export default function App() {
       setAssets(prev => prev.filter(a => a.id !== id && !cascadeState.zoneIdsToDelete.has(a.parentId)))
       setLines(prev => prev.filter(l => l.id !== id && !cascadeState.zoneIdsToDelete.has(l.parentId)))
       setAnnotations(prev => prev.filter(a => a.id !== id && !cascadeState.zoneIdsToDelete.has(a.parentId)))
+    } else if (itemType === 'floor') {
+      const cascadeState = buildCascadeDeleteStateForFloorPlans(id, floorPlans, zones, assets, lines, annotations)
+      setFloorPlans(cascadeState.nextFloorPlans)
+      setZones(cascadeState.nextZones)
+      setAssets(cascadeState.nextAssets)
+      setLines(cascadeState.nextLines)
+      setAnnotations(cascadeState.nextAnnotations)
     } else {
       // Default: treat as asset
       setAssets(prev => prev.filter(a => a.id !== id))
     }
 
     if (selectedId === id) setSelectedId(null)
-  }, [annotations, assets, buildCascadeDeleteState, lines, pushHistory, selectedId, zones])
+  }, [annotations, assets, buildCascadeDeleteState, buildCascadeDeleteStateForFloorPlans, floorPlans, lines, pushHistory, selectedId, zones])
 
   useEffect(() => {
     const handleKeyDown = (event) => {

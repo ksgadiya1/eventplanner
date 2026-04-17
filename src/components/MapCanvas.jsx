@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GoogleMap, useJsApiLoader, Polygon, Circle, OverlayView, Polyline, MarkerF } from '@react-google-maps/api'
+import { GoogleMap, useJsApiLoader, Polygon, Circle, Rectangle, OverlayView, Polyline, MarkerF } from '@react-google-maps/api'
 import { computeZoneCapacity, getAssetName, getZoneAllowedAssetTypes, isAssetAllowedInZone } from '../data/assets'
 import {
   metersPerPixel,
@@ -223,6 +223,28 @@ function buildZoneGridOverlay(zone, map, zoom) {
   }
 }
 
+function getRectangleBounds(zone, center, widthM, lengthM, google) {
+  if (!google || !zone) return null
+  const resolvedCenter = center || zone.center || getPathCenter(zone.path)
+  const dimensions = getRectangleZoneDimensions(zone, google)
+  const resolvedWidthM = Number.isFinite(widthM) ? widthM : Number(dimensions.widthM)
+  const resolvedLengthM = Number.isFinite(lengthM) ? lengthM : Number(dimensions.lengthM)
+  if (!resolvedCenter || !Number.isFinite(resolvedWidthM) || !Number.isFinite(resolvedLengthM)) return null
+
+  const origin = new google.maps.LatLng(resolvedCenter.lat, resolvedCenter.lng)
+  const east = google.maps.geometry.spherical.computeOffset(origin, resolvedWidthM / 2, 90)
+  const west = google.maps.geometry.spherical.computeOffset(origin, resolvedWidthM / 2, 270)
+  const north = google.maps.geometry.spherical.computeOffset(origin, resolvedLengthM / 2, 0)
+  const south = google.maps.geometry.spherical.computeOffset(origin, resolvedLengthM / 2, 180)
+
+  return {
+    north: north.lat(),
+    south: south.lat(),
+    east: east.lng(),
+    west: west.lng(),
+  }
+}
+
 export default function MapCanvas({
   drawMode,
   onDrawMode,
@@ -275,12 +297,14 @@ export default function MapCanvas({
   const lineDraftRef = useRef(null)
   const polygonDraftRef = useRef(null)
   const shapeDraftRef = useRef(null)
-  const zoneOverlayRefs = useRef({})
+  const zoneRectangleRefs = useRef({})
   const zonePathListenersRef = useRef({})
+  const zoneOverlayRefs = useRef({})
   const zoneCircleRefs = useRef({})
   const lastCircleSnapshotRef = useRef({})
   const lineOverlayRefs = useRef({})
   const lastLineSnapshotRef = useRef({})
+  const lastRectangleSnapshotRef = useRef({})
   const [mapZoom, setMapZoom] = useState(14)
   const [lineDraft, setLineDraft] = useState(null)
   const [polygonDraft, setPolygonDraft] = useState(null)
@@ -1079,6 +1103,66 @@ export default function MapCanvas({
     onAssetUpdate(updateData)
   }, [onAssetUpdate])
 
+  const handleRectangleZoneChange = useCallback((zone) => {
+    const rectangle = zoneRectangleRefs.current[zone.id]
+    if (!window.google || !rectangle) return
+    const bounds = rectangle.getBounds()
+    if (!bounds) return
+
+    const ne = bounds.getNorthEast()
+    const sw = bounds.getSouthWest()
+    const currentBounds = {
+      north: ne.lat(),
+      south: sw.lat(),
+      east: ne.lng(),
+      west: sw.lng(),
+    }
+
+    const lastSnapshot = lastRectangleSnapshotRef.current[zone.id]
+    const alreadySaved = lastSnapshot
+      && Math.abs(lastSnapshot.north - currentBounds.north) <= 1e-9
+      && Math.abs(lastSnapshot.south - currentBounds.south) <= 1e-9
+      && Math.abs(lastSnapshot.east - currentBounds.east) <= 1e-9
+      && Math.abs(lastSnapshot.west - currentBounds.west) <= 1e-9
+
+    if (alreadySaved) return
+
+    lastRectangleSnapshotRef.current[zone.id] = currentBounds
+
+    const path = [
+      { lat: currentBounds.north, lng: currentBounds.west },
+      { lat: currentBounds.north, lng: currentBounds.east },
+      { lat: currentBounds.south, lng: currentBounds.east },
+      { lat: currentBounds.south, lng: currentBounds.west },
+    ]
+
+    const widthM = window.google.maps.geometry.spherical.computeDistanceBetween(
+      new window.google.maps.LatLng(currentBounds.north, currentBounds.west),
+      new window.google.maps.LatLng(currentBounds.north, currentBounds.east)
+    )
+    const lengthM = window.google.maps.geometry.spherical.computeDistanceBetween(
+      new window.google.maps.LatLng(currentBounds.north, currentBounds.west),
+      new window.google.maps.LatLng(currentBounds.south, currentBounds.west)
+    )
+    const center = {
+      lat: (currentBounds.north + currentBounds.south) / 2,
+      lng: (currentBounds.east + currentBounds.west) / 2,
+    }
+    const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
+
+    onAssetUpdate({
+      ...zone,
+      center,
+      widthM: Number(widthM.toFixed(2)),
+      lengthM: Number(lengthM.toFixed(2)),
+      path,
+      areaM2,
+      perimeterM,
+      parentId: zone.parentId || null,
+      capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
+    })
+  }, [onAssetUpdate])
+
   useEffect(() => {
     Object.values(zonePathListenersRef.current).forEach((listeners) => {
       if (Array.isArray(listeners)) {
@@ -1090,7 +1174,7 @@ export default function MapCanvas({
     if (!selectedId || layers.zones?.locked) return
 
     const selectedZone = zones.find((zone) => zone.id === selectedId)
-    if (!selectedZone || selectedZone.shapeType === 'circle') return
+    if (!selectedZone || selectedZone.shapeType === 'circle' || (selectedZone.shapeType === 'rectangle' && Number(selectedZone.rotation || 0) === 0)) return
 
     const overlay = zoneOverlayRefs.current[selectedZone.id]
     const path = overlay?.getPath?.()
@@ -1749,7 +1833,7 @@ export default function MapCanvas({
     }
 
     if (object.type === 'zone' && type === 'resize') {
-      if (layers.zones?.locked || object.shapeType !== 'square') return
+      if (layers.zones?.locked || !['rectangle', 'square'].includes(object.shapeType)) return
       const rect = map.getDiv().getBoundingClientRect()
       const center = getPathCenter(object.path)
       const centerPoint = center ? latLngToContainerPoint(map, center.lat, center.lng) : null
@@ -2042,6 +2126,55 @@ export default function MapCanvas({
                     delete lastCircleSnapshotRef.current[zone.id]
                   }}
                 />
+              ) : (zone.shapeType === 'rectangle' && Number(zone.rotation || 0) === 0 ? (
+                <Rectangle
+                  bounds={getRectangleBounds(zone, zone.center, zone.widthM, zone.lengthM, window.google)}
+                  options={{
+                    fillColor: zone.fillColor || zone.zoneType?.color || '#3d8ef8',
+                    fillOpacity: selectedId === zone.id
+                      ? Math.min((zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2) + 0.08, 1)
+                      : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
+                    strokeColor: selectedId === zone.id ? '#38bdf8' : (zone.strokeColor || zone.zoneType?.color || '#3d8ef8'),
+                    strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
+                    editable: selectedId === zone.id && !layers.zones?.locked,
+                    draggable: selectedId === zone.id && !layers.zones?.locked,
+                    clickable: drawMode === 'select' || drawMode === 'erase',
+                    zIndex: selectedId === zone.id ? 1 : 0,
+                  }}
+                  onClick={(event) => {
+                    if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
+                    if (placePendingAssetAtLatLng(event?.latLng)) return
+                    if (drawMode === 'erase') {
+                      onEraseAsset(zone, 'zone')
+                      return
+                    }
+                    if (drawMode !== 'select') return
+                    selectWithOverlaySync(zone)
+                  }}
+                  onMouseOver={() => {
+                    if (drawMode !== 'select') return
+                    setHoveredItem({
+                      type: 'zone',
+                      data: zone,
+                    })
+                  }}
+                  onMouseOut={() => setHoveredItem(null)}
+                  onBoundsChanged={() => handleRectangleZoneChange(zone)}
+                  onDragEnd={() => handleRectangleZoneChange(zone)}
+                  onLoad={(rectangle) => {
+                    const previous = zoneRectangleRefs.current[zone.id]
+                    if (previous && previous !== rectangle) {
+                      previous.setMap?.(null)
+                    }
+                    zoneRectangleRefs.current[zone.id] = rectangle
+                  }}
+                  onUnmount={() => {
+                    const rectangle = zoneRectangleRefs.current[zone.id]
+                    rectangle?.setMap?.(null)
+                    delete zoneRectangleRefs.current[zone.id]
+                    delete lastRectangleSnapshotRef.current[zone.id]
+                  }}
+                />
               ) : (
                 <Polygon
                   paths={zone.path}
@@ -2090,18 +2223,20 @@ export default function MapCanvas({
                     delete zoneOverlayRefs.current[zone.id]
                   }}
                 />
-              )}
-              {selectedId === zone.id && zone.shapeType === 'rectangle' && (
-                <ZoneOverlay
-                  zone={zone}
-                  selected={true}
-                  locked={layers.zones?.locked}
-                  onStartInteraction={handleStartInteraction}
-                  map={mapRef.current}
-                  zoom={mapZoom}
-                  refreshTick={overlaySyncTick}
-                />
-              )}
+              ))}
+              {(selectedId === zone.id && zone.shapeType !== 'rectangle')
+                || (selectedId === zone.id && zone.shapeType === 'rectangle' && Number(zone.rotation || 0) !== 0)
+                ? (
+                  <ZoneOverlay
+                    zone={zone}
+                    selected={true}
+                    locked={layers.zones?.locked}
+                    onStartInteraction={handleStartInteraction}
+                    map={mapRef.current}
+                    zoom={mapZoom}
+                    refreshTick={overlaySyncTick}
+                  />
+                ) : null}
 
               {canShowZoneLabel && (
                 <OverlayView
