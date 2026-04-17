@@ -428,7 +428,7 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
   )
 })
 
-export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom }) {
+export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom, drawMode }) {
   const baseZoom = 18
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   const geometry = getFloorGeometry(map, floorPlan, baseZoom)
@@ -512,7 +512,7 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
               borderRadius: '14px',
               overflow: 'hidden',
               boxShadow: selected ? '0 0 0 1px rgba(255,255,255,0.92)' : 'none',
-              pointerEvents: 'auto',
+              pointerEvents: drawMode === 'select' ? 'auto' : 'none',
               touchAction: 'none',
             }}
           />

@@ -2016,6 +2016,7 @@ export default function MapCanvas({
               onStartInteraction={handleStartInteraction}
               map={mapRef.current}
               zoom={mapZoom}
+              drawMode={drawMode}
             />
           )
         })}
