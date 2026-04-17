@@ -50,7 +50,7 @@ function hexToRgba(hex, opacity) {
   }
 }
 
-export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate, gridSnap, gridSize, refreshTick }) {
+export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate, gridSnap, gridSize, gridReferenceLat, refreshTick }) {
   const ASSET_MIN_ZOOM = 11
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   if (liveZoom < ASSET_MIN_ZOOM) return null
@@ -174,7 +174,7 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
         lat: latLng.lat() - (ds.latOffset || 0),
         lng: latLng.lng() - (ds.lngOffset || 0),
       }
-      const snapped = ds.gridSnap ? snapToGrid(target.lat, target.lng, Number(ds.gridSize || 3)) : target
+      const snapped = ds.gridSnap ? snapToGrid(target.lat, target.lng, Number(ds.gridSize || 3), ds.gridReferenceLat) : target
       onAssetUpdateRef.current({
         ...assetRef.current,
         lat: snapped.lat,
@@ -269,10 +269,11 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
       lngOffset,
       gridSnap,
       gridSize,
+      gridReferenceLat,
     }
     startCapture(e.target, e.pointerId)
     onSelect(asset)
-  }, [interactive, locked, drawMode, asset, onSelect, startCapture])
+  }, [interactive, locked, drawMode, asset, onSelect, gridReferenceLat, startCapture])
 
   return (
     <OverlayView

@@ -546,6 +546,85 @@ function translateBounds(bounds, delta) {
   }
 }
 
+function degreesToRadians(degrees) {
+  return (degrees * Math.PI) / 180
+}
+
+function radiansToDegrees(radians) {
+  return (radians * 180) / Math.PI
+}
+
+function transformPointForFloorChange(point, previousFloor, nextFloor) {
+  if (!point || !previousFloor || !nextFloor) return point
+  if (!previousFloor.center || !nextFloor.center) return point
+
+  const prevCenter = previousFloor.center
+  const nextCenter = nextFloor.center
+  const widthScale = previousFloor?.widthM ? Number(nextFloor.widthM) / Number(previousFloor.widthM) : 1
+  const heightScale = previousFloor?.heightM ? Number(nextFloor.heightM) / Number(previousFloor.heightM) : 1
+  const rotationChanged = Number(nextFloor.rotation || 0) !== Number(previousFloor?.rotation || 0)
+
+  // For pure translation (no scale or rotation change), use exact lat/lng addition
+  if (Math.abs(widthScale - 1) < 1e-9 && Math.abs(heightScale - 1) < 1e-9 && !rotationChanged) {
+    return {
+      lat: point.lat + (nextCenter.lat - prevCenter.lat),
+      lng: point.lng + (nextCenter.lng - prevCenter.lng),
+    }
+  }
+
+  const prevLatLng = new window.google.maps.LatLng(prevCenter.lat, prevCenter.lng)
+  const pointLatLng = new window.google.maps.LatLng(point.lat, point.lng)
+  const spherical = window.google?.maps?.geometry?.spherical
+
+  if (!spherical) {
+    return {
+      lat: point.lat + (nextCenter.lat - prevCenter.lat),
+      lng: point.lng + (nextCenter.lng - prevCenter.lng),
+    }
+  }
+
+  const distance = spherical.computeDistanceBetween(prevLatLng, pointLatLng)
+  const bearing = spherical.computeHeading(prevLatLng, pointLatLng)
+  const bearingRad = degreesToRadians(bearing)
+  const xWorld = distance * Math.sin(bearingRad)
+  const yWorld = -distance * Math.cos(bearingRad)
+
+  const oldRotation = Number(previousFloor.rotation || 0)
+  const newRotation = Number(nextFloor.rotation || 0)
+  const oldWidth = Math.max(1, Number(previousFloor.widthM || 1))
+  const oldHeight = Math.max(1, Number(previousFloor.heightM || 1))
+  const newWidth = Math.max(1, Number(nextFloor.widthM || oldWidth))
+  const newHeight = Math.max(1, Number(nextFloor.heightM || oldHeight))
+
+  const oldRotationRad = degreesToRadians(oldRotation)
+  const localX = xWorld * Math.cos(oldRotationRad) + yWorld * Math.sin(oldRotationRad)
+  const localY = -xWorld * Math.sin(oldRotationRad) + yWorld * Math.cos(oldRotationRad)
+
+  const scaledX = localX * (newWidth / oldWidth)
+  const scaledY = localY * (newHeight / oldHeight)
+
+  const newRotationRad = degreesToRadians(newRotation)
+  const xWorldNext = scaledX * Math.cos(newRotationRad) - scaledY * Math.sin(newRotationRad)
+  const yWorldNext = scaledX * Math.sin(newRotationRad) + scaledY * Math.cos(newRotationRad)
+
+  const northDelta = -yWorldNext
+  const eastDelta = xWorldNext
+  const nextDistance = Math.sqrt(northDelta * northDelta + eastDelta * eastDelta)
+  const nextBearing = radiansToDegrees(Math.atan2(eastDelta, northDelta))
+  const nextCenterLatLng = new window.google.maps.LatLng(nextCenter.lat, nextCenter.lng)
+  const nextPointLatLng = spherical.computeOffset(nextCenterLatLng, nextDistance, nextBearing)
+
+  return {
+    lat: nextPointLatLng.lat(),
+    lng: nextPointLatLng.lng(),
+  }
+}
+
+function transformPathForFloorChange(path, previousFloor, nextFloor) {
+  if (!Array.isArray(path) || !previousFloor || !nextFloor) return path
+  return path.map(point => transformPointForFloorChange(point, previousFloor, nextFloor))
+}
+
 function translatePoint(point, delta) {
   if (!point || !delta) return point
   return {
@@ -1609,19 +1688,30 @@ export default function App() {
     } else if (updated.type === 'floor') {
       const previousPlan = floorPlans.find(plan => plan.id === updated.id)
       const nextFloorPlan = normalizeFloorPlanState({ ...previousPlan, ...updated })
-      const translation = detectBoundsTranslation(previousPlan?.bounds, nextFloorPlan?.bounds)
-      const floorPlanIdsToMove = translation ? collectRelatedFloorPlanIds(updated.id, floorPlans) : null
+      const widthScale = previousPlan?.widthM ? Number(nextFloorPlan.widthM) / Number(previousPlan.widthM) : 1
+      const heightScale = previousPlan?.heightM ? Number(nextFloorPlan.heightM) / Number(previousPlan.heightM) : 1
+      const rotationChanged = Number(nextFloorPlan.rotation || 0) !== Number(previousPlan?.rotation || 0)
+      const floorPlanIdsToMove = collectRelatedFloorPlanIds(updated.id, floorPlans)
+      const zoneRootsToMove = zones.filter(zone => floorPlanIdsToMove.has(zone.parentId))
+      const zoneIdsToMove = new Set(zoneRootsToMove.flatMap(zone => [zone.id, ...collectDescendantZoneIds(zone.id, zones)]))
+      const shouldTransform = Boolean(
+        previousPlan
+        && (
+          Math.abs((nextFloorPlan.center?.lat || 0) - (previousPlan.center?.lat || 0)) > 1e-9
+          || Math.abs((nextFloorPlan.center?.lng || 0) - (previousPlan.center?.lng || 0)) > 1e-9
+          || Math.abs(widthScale - 1) > 1e-9
+          || Math.abs(heightScale - 1) > 1e-9
+          || rotationChanged
+        )
+      )
 
-      if (translation) {
-        const zoneRootsToMove = zones.filter(zone => floorPlanIdsToMove.has(zone.parentId))
-        const zoneIdsToMove = new Set(zoneRootsToMove.flatMap(zone => [zone.id, ...collectDescendantZoneIds(zone.id, zones)]))
-
+      if (shouldTransform) {
         setFloorPlans(prev => prev.map(plan => {
           if (plan.id === updated.id) return nextFloorPlan
-          if (floorPlanIdsToMove.has(plan.id)) {
+          if (floorPlanIdsToMove.has(plan.parentId)) {
             return normalizeFloorPlanState({
               ...plan,
-              bounds: translateBounds(plan.bounds, translation),
+              center: transformPointForFloorChange(plan.center || plan.bounds?.center || { lat: 0, lng: 0 }, previousPlan, nextFloorPlan),
             })
           }
           return plan
@@ -1629,29 +1719,29 @@ export default function App() {
 
         setZones(prev => prev.map(zone => {
           if (!zoneIdsToMove.has(zone.id)) return zone
-          const movedPath = translatePath(zone.path, translation)
+          const transformedPath = transformPathForFloorChange(zone.path, previousPlan, nextFloorPlan)
           return {
             ...zone,
-            path: movedPath,
+            path: transformedPath,
             areaM2: zone.areaM2,
             perimeterM: zone.perimeterM,
-            capacity: computeZoneCapacity({ ...zone, path: movedPath, areaM2: zone.areaM2 }),
+            capacity: computeZoneCapacity({ ...zone, path: transformedPath, areaM2: zone.areaM2 }),
           }
         }))
 
         setAssets(prev => prev.map(asset => (
           floorPlanIdsToMove.has(asset.parentId) || zoneIdsToMove.has(asset.parentId)
-            ? translatePoint(asset, translation)
+            ? { ...asset, ...transformPointForFloorChange(asset, previousPlan, nextFloorPlan) }
             : asset
         )))
         setAnnotations(prev => prev.map(annotation => (
           floorPlanIdsToMove.has(annotation.parentId) || zoneIdsToMove.has(annotation.parentId)
-            ? translatePoint(annotation, translation)
+            ? { ...annotation, ...transformPointForFloorChange(annotation, previousPlan, nextFloorPlan) }
             : annotation
         )))
         setLines(prev => prev.map(line => (
           floorPlanIdsToMove.has(line.parentId) || zoneIdsToMove.has(line.parentId)
-            ? { ...line, path: translatePath(line.path, translation) }
+            ? { ...line, path: transformPathForFloorChange(line.path, previousPlan, nextFloorPlan) }
             : line
         )))
       } else {
