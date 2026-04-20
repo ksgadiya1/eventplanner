@@ -232,16 +232,17 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const [assetDraftName, setAssetDraftName] = useState('')
   const [templateNameError, setTemplateNameError] = useState(false)
   const [assetNameError, setAssetNameError] = useState(false)
+  const isRectangleZone = selected?.shapeType === 'rectangle' || selected?.shapeType === 'square'
 
   useEffect(() => {
-    if (selected?.shapeType === 'square') {
+    if (isRectangleZone) {
       setWidthInput(selected.widthM !== undefined && selected.widthM !== null ? convertDistance(selected.widthM, measurementUnit).toFixed(2) : '')
       setLengthInput(selected.lengthM !== undefined && selected.lengthM !== null ? convertDistance(selected.lengthM, measurementUnit).toFixed(2) : '')
     } else {
       setWidthInput('')
       setLengthInput('')
     }
-  }, [selected?.id, selected?.shapeType, selected?.widthM, selected?.lengthM, measurementUnit])
+  }, [isRectangleZone, selected?.id, selected?.widthM, selected?.lengthM, measurementUnit])
 
   useEffect(() => {
     if (selected?.shapeType === 'circle') {
@@ -398,7 +399,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
           <>
 
 
-{selected.shapeType === 'square' && (
+{isRectangleZone && (
   <div style={styles.statCard}>
     <div style={styles.blockTitle}>Zone Size</div>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
@@ -495,7 +496,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 )}
 
 {/* Zone Rotation (NOT for circle) */}
-{selected.shapeType !== 'circle' && (
+{selected.shapeType !== 'circle' && !isRectangleZone && (
   <div style={styles.statCard}>
     <div style={styles.blockTitle}>Zone Rotation</div>
     <div style={styles.field}>

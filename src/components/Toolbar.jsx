@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, Square, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye, Ruler } from 'lucide-react'
+import { MousePointer2, Pentagon, Type, MapPin, Route, RotateCcw, RotateCw, Eraser, RectangleHorizontal, Circle, Download, Sun, Moon, Search, ChevronDown, Save, ArchiveRestore, X, FileText, Image as ImageIcon, Braces, Eye, Ruler } from 'lucide-react'
 
 const styles = {
   toolbar: {
@@ -231,7 +231,7 @@ const styles = {
 
 const TOOLS = [
   { id: 'polygon', icon: <Pentagon size={14} />, label: 'Draw Zone' },
-  { id: 'square', icon: <Square size={14} />, label: 'Square' },
+  { id: 'rectangle', icon: <RectangleHorizontal size={14} />, label: 'Rectangle' },
   { id: 'circle', icon: <Circle size={14} />, label: 'Circle' },
   { id: 'text', icon: <MapPin size={14} />, label: 'Pin' },
   { id: 'route', icon: <Route size={14} />, label: 'Route' },
