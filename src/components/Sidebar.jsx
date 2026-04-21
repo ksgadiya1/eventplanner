@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Trash2 } from 'lucide-react'
+import { Layers, Package, ChevronDown, ChevronUp, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Trash2 } from 'lucide-react'
 import AssetGlyph from './AssetGlyph'
 
 
@@ -388,6 +388,33 @@ const styles = {
     textTransform: 'uppercase',
     letterSpacing: '0.04em',
   },
+  variantBadge: {
+    padding: '3px 6px',
+    border: '1px solid var(--border)',
+    borderRadius: '6px',
+    background: 'var(--bg-panel)',
+    fontSize: '9px',
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    marginTop: '4px',
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+  },
+  variantsContainer: {
+    gridColumn: '1 / -1',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    padding: '10px',
+    background: 'var(--bg-panel)',
+    borderRadius: '10px',
+    border: '1px dashed var(--border)',
+    marginTop: '-4px',
+    marginBottom: '10px',
+  },
 }
 
 export default function Sidebar({
@@ -446,6 +473,7 @@ export default function Sidebar({
     }
   })
   const [expandedZones, setExpandedZones] = useState({})
+  const [expandedBaseAssets, setExpandedBaseAssets] = useState({})
   const isDraggingAssetRef = useRef(false)
   const assetImportInputRef = useRef(null)
   const mapImportInputRef = useRef(null)
@@ -483,7 +511,8 @@ export default function Sidebar({
   }, [assetCategories])
 
   const mergedAssetCategories = useMemo(() => {
-    const merged = Object.entries(assetCategories || {}).reduce((acc, [categoryLabel, categoryAssets]) => ({
+    // 1. Initial raw merge of project categories and zone templates
+    const raw = Object.entries(assetCategories || {}).reduce((acc, [categoryLabel, categoryAssets]) => ({
       ...acc,
       [categoryLabel]: Array.isArray(categoryAssets) ? [...categoryAssets] : [],
     }), {})
@@ -506,11 +535,40 @@ export default function Sidebar({
         libraryTags: ['custom', 'zone-template'],
       }))
 
-      merged['Custom Assets'] = [
+      raw['Custom Assets'] = [
         ...templateAssets,
-        ...(Array.isArray(merged['Custom Assets']) ? merged['Custom Assets'] : []),
+        ...(Array.isArray(raw['Custom Assets']) ? raw['Custom Assets'] : []),
       ]
     }
+
+    // 2. Perform grouping by baseAssetId
+    const allAssetsList = Object.values(raw).flat()
+    const allBaseIds = new Set(allAssetsList.map(a => a.id))
+    const variantsByBaseId = {}
+    const variantIdsToRemove = new Set()
+
+    allAssetsList.forEach(asset => {
+      if (asset.baseAssetId && allBaseIds.has(asset.baseAssetId)) {
+        if (!variantsByBaseId[asset.baseAssetId]) {
+          variantsByBaseId[asset.baseAssetId] = []
+        }
+        variantsByBaseId[asset.baseAssetId].push(asset)
+        variantIdsToRemove.add(asset.id)
+      }
+    })
+
+    // 3. Finalize merged structure
+    const merged = {}
+    Object.entries(raw).forEach(([categoryLabel, assets]) => {
+      const filtered = assets.filter(asset => !variantIdsToRemove.has(asset.id))
+      merged[categoryLabel] = filtered.map(asset => {
+        const variants = variantsByBaseId[asset.id] || []
+        if (variants.length > 0) {
+          return { ...asset, variants }
+        }
+        return asset
+      })
+    })
 
     return merged
   }, [assetCategories, zoneTemplates])
@@ -548,10 +606,13 @@ export default function Sidebar({
     }
   }
 
+  const toggleBaseAsset = (id) => setExpandedBaseAssets(prev => ({ ...prev, [id]: !prev[id] }))
+
   const matchesAssetFilter = (asset) => (
     assetFilter === 'all'
     || asset.libraryTags?.includes(assetFilter)
     || asset.category?.toLowerCase().includes(assetFilter)
+    || (asset.variants && asset.variants.some(v => v.libraryTags?.includes(assetFilter)))
   )
 
   const matchesAssetSearch = (asset, categoryLabel) => {
@@ -569,6 +630,7 @@ export default function Sidebar({
       categoryLabel,
       ...(asset.keywords || []),
       ...(asset.libraryTags || []),
+      ...(asset.variants ? asset.variants.flatMap(v => [v.name, ...(v.keywords || [])]) : [])
     ]
       .filter(Boolean)
       .join(' ')
@@ -625,94 +687,114 @@ export default function Sidebar({
     const isActive = isZoneTemplate
       ? pendingZoneTemplate?.id === asset.id
       : pendingAssetDef?.id === asset.id
+    const isExpanded = expandedBaseAssets[asset.id] && !compact
 
     return (
-      <div
-        key={`${compact ? 'recent' : 'asset'}-${asset.id}`}
-        style={{
-          ...(compact ? styles.miniAssetCard : styles.assetCard),
-          borderColor: isActive ? assetColor : `${assetColor}44`,
-          background: isActive ? `${assetColor}18` : 'var(--bg-secondary)',
-          cursor: compact || isZoneTemplate ? 'pointer' : 'grab',
-          transition: 'all 0.15s',
-          position: 'relative',
-        }}
-        draggable={!compact && !isZoneTemplate}
-        onDragStart={compact ? undefined : (event) => startAssetDrag(event, asset)}
-        onDragEnd={compact ? undefined : (event) => {
-          onAssetDragEnd?.(event)
-          window.setTimeout(() => {
-            isDraggingAssetRef.current = false
-          }, 0)
-        }}
-        onClick={() => {
-          if (isDraggingAssetRef.current) return
-          startAssetPlacement(asset)
-        }}
-      >
-        {!compact && (isZoneTemplate || isCustomLibraryAsset) && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              if (isZoneTemplate) {
-                onDeleteZoneTemplate?.(asset.id)
-                return
-              }
-              onDeleteCustomAsset?.(asset.id)
-            }}
-            style={{
-              ...styles.iconBtn,
-              position: 'absolute',
-              top: '8px',
-              right: '8px',
-              width: '24px',
-              height: '24px',
-              background: 'var(--bg-panel)',
-            }}
-            title={`Delete ${asset.name}`}
-          >
-            <Trash2 size={12} />
-          </button>
-        )}
-        <div style={{ ...styles.assetIcon, border: `1px solid ${assetColor}33`, color: assetColor }}>
-          {isZoneTemplate ? (
-            asset.shapeType === 'circle' ? (
-              <div
-                style={{
-                  width: compact ? '18px' : '22px',
-                  height: compact ? '18px' : '22px',
-                  borderRadius: '999px',
-                  background: `${assetColor}22`,
-                  border: `2px solid ${assetColor}`,
-                }}
-              />
+      <React.Fragment key={`${compact ? 'recent' : 'asset'}-${asset.id}`}>
+        <div
+          style={{
+            ...(compact ? styles.miniAssetCard : styles.assetCard),
+            borderColor: isActive ? assetColor : `${assetColor}44`,
+            background: isActive ? `${assetColor}18` : 'var(--bg-secondary)',
+            cursor: compact || isZoneTemplate ? 'pointer' : 'grab',
+            transition: 'all 0.15s',
+            position: 'relative',
+          }}
+          draggable={!compact && !isZoneTemplate}
+          onDragStart={compact ? undefined : (event) => startAssetDrag(event, asset)}
+          onDragEnd={compact ? undefined : (event) => {
+            onAssetDragEnd?.(event)
+            window.setTimeout(() => {
+              isDraggingAssetRef.current = false
+            }, 0)
+          }}
+          onClick={() => {
+            if (isDraggingAssetRef.current) return
+            startAssetPlacement(asset)
+          }}
+        >
+          {(isZoneTemplate || (isCustomLibraryAsset && (!compact || !isExpanded))) && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                if (isZoneTemplate) {
+                  onDeleteZoneTemplate?.(asset.id)
+                  return
+                }
+                onDeleteCustomAsset?.(asset.id)
+              }}
+              style={{
+                ...styles.iconBtn,
+                position: 'absolute',
+                top: '8px',
+                right: '8px',
+                width: '24px',
+                height: '24px',
+                background: 'var(--bg-panel)',
+              }}
+              title={`Delete ${asset.name}`}
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+          <div style={{ ...styles.assetIcon, border: `1px solid ${assetColor}33`, color: assetColor }}>
+            {isZoneTemplate ? (
+              asset.shapeType === 'circle' ? (
+                <div
+                  style={{
+                    width: compact ? '18px' : '22px',
+                    height: compact ? '18px' : '22px',
+                    borderRadius: '999px',
+                    background: `${assetColor}22`,
+                    border: `2px solid ${assetColor}`,
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: compact ? '18px' : '22px',
+                    height: compact ? '18px' : '22px',
+                    background: `${assetColor}22`,
+                    border: `2px solid ${assetColor}`,
+                    clipPath: 'polygon(15% 50%, 50% 15%, 85% 25%, 78% 75%, 38% 88%)',
+                  }}
+                />
+              )
             ) : (
-              <div
-                style={{
-                  width: compact ? '18px' : '22px',
-                  height: compact ? '18px' : '22px',
-                  background: `${assetColor}22`,
-                  border: `2px solid ${assetColor}`,
-                  clipPath: 'polygon(15% 50%, 50% 15%, 85% 25%, 78% 75%, 38% 88%)',
-                }}
-              />
-            )
-          ) : (
-            <AssetGlyph asset={{ ...asset, color: assetColor, iconColor: assetColor }} size={compact ? 18 : 20} />
-          )}
+              <AssetGlyph asset={{ ...asset, color: assetColor, iconColor: assetColor }} size={compact ? 18 : 20} />
+            )}
+          </div>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <div style={{ ...styles.assetName, color: 'var(--text-primary)' }}>{asset.name}</div>
+            {!compact && (
+              <div style={{ fontSize: '10px', color: assetColor, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                {isZoneTemplate
+                  ? `${asset.zoneType?.name || 'Area'}`
+                  : (asset.assetType || asset.category || '')}
+              </div>
+            )}
+            
+            {asset.variants?.length > 0 && !compact && (
+              <div 
+                style={{ ...styles.variantBadge, borderColor: isExpanded ? 'var(--accent)' : 'var(--border)' }} 
+                onClick={(e) => { e.stopPropagation(); toggleBaseAsset(asset.id); }}
+              >
+                {asset.variants.length} version{asset.variants.length > 1 ? 's' : ''} {isExpanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+              </div>
+            )}
+          </div>
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ ...styles.assetName, color: 'var(--text-primary)' }}>{asset.name}</div>
-          {!compact && (
-            <div style={{ fontSize: '10px', color: assetColor, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              {isZoneTemplate
-                ? `${asset.zoneType?.name || 'Area'}`
-                : (asset.assetType || asset.category || '')}
+        
+        {isExpanded && asset.variants && asset.variants.length > 0 && (
+          <div style={styles.variantsContainer}>
+            <div style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '4px', marginLeft: '4px' }}>
+              Custom Versions
             </div>
-          )}
-        </div>
-      </div>
+            {asset.variants.map(variant => renderAssetCard(variant, true))}
+          </div>
+        )}
+      </React.Fragment>
     )
   }
 

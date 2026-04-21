@@ -991,6 +991,7 @@ export default function App() {
 
     const assetDefinition = {
       id: options.mode === 'replace' && options.assetId ? options.assetId : `custom_asset_${Date.now()}`,
+      baseAssetId: asset?.assetDef?.baseAssetId || asset?.assetDef?.id || asset?.assetId || null,
       name: baseName,
       category: categoryLabel,
       assetType,

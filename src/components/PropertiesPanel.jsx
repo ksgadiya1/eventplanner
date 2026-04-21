@@ -267,9 +267,17 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
     selectedParentId ? zones.find(zone => zone.id === selectedParentId) : null
   ), [selectedParentId, zones])
   const [replaceTemplateId, setReplaceTemplateId] = useState('')
-  const customAssetDefs = useMemo(() => (
-    Object.values(assetCategories || {}).flat().filter(asset => Array.isArray(asset.libraryTags) && asset.libraryTags.includes('custom'))
-  ), [assetCategories])
+  const customAssetDefs = useMemo(() => {
+    const allCustom = Object.values(assetCategories || {}).flat().filter(asset => Array.isArray(asset.libraryTags) && asset.libraryTags.includes('custom'))
+    
+    if (!isAsset || !selected) return allCustom
+
+    // Filter to only show variations of the same base asset
+    const targetBaseId = selected.assetDef?.baseAssetId || selected.assetDef?.id || selected.assetId
+    if (!targetBaseId) return allCustom
+
+    return allCustom.filter(asset => asset.baseAssetId === targetBaseId)
+  }, [assetCategories, isAsset, selected])
 
   useEffect(() => {
     if (!zoneTemplates.length) {
