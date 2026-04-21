@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Download, Trash2 } from 'lucide-react'
+import { Layers, Package, ChevronDown, ChevronRight, ChevronLeft, Eye, EyeOff, Lock, Unlock, Folder, Upload, Trash2 } from 'lucide-react'
 import AssetGlyph from './AssetGlyph'
 
 
@@ -452,9 +452,8 @@ export default function Sidebar({
   const [customAssetName, setCustomAssetName] = useState('')
   const [customAssetCategory, setCustomAssetCategory] = useState('Custom Assets')
   const [customAssetType, setCustomAssetType] = useState('icon')
-  const [customAssetWidth, setCustomAssetWidth] = useState('4')
-  const [customAssetLength, setCustomAssetLength] = useState('4')
   const [customAssetColor, setCustomAssetColor] = useState('#3d8ef8')
+  const [customImportExpanded, setCustomImportExpanded] = useState(false)
   const [expandedFolders, setExpandedFolders] = useState({
     zones: true,
     assets: true,
@@ -987,8 +986,8 @@ export default function Sidebar({
                       name: customAssetName.trim() || file.name.replace(/\.[^.]+$/, ''),
                       category: customAssetCategory.trim() || 'Custom Assets',
                       assetType: customAssetType,
-                      defaultWidth: Number(customAssetWidth) || 4,
-                      defaultLength: Number(customAssetLength) || 4,
+                      defaultWidth: 4,
+                      defaultLength: 4,
                       color: customAssetColor,
                     })
                     event.target.value = ''
@@ -1013,92 +1012,73 @@ export default function Sidebar({
             />
 
             <div style={{ ...styles.floorCard, marginBottom: '10px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>Custom Asset Import</div>
-              <div style={{ display: 'grid', gap: '8px' }}>
-                <input
-                  type="text"
-                  value={customAssetName}
-                  onChange={(event) => setCustomAssetName(event.target.value)}
-                  placeholder="Asset name for PNG/Icon"
-                  style={{ ...styles.floorInput, marginTop: 0 }}
-                />
-                <input
-                  type="text"
-                  value={customAssetCategory}
-                  onChange={(event) => setCustomAssetCategory(event.target.value)}
-                  placeholder="Category e.g. Branding / Furniture"
-                  style={{ ...styles.floorInput, marginTop: 0 }}
-                />
-                <select
-                  value={customAssetType}
-                  onChange={(event) => setCustomAssetType(event.target.value)}
-                  style={{ ...styles.floorInput, marginTop: 0 }}
-                >
-                  <option value="icon">Icon</option>
-                  <option value="furniture">Furniture</option>
-                  <option value="equipment">Equipment</option>
-                  <option value="structure">Structure</option>
-                  <option value="branding">Branding</option>
-                  <option value="utility">Utility</option>
-                  <option value="other">Other</option>
-                </select>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.1"
-                    value={customAssetWidth}
-                    onChange={(event) => setCustomAssetWidth(event.target.value)}
-                    placeholder="Width (m)"
-                    style={{ ...styles.floorInput, marginTop: 0 }}
-                  />
-                  <input
-                    type="number"
-                    min="0.5"
-                    step="0.1"
-                    value={customAssetLength}
-                    onChange={(event) => setCustomAssetLength(event.target.value)}
-                    placeholder="Length (m)"
-                    style={{ ...styles.floorInput, marginTop: 0 }}
-                  />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px', alignItems: 'center' }}>
-                  <input
-                    type="color"
-                    value={customAssetColor}
-                    onChange={(event) => setCustomAssetColor(event.target.value)}
-                    style={{ ...styles.floorInput, padding: '4px', height: '36px', width: '100%' }}
-                  />
-                  <input
-                    type="text"
-                    value={customAssetColor}
-                    onChange={(event) => setCustomAssetColor(event.target.value)}
-                    placeholder="#3d8ef8"
-                    style={{ ...styles.floorInput, marginTop: 0 }}
-                  />
-                </div>
-              </div>
-              <div style={{ ...styles.floorMeta, marginTop: '6px' }}>
-                Supports JSON layout import plus PNG / JPG / SVG / WebP icon assets.
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
-              <button
-                type="button"
-                style={{ ...styles.floorInput, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer', fontWeight: 600 }}
-                onClick={() => assetImportInputRef.current?.click()}
+              <div
+                style={{ ...styles.sectionHeader, padding: 0, color: 'var(--text-primary)', justifyContent: 'space-between' }}
+                onClick={() => setCustomImportExpanded(prev => !prev)}
               >
-                <Upload size={13} /> Import Asset
-              </button>
-              <button
-                type="button"
-                style={{ ...styles.floorInput, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: assets.length ? 'pointer' : 'not-allowed', fontWeight: 600, opacity: assets.length ? 1 : 0.6 }}
-                onClick={() => onDownloadAssetList?.()}
-                disabled={!assets.length}
-              >
-                <Download size={13} /> Asset List
-              </button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  {customImportExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  Custom Asset Import
+                </span>
+              </div>
+              {customImportExpanded && (
+                <>
+                  <div style={{ display: 'grid', gap: '8px', marginTop: '10px' }}>
+                    <input
+                      type="text"
+                      value={customAssetName}
+                      onChange={(event) => setCustomAssetName(event.target.value)}
+                      placeholder="Asset name for PNG/Icon"
+                      style={{ ...styles.floorInput, marginTop: 0 }}
+                    />
+                    <input
+                      type="text"
+                      value={customAssetCategory}
+                      onChange={(event) => setCustomAssetCategory(event.target.value)}
+                      placeholder="Category e.g. Branding / Furniture"
+                      style={{ ...styles.floorInput, marginTop: 0 }}
+                    />
+                    <select
+                      value={customAssetType}
+                      onChange={(event) => setCustomAssetType(event.target.value)}
+                      style={{ ...styles.floorInput, marginTop: 0 }}
+                    >
+                      <option value="icon">Icon</option>
+                      <option value="furniture">Furniture</option>
+                      <option value="equipment">Equipment</option>
+                      <option value="structure">Structure</option>
+                      <option value="branding">Branding</option>
+                      <option value="utility">Utility</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <div style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        type="color"
+                        value={customAssetColor}
+                        onChange={(event) => setCustomAssetColor(event.target.value)}
+                        style={{ ...styles.floorInput, padding: '4px', height: '36px', width: '100%' }}
+                      />
+                      <input
+                        type="text"
+                        value={customAssetColor}
+                        onChange={(event) => setCustomAssetColor(event.target.value)}
+                        placeholder="#3d8ef8"
+                        style={{ ...styles.floorInput, marginTop: 0 }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ ...styles.floorMeta, marginTop: '6px' }}>
+                    Supports JSON layout import plus PNG / JPG / SVG / WebP icon assets.
+                  </div>
+                  <button
+                    type="button"
+                    style={{ ...styles.floorInput, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer', fontWeight: 600, width: '100%', marginTop: '10px' }}
+                    onClick={() => assetImportInputRef.current?.click()}
+                  >
+                    <Upload size={13} /> Import Asset
+                  </button>
+                </>
+              )}
             </div>
 
             <input

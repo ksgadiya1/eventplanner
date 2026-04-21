@@ -23,12 +23,12 @@ import {
   normalizeFloorPlanState,
   computeContentBounds,
   buildCirclePath,
-  buildSquarePath,
   buildRectanglePath,
   getLinePatternIcons,
   getBoundsPreviewPath,
   instantiateZoneFromTemplate,
   findOverlappingAsset,
+  getRectangleZoneDimensions,
   snapToGrid,
   snapToZoneGrid,
   computeVisibleGridSpacing,
@@ -59,7 +59,7 @@ const CircleDot = React.memo(function CircleDot({ position, scale = 4, fillColor
 })
 
 /**
- * Self-contained native Google Maps Rectangle for square zones.
+ * Self-contained native Google Maps Rectangle for rectangle zones.
  * Uses two-level useMemo to produce a STABLE `bounds` object reference
  * (only a new reference when coordinate values actually change).
  * This is the only reliable way to stop @react-google-maps/api from
@@ -90,31 +90,45 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
   // ── Level 1: compute scalar values from zone data ──────────────────────────
   // zone.path is a new array reference on every update, but the primitive
   // numbers inside it only change when the user actually moves the rectangle.
-  const path = zone.path
   const centerLat = zone.center?.lat
   const centerLng = zone.center?.lng
   const widthM = zone.widthM
   const lengthM = zone.lengthM
 
   const [bn, bs, be, bw] = useMemo(() => {
-    const pts = Array.isArray(path) && path.length >= 4 ? path : null
+    const lat = Number(centerLat) || 0
+    const lng = Number(centerLng) || 0
+    const hasRectMetrics = Number(widthM) > 0 && Number(lengthM) > 0
+    if (hasRectMetrics) {
+      const tr = (val) => Math.round(val * 1e10) / 1e10
+      if (window.google?.maps?.geometry?.spherical) {
+        const center = new window.google.maps.LatLng(lat, lng)
+        const halfWidth = Number(widthM) / 2
+        const halfLength = Number(lengthM) / 2
+        const north = window.google.maps.geometry.spherical.computeOffset(center, halfLength, 0)
+        const south = window.google.maps.geometry.spherical.computeOffset(center, halfLength, 180)
+        const east = window.google.maps.geometry.spherical.computeOffset(center, halfWidth, 90)
+        const west = window.google.maps.geometry.spherical.computeOffset(center, halfWidth, 270)
+        return [tr(north.lat()), tr(south.lat()), tr(east.lng()), tr(west.lng())]
+      }
+
+      const hw = Number(widthM) / 2
+      const hl = Number(lengthM) / 2
+      const latD = hl / 111111
+      const lngD = hw / (111111 * Math.max(1e-6, Math.cos(lat * Math.PI / 180)))
+      return [tr(lat + latD), tr(lat - latD), tr(lng + lngD), tr(lng - lngD)]
+    }
+
+    const pts = Array.isArray(zone.path) && zone.path.length >= 4 ? zone.path : null
     if (pts) {
       const lats = pts.map(p => Number(p.lat))
       const lngs = pts.map(p => Number(p.lng))
       return [Math.max(...lats), Math.min(...lats), Math.max(...lngs), Math.min(...lngs)]
     }
-    const lat = Number(centerLat) || 0
-    const lng = Number(centerLng) || 0
-    const hw = (Number(widthM) || 10) / 2
-    const hl = (Number(lengthM) || 10) / 2
-    const latD = hl / 111111
-    const lngD = hw / (111111 * Math.max(1e-6, Math.cos(lat * Math.PI / 180)))
-    // Truncate to 10 decimal places to eliminate microscopic noise differences
-    // across different re-renders or math paths.
-    const tr = (val) => Math.round(val * 1e10) / 1e10
-    return [tr(lat + latD), tr(lat - latD), tr(lng + lngD), tr(lng - lngD)]
+
+    return [tr(lat), tr(lat), tr(lng), tr(lng)]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, centerLat, centerLng, widthM, lengthM])
+  }, [zone.path, centerLat, centerLng, widthM, lengthM])
 
   // ── Level 2: stable bounds OBJECT — only new reference when values change ──
   // When the user drags the rectangle, values change → new object → @react-google-maps/api
@@ -125,6 +139,10 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
     () => ({ north: bn, south: bs, east: be, west: bw }),
     [bn, bs, be, bw]
   )
+
+  useEffect(() => {
+    lastBoundsRef.current = { n: bn, s: bs, e: be, w: bw }
+  }, [bn, bs, be, bw])
 
   // Stable handler — decoupled via RAF to break the synchronous loop
   const handleBoundsChanged = useCallback(() => {
@@ -273,32 +291,8 @@ function getPathCenter(path = []) {
   }
 }
 
-function getRectangleZoneDimensions(zone, google) {
-  const widthM = Number(zone?.widthM)
-  const lengthM = Number(zone?.lengthM)
-  if (Number.isFinite(widthM) && widthM > 0 && Number.isFinite(lengthM) && lengthM > 0) {
-    return { widthM, lengthM }
-  }
-
-  if (!google?.maps?.geometry?.spherical || !Array.isArray(zone?.path) || zone.path.length < 4) {
-    return { widthM: null, lengthM: null }
-  }
-
-  const p0 = zone.path[0]
-  const p1 = zone.path[1]
-  const p2 = zone.path[2]
-  if (!p0 || !p1 || !p2) return { widthM: null, lengthM: null }
-
-  return {
-    widthM: google.maps.geometry.spherical.computeDistanceBetween(
-      new google.maps.LatLng(p0.lat, p0.lng),
-      new google.maps.LatLng(p1.lat, p1.lng)
-    ),
-    lengthM: google.maps.geometry.spherical.computeDistanceBetween(
-      new google.maps.LatLng(p1.lat, p1.lng),
-      new google.maps.LatLng(p2.lat, p2.lng)
-    ),
-  }
+function isRectangleZone(zone) {
+  return zone?.shapeType === 'rectangle' || zone?.shapeType === 'square'
 }
 
 function buildZoneGridOverlay(zone, map, zoom) {
@@ -321,7 +315,7 @@ function buildZoneGridOverlay(zone, map, zoom) {
     y: (minY + maxY) / 2,
   }
 
-  const center = (zone.shapeType === 'circle' || zone.shapeType === 'square') && zone.center
+  const center = (zone.shapeType === 'circle' || isRectangleZone(zone)) && zone.center
     ? zone.center
     : getPathCenter(zone.path)
   if (!center) return null
@@ -1295,6 +1289,43 @@ export default function MapCanvas({
     const tr = (val) => Math.round(val * 1e10) / 1e10
     const [tn, ts, te, tw] = [tr(n), tr(s), tr(e), tr(w)]
 
+    const expectedBounds = (() => {
+      const centerLat = Number(zone?.center?.lat)
+      const centerLng = Number(zone?.center?.lng)
+      const widthMeters = Number(zone?.widthM)
+      const lengthMeters = Number(zone?.lengthM)
+      if (
+        !Number.isFinite(centerLat) ||
+        !Number.isFinite(centerLng) ||
+        !Number.isFinite(widthMeters) ||
+        !Number.isFinite(lengthMeters) ||
+        widthMeters <= 0 ||
+        lengthMeters <= 0
+      ) return null
+
+      const center = new window.google.maps.LatLng(centerLat, centerLng)
+      const north = window.google.maps.geometry.spherical.computeOffset(center, lengthMeters / 2, 0)
+      const south = window.google.maps.geometry.spherical.computeOffset(center, lengthMeters / 2, 180)
+      const east = window.google.maps.geometry.spherical.computeOffset(center, widthMeters / 2, 90)
+      const west = window.google.maps.geometry.spherical.computeOffset(center, widthMeters / 2, 270)
+      return {
+        n: tr(north.lat()),
+        s: tr(south.lat()),
+        e: tr(east.lng()),
+        w: tr(west.lng()),
+      }
+    })()
+
+    if (
+      expectedBounds &&
+      Math.abs(expectedBounds.n - tn) < 1e-7 &&
+      Math.abs(expectedBounds.s - ts) < 1e-7 &&
+      Math.abs(expectedBounds.e - te) < 1e-7 &&
+      Math.abs(expectedBounds.w - tw) < 1e-7
+    ) {
+      return
+    }
+
     const newPath = [
       { lat: tn, lng: te }, // NE (Index 0)
       { lat: tn, lng: tw }, // NW (Index 1)
@@ -1463,7 +1494,7 @@ export default function MapCanvas({
     }
 
     const activeShape = shapeDraftRef.current
-    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'square')) {
+    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'rectangle')) {
       const centerLatLng = new window.google.maps.LatLng(activeShape.center.lat, activeShape.center.lng)
       const currentDist = window.google.maps.geometry.spherical.computeDistanceBetween(centerLatLng, event.latLng)
       setLineMeasurement(currentDist)
@@ -1573,7 +1604,7 @@ export default function MapCanvas({
 
     if (placePendingZoneTemplateAtLatLng(event.latLng)) return
 
-    if ((drawMode === 'square' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
+    if ((drawMode === 'rectangle' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
       const currentDraft = shapeDraftRef.current
 
@@ -1588,7 +1619,7 @@ export default function MapCanvas({
       const radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
 
       let path = []
-      if (drawMode === 'square') {
+      if (drawMode === 'square' || drawMode === 'rectangle') {
         path = buildSquarePath(currentDraft.center, radiusM / Math.SQRT2, window.google)
       } else {
         path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
@@ -1626,8 +1657,8 @@ export default function MapCanvas({
           contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
-          widthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
-          lengthM: drawMode === 'square' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
+          widthM: drawMode === 'rectangle' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
+          lengthM: drawMode === 'rectangle' ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
         })
       }
 
@@ -1959,7 +1990,7 @@ export default function MapCanvas({
     }
 
     if (object.type === 'zone' && type === 'resize') {
-      if (layers.zones?.locked || object.shapeType !== 'square') return
+      if (layers.zones?.locked || !isRectangleZone(object)) return
       const rect = map.getDiv().getBoundingClientRect()
       const center = getPathCenter(object.path)
       const centerPoint = center ? latLngToContainerPoint(map, center.lat, center.lng) : null
@@ -2586,7 +2617,7 @@ export default function MapCanvas({
             ) : (
               <Polygon
                 key="shape-draft"
-                paths={buildSquarePath(shapeDraft.center, lineMeasurement, window.google)}
+                paths={buildRectanglePath(shapeDraft.center, lineMeasurement / Math.SQRT2, lineMeasurement / Math.SQRT2, window.google)}
                 options={{
                   fillColor: 'rgba(120, 210, 120, 0.2)',
                   strokeColor: '#22c55e',
@@ -2617,7 +2648,7 @@ export default function MapCanvas({
                 whiteSpace: 'nowrap',
                 transform: 'translateY(-120%)',
               }}>
-                {shapeDraft.type === 'circle' ? 'Radius' : 'Half-side'}: {formatDistance(lineMeasurement, measurementUnit)}
+                {shapeDraft.type === 'circle' ? 'Radius' : 'Corner Distance'}: {formatDistance(lineMeasurement, measurementUnit)}
               </div>
             </OverlayView>
           </>
@@ -2727,7 +2758,7 @@ export default function MapCanvas({
               gridSize={baseGridSnap ? baseGridSize : zoneGridSize}
               gridZone={resolvedGridZone}
               gridReferenceLat={baseCenterLat}
-              vertexSnapZone={parentZone?.shapeType === 'square' ? parentZone : null}
+              vertexSnapZone={isRectangleZone(parentZone) ? parentZone : null}
             />
           )
         })}

@@ -819,6 +819,34 @@ export function getPathCenter(path) {
   }
 }
 
+export function getRectangleZoneDimensions(zone, google) {
+  const widthM = Number(zone?.widthM)
+  const lengthM = Number(zone?.lengthM)
+  if (Number.isFinite(widthM) && widthM > 0 && Number.isFinite(lengthM) && lengthM > 0) {
+    return { widthM, lengthM }
+  }
+
+  if (!google?.maps?.geometry?.spherical || !Array.isArray(zone?.path) || zone.path.length < 4) {
+    return { widthM: null, lengthM: null }
+  }
+
+  const p0 = zone.path[0]
+  const p1 = zone.path[1]
+  const p2 = zone.path[2]
+  if (!p0 || !p1 || !p2) return { widthM: null, lengthM: null }
+
+  return {
+    widthM: google.maps.geometry.spherical.computeDistanceBetween(
+      new google.maps.LatLng(p0.lat, p0.lng),
+      new google.maps.LatLng(p1.lat, p1.lng)
+    ),
+    lengthM: google.maps.geometry.spherical.computeDistanceBetween(
+      new google.maps.LatLng(p1.lat, p1.lng),
+      new google.maps.LatLng(p2.lat, p2.lng)
+    ),
+  }
+}
+
 export function limitGridSlots(slots, maxPoints = 450) {
   if (!slots?.length || slots.length <= maxPoints) return slots || []
   const step = Math.ceil(slots.length / maxPoints)

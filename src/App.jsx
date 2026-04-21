@@ -17,7 +17,7 @@ import { getRouteStylePreset } from './data/routeTypes'
 //   normalizeFloorPlanState,
 //   serializeZoneTemplateGeometry,
 // } from './utils/mapGeometry'
-import { buildCirclePath, buildRectanglePath, computePolygonMetrics, findOverlappingAsset, getAssetSize, getFloorGeometry, getPathCenter, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry, getDeepestParentFloor } from './utils/mapGeometry'
+import { buildCirclePath, buildRectanglePath, computePolygonMetrics, findOverlappingAsset, getAssetSize, getFloorGeometry, getPathCenter, getRectangleZoneDimensions, latLngToContainerPoint, normalizeFloorPlanState, serializeZoneTemplateGeometry, getDeepestParentFloor } from './utils/mapGeometry'
 import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
@@ -505,14 +505,14 @@ function normalizeAnnotationParent(annotation, zones, floorPlans) {
 
 function normalizeZoneParent(zone, zones, floorPlans) {
   if (!zone?.path?.length) return zone
-  const anchorPoint = zone.path[0]
+
+  const centroid = getPathCentroid(zone.path)
+  const anchorPoint = centroid || zone.path[0]
   if (!anchorPoint) return zone
   const parentFloor = getDeepestParentFloor(anchorPoint, floorPlans, window.google)
   return { ...zone, parentId: parentFloor?.id || null }
 }
-
 function normalizeLineParent(line, zones, floorPlans) {
-  if (!line?.path?.length) return line
   const anchorPoint = getPathCentroid(line.path)
   if (!anchorPoint) return line
   const parentZone = findDeepestZoneForPoint(anchorPoint, zones)
@@ -1363,10 +1363,10 @@ export default function App() {
         capacity: computeZoneCapacity(updated),
       }
 
-      const isSquareShape = updated.shapeType === 'square'
+      const isRectangleShape = updated.shapeType === 'square' || updated.shapeType === 'rectangle'
       const isCircleShape = updated.shapeType === 'circle'
-      const widthChanged = isSquareShape && Number(updated.widthM) !== Number(previousZone?.widthM)
-      const lengthChanged = isSquareShape && Number(updated.lengthM) !== Number(previousZone?.lengthM)
+      const widthChanged = isRectangleShape && Number(updated.widthM) !== Number(previousZone?.widthM)
+      const lengthChanged = isRectangleShape && Number(updated.lengthM) !== Number(previousZone?.lengthM)
       const radiusChanged = isCircleShape && Number(updated.radiusM) !== Number(previousZone?.radiusM)
       const rotationChanged = Number(updated.rotation) !== Number(previousZone?.rotation)
 
@@ -1374,7 +1374,7 @@ export default function App() {
         const center = updated.center || getPathCenter(previousZone?.path || updated.path)
         const widthM = Number(updated.widthM)
         const lengthM = Number(updated.lengthM)
-        const rotationDeg = Number(updated.rotation || 0)
+        const rotationDeg = isRectangleShape ? 0 : Number(updated.rotation || 0)
 
         if (center && Number.isFinite(widthM) && Number.isFinite(lengthM)) {
           const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, -rotationDeg)
@@ -1388,6 +1388,7 @@ export default function App() {
               lengthM,
               areaM2: metrics.areaM2,
               perimeterM: metrics.perimeterM,
+              rotation: isRectangleShape ? 0 : nextZoneRecord.rotation,
             }
           }
         }
@@ -1412,7 +1413,7 @@ export default function App() {
         }
       }
 
-      if (rotationChanged && !isSquareShape && Array.isArray(nextZoneRecord.path) && nextZoneRecord.path.length >= 3) {
+      if (rotationChanged && !isRectangleShape && Array.isArray(nextZoneRecord.path) && nextZoneRecord.path.length >= 3) {
         const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
         const oldRotation = Number(previousZone?.rotation || 0)
         const newRotation = Number(updated.rotation || 0)
@@ -1435,34 +1436,18 @@ export default function App() {
             rotation: newRotation,
           }
         }
-      } else if (rotationChanged && isSquareShape) {
-        const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
-        const newRotation = Number(updated.rotation || 0)
-
-        if (center && nextZoneRecord.widthM && nextZoneRecord.lengthM && window.google?.maps?.geometry?.spherical) {
-          const rotatedPath = buildRectanglePath(center, nextZoneRecord.widthM / 2, nextZoneRecord.lengthM / 2, window.google, -newRotation)
-          if (rotatedPath.length >= 3) {
-            const metrics = computePolygonMetrics(rotatedPath, window.google)
-            nextZoneRecord = {
-              ...nextZoneRecord,
-              path: rotatedPath,
-              areaM2: metrics.areaM2,
-              perimeterM: metrics.perimeterM,
-              rotation: newRotation,
-            }
-          } else {
-            nextZoneRecord = {
-              ...nextZoneRecord,
-              rotation: newRotation,
-            }
-          }
-        } else {
-          nextZoneRecord = {
-            ...nextZoneRecord,
-            rotation: newRotation,
-          }
-        }
+      } else if (rotationChanged && isRectangleShape) {
+        nextZoneRecord = { ...nextZoneRecord, rotation: 0 }
       }
+
+
+
+
+
+
+
+
+
 
       if (updated.showGrid && !previousZone?.showGrid) {
         setLayers(prev => ({
