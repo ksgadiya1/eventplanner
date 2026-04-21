@@ -113,7 +113,7 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
     // across different re-renders or math paths.
     const tr = (val) => Math.round(val * 1e10) / 1e10
     return [tr(lat + latD), tr(lat - latD), tr(lng + lngD), tr(lng - lngD)]
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, centerLat, centerLng, widthM, lengthM])
 
   // ── Level 2: stable bounds OBJECT — only new reference when values change ──
@@ -192,7 +192,7 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
         }
         if (rectRefs) rectRefs.current[zone.id] = rect
         gmRectRef.current = rect
-        
+
         // Seed the snapshot so the first onBoundsChanged (from initial setBounds) is ignored
         lastBoundsRef.current = { n: bn, s: bs, e: be, w: bw }
       }}
@@ -1105,108 +1105,188 @@ export default function MapCanvas({
     const path = extractPathFromOverlay(overlay)
     if (path.length < 3) return
 
-    // For square/rectangle zones, reconstruct a valid rectangle from the dragged vertex
-    // to prevent Google Maps polygon editing from turning it into a free-form polygon.
-    if (zone.shapeType === 'square' && path.length === 4) {
+    if (zone.shapeType === 'square') {
       const prevPath = zone.path
-      let movedIdx = 0
+      if (!Array.isArray(prevPath) || prevPath.length !== 4) {
+        // Fallback: If it's a square but path is corrupted, treat as polygon
+        const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
+        onAssetUpdate({ ...zone, path, areaM2, perimeterM })
+        return
+      }
 
-      // Find which vertex moved the most (the one the user dragged)
-      if (Array.isArray(prevPath) && prevPath.length === 4) {
-        let maxDist = -1
+      const prevCenter = zone.center || getPathCenter(prevPath)
+      const rotationDeg = Number(zone.rotation || 0)
+      const rotRad = -rotationDeg * Math.PI / 180
+      const cos = Math.cos(rotRad)
+      const sin = Math.sin(rotRad)
+
+      // Project path into local coordinate system (centered at prevCenter, rotated)
+      const getLocal = (pt) => {
+        const dx = (pt.lng - prevCenter.lng) * 111111 * Math.cos(prevCenter.lat * Math.PI / 180)
+        const dy = (pt.lat - prevCenter.lat) * 111111
+        return {
+          x: dx * cos + dy * sin,
+          y: -dx * sin + dy * cos
+        }
+      }
+
+      const localCurr = path.map(getLocal)
+      const hw = (Number(zone.widthM) || 1) / 2
+      const hh = (Number(zone.lengthM) || 1) / 2
+
+      // 1. Detect if this is a uniform translation (Move)
+      // If the number of points is 4 and they all shifted by roughly the same vector, it's a move.
+      let isUniformMove = false
+      let moveDLat = 0
+      let moveDLng = 0
+
+      if (path.length === 4) {
+        const moves = path.map((pt, i) => ({
+          dLat: pt.lat - prevPath[i].lat,
+          dLng: pt.lng - prevPath[i].lng
+        }))
+        const avgDLat = moves.reduce((s, m) => s + m.dLat, 0) / 4
+        const avgDLng = moves.reduce((s, m) => s + m.dLng, 0) / 4
+        const variance = moves.reduce((s, m) => s + Math.pow(m.dLat - avgDLat, 2) + Math.pow(m.dLng - avgDLng, 2), 0)
+        
+        if (variance < 1e-12) { // Extremely low variance means uniform shift
+          isUniformMove = true
+          moveDLat = avgDLat
+          moveDLng = avgDLng
+        }
+      }
+
+      if (isUniformMove) {
+        if (Math.abs(moveDLat) > 1e-10 || Math.abs(moveDLng) > 1e-10) {
+          const nextCenter = { lat: prevCenter.lat + moveDLat, lng: prevCenter.lng + moveDLat * 0 /* lng offset handled below */ }
+          // Re-calculate center properly
+          const currentCenter = getPathCenter(path)
+          const nextPath = prevPath.map(p => ({ lat: p.lat + moveDLat, lng: p.lng + moveDLng }))
+          const { areaM2, perimeterM } = computePolygonMetrics(nextPath, window.google)
+          onAssetUpdate({ ...zone, path: nextPath, center: currentCenter, areaM2, perimeterM })
+        }
+        return
+      }
+
+      // 2. Otherwise, treat as a Transformation (Resize)
+      // Find which vertex moved the most relative to its expected local corner
+      const predictedLocal = [{ x: hw, y: hh }, { x: -hw, y: hh }, { x: -hw, y: -hh }, { x: hw, y: -hh }]
+      let maxD = -1
+      let draggedPtLocal = localCurr[0]
+      
+      for (let i = 0; i < localCurr.length; i++) {
+        let minDistToAnyCorner = Infinity
+        for (let j = 0; j < 4; j++) {
+           const d = Math.sqrt(Math.pow(localCurr[i].x - predictedLocal[j].x, 2) + Math.pow(localCurr[i].y - predictedLocal[j].y, 2))
+           if (d < minDistToAnyCorner) minDistToAnyCorner = d
+        }
+        if (minDistToAnyCorner > maxD) {
+          maxD = minDistToAnyCorner
+          draggedPtLocal = localCurr[i]
+        }
+      }
+      
+      if (maxD < 0.05) return // No meaningful change detected
+
+      let nextHalfW = hw
+      let nextHalfH = hh
+      let nextCenterLocal = { x: 0, y: 0 }
+
+      if (path.length === 4) {
+        // Corner drag: Opposite corner stays fixed
+        let bestCornerIdx = 0
+        let minCD = Infinity
         for (let i = 0; i < 4; i++) {
-          const dLat = (path[i]?.lat || 0) - (prevPath[i]?.lat || 0)
-          const dLng = (path[i]?.lng || 0) - (prevPath[i]?.lng || 0)
-          const dist = Math.sqrt(dLat * dLat + dLng * dLng)
-          if (dist > maxDist) { maxDist = dist; movedIdx = i }
+          const d = Math.pow(draggedPtLocal.x - predictedLocal[i].x, 2) + Math.pow(draggedPtLocal.y - predictedLocal[i].y, 2)
+          if (d < minCD) { minCD = d; bestCornerIdx = i }
+        }
+        
+        const fixedCorner = predictedLocal[(bestCornerIdx + 2) % 4]
+        nextCenterLocal = { x: (draggedPtLocal.x + fixedCorner.x) / 2, y: (draggedPtLocal.y + fixedCorner.y) / 2 }
+        nextHalfW = Math.abs(draggedPtLocal.x - fixedCorner.x) / 2
+        nextHalfH = Math.abs(draggedPtLocal.y - fixedCorner.y) / 2
+      } else {
+        // Edge Drag Logic: Identify whether the Top/Bottom or Left/Right edges were pulled.
+        // We compare relative distances from the local axes.
+        const distToXBound = Math.abs(Math.abs(draggedPtLocal.x) - hw)
+        const distToYBound = Math.abs(Math.abs(draggedPtLocal.y) - hh)
+
+        if (distToXBound < distToYBound) {
+          // Point is closer to the Left/Right boundaries -> Resizing Width (X)
+          nextHalfW = Math.abs(draggedPtLocal.x)
+          nextCenterLocal.x = (draggedPtLocal.x > 0 ? 1 : -1) * (nextHalfW - hw)
+        } else {
+          nextHalfH = Math.abs(draggedPtLocal.y)
+          nextCenterLocal.y = (draggedPtLocal.y > 0 ? 1 : -1) * (nextHalfH - hh)
         }
       }
 
-      // The diagonal opposite vertex stays fixed as the anchor corner
-      const oppositeIdx = (movedIdx + 2) % 4
-      const draggedCorner = path[movedIdx]
-      const fixedCorner = path[oppositeIdx]
+      const dW = Math.abs(hw - nextHalfW)
+      const dH = Math.abs(hh - nextHalfH)
+      const dCX = Math.abs(nextCenterLocal.x)
+      const dCY = Math.abs(nextCenterLocal.y)
 
-      if (draggedCorner && fixedCorner && window.google.maps.geometry?.spherical) {
-        const spherical = window.google.maps.geometry.spherical
+      if (dW < 0.001 && dH < 0.001 && dCX < 1e-10 && dCY < 1e-10) return
 
-        // Rebuild center from midpoint of the two diagonal corners
-        const newCenter = {
-          lat: (draggedCorner.lat + fixedCorner.lat) / 2,
-          lng: (draggedCorner.lng + fixedCorner.lng) / 2,
-        }
-
-        // Compute the original rectangle's rotation from prevPath (or zone),
-        // then derive new halfWidth/halfHeight from the dragged diagonal distance
-        const prevRotationDeg = (() => {
-          if (Array.isArray(prevPath) && prevPath.length >= 2) {
-            const p0 = prevPath[0]
-            const p1 = prevPath[1]
-            if (p0 && p1) {
-              // edge p0->p1 corresponds to the "width" direction
-              const dLat = (p1.lat - p0.lat) * 111111
-              const dLng = (p1.lng - p0.lng) * 111111 * Math.cos(p0.lat * Math.PI / 180)
-              return (Math.atan2(dLng, dLat) * 180 / Math.PI + 360) % 360
-            }
-          }
-          return 0
-        })()
-
-        // Project the diagonal half-vector onto width/height axes
-        const halfDiagLat = (draggedCorner.lat - newCenter.lat) * 111111
-        const halfDiagLng = (draggedCorner.lng - newCenter.lng) * 111111 * Math.cos(newCenter.lat * Math.PI / 180)
-        const rotRad = prevRotationDeg * Math.PI / 180
-
-        // Width direction: rotated by prevRotationDeg; height direction: perpendicular
-        const halfWidthM = Math.abs(halfDiagLng * Math.cos(rotRad) - halfDiagLat * Math.sin(rotRad))
-        const halfHeightM = Math.abs(halfDiagLng * Math.sin(rotRad) + halfDiagLat * Math.cos(rotRad))
-
-        const constrainedPath = buildRectanglePath(
-          newCenter,
-          Math.max(0.5, halfWidthM),
-          Math.max(0.5, halfHeightM),
-          window.google,
-          prevRotationDeg
-        )
-
-        if (constrainedPath.length === 4) {
-          // Push the constrained path back into the Google Maps polygon overlay
-          const gmPath = overlay.getPath?.()
-          if (gmPath && gmPath.getLength() === 4) {
-            constrainedPath.forEach((pt, idx) => {
-              gmPath.setAt(idx, new window.google.maps.LatLng(pt.lat, pt.lng))
-            })
-          }
-
-          const { areaM2, perimeterM } = computePolygonMetrics(constrainedPath, window.google)
-          onAssetUpdate({
-            ...zone,
-            path: constrainedPath,
-            center: newCenter,
-            widthM: Number((halfWidthM * 2).toFixed(2)),
-            lengthM: Number((halfHeightM * 2).toFixed(2)),
-            areaM2,
-            perimeterM,
-            parentId: zone.parentId || null,
-            capacity: computeZoneCapacity({ ...zone, path: constrainedPath, areaM2 }),
-          })
-          return
-        }
+      // Project center back from local to global LatLng
+      const nextCenter = {
+        lat: prevCenter.lat + (nextCenterLocal.x * sin + nextCenterLocal.y * cos) / 111111,
+        lng: prevCenter.lng + (nextCenterLocal.x * cos - nextCenterLocal.y * sin) / (111111 * Math.cos(prevCenter.lat * Math.PI / 180))
       }
+
+      const constrainedPath = buildRectanglePath(
+        nextCenter,
+        Math.max(0.1, nextHalfW),
+        Math.max(0.1, nextHalfH),
+        window.google,
+        -rotationDeg
+      )
+
+      // 3. Match constrainedPath corners to targetGmPath indices to prevent bowties/twisting
+      const targetGmPath = overlay.getPath()
+      while (targetGmPath.getLength() > 4) targetGmPath.pop()
+      while (targetGmPath.getLength() < 4) targetGmPath.push(new window.google.maps.LatLng(constrainedPath[0].lat, constrainedPath[0].lng))
+      
+      const matchedPath = []
+      const used = new Set()
+      for (let i = 0; i < 4; i++) {
+        const curr = targetGmPath.getAt(i)
+        let minD = Infinity
+        let bestJ = 0
+        for (let j = 0; j < 4; j++) {
+           if (used.has(j)) continue
+           const d = Math.pow(curr.lat() - constrainedPath[j].lat, 2) + Math.pow(curr.lng() - constrainedPath[j].lng, 2)
+           if (d < minD) { minD = d; bestJ = j }
+        }
+        matchedPath[i] = constrainedPath[bestJ]
+        used.add(bestJ)
+      }
+
+      matchedPath.forEach((pt, idx) => {
+        targetGmPath.setAt(idx, new window.google.maps.LatLng(pt.lat, pt.lng))
+      })
+
+      const { areaM2, perimeterM } = computePolygonMetrics(constrainedPath, window.google)
+      onAssetUpdate({
+        ...zone,
+        path: constrainedPath,
+        center: nextCenter,
+        widthM: Number((nextHalfW * 2).toFixed(2)),
+        lengthM: Number((nextHalfH * 2).toFixed(2)),
+        areaM2,
+        perimeterM,
+        capacity: computeZoneCapacity({ ...zone, path: constrainedPath, areaM2 }),
+      })
+    } else {
+      const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
+      onAssetUpdate({
+        ...zone,
+        path,
+        areaM2,
+        perimeterM,
+        capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
+      })
     }
-
-    const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
-
-    const updateData = {
-      ...zone,
-      path,
-      areaM2,
-      perimeterM,
-      parentId: zone.parentId || null,
-      capacity: computeZoneCapacity({ ...zone, path, areaM2 }),
-    }
-
-    onAssetUpdate(updateData)
   }, [onAssetUpdate, zones])
 
   // Commit a bounds change from a ZoneRectangle drag/resize to app state
@@ -1216,10 +1296,10 @@ export default function MapCanvas({
     const [tn, ts, te, tw] = [tr(n), tr(s), tr(e), tr(w)]
 
     const newPath = [
-      { lat: tn, lng: tw },
-      { lat: tn, lng: te },
-      { lat: ts, lng: te },
-      { lat: ts, lng: tw },
+      { lat: tn, lng: te }, // NE (Index 0)
+      { lat: tn, lng: tw }, // NW (Index 1)
+      { lat: ts, lng: tw }, // SW (Index 2)
+      { lat: ts, lng: te }, // SE (Index 3)
     ]
     const newCenter = { lat: tr((tn + ts) / 2), lng: tr((te + tw) / 2) }
     const spherical = window.google.maps.geometry.spherical
@@ -1232,12 +1312,13 @@ export default function MapCanvas({
       new window.google.maps.LatLng(tn, newCenter.lng)
     )
 
-    // Significance Guard: If the box hasn't moved at least 0.0001mm, ignore it.
-    // This breaks potential circular updates between React and Google Maps.
-    const prevN = tr(Math.max(...(zone.path?.map(p => p.lat) || [0])))
-    const prevW = tr(Math.min(...(zone.path?.map(p => p.lng) || [0])))
-    const diff = Math.max(Math.abs(prevN - tn), Math.abs(prevW - tw))
-    if (diff < 1e-10) return
+    const prevCenter = zone.center || getPathCenter(zone.path)
+    const dLat = Math.abs(prevCenter.lat - newCenter.lat)
+    const dLng = Math.abs(prevCenter.lng - newCenter.lng)
+    const dW = Math.abs((zone.widthM || 0) - widthM)
+    const dL = Math.abs((zone.lengthM || 0) - lengthM)
+
+    if (dLat < 1e-10 && dLng < 1e-10 && dW < 0.001 && dL < 0.001) return
 
     const { areaM2, perimeterM } = computePolygonMetrics(newPath, window.google)
     onAssetUpdate({
@@ -1508,7 +1589,7 @@ export default function MapCanvas({
 
       let path = []
       if (drawMode === 'square') {
-        path = buildSquarePath(currentDraft.center, radiusM, window.google)
+        path = buildSquarePath(currentDraft.center, radiusM / Math.SQRT2, window.google)
       } else {
         path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
       }
@@ -1558,10 +1639,10 @@ export default function MapCanvas({
 
     if (pendingFloorImageUrl && window.google) {
       const clickPoint = { lat: event.latLng.lat(), lng: event.latLng.lng() }
-      
+
       const centerLatLng = new window.google.maps.LatLng(clickPoint.lat, clickPoint.lng)
       const halfSizeM = 25
-      
+
       const northLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 0)
       const southLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 180)
       const eastLatLng = window.google.maps.geometry.spherical.computeOffset(centerLatLng, halfSizeM, 90)
@@ -1573,7 +1654,7 @@ export default function MapCanvas({
         east: eastLatLng.lng(),
         west: westLatLng.lng(),
       }
-      
+
       const nextFloorPlan = normalizeFloorPlanState({
         id: `floor_${Date.now()}`,
         type: 'floor',
@@ -2169,7 +2250,7 @@ export default function MapCanvas({
                     delete lastCircleSnapshotRef.current[zone.id]
                   }}
                 />
-              ) : zone.shapeType === 'square' ? (
+              ) : (zone.shapeType === 'square' && (!zone.rotation || zone.rotation === 0)) ? (
                 <ZoneRectangle
                   zone={zone}
                   selectedId={selectedId}

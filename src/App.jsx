@@ -1377,7 +1377,7 @@ export default function App() {
         const rotationDeg = Number(updated.rotation || 0)
 
         if (center && Number.isFinite(widthM) && Number.isFinite(lengthM)) {
-          const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, rotationDeg)
+          const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, -rotationDeg)
           if (path.length >= 3) {
             const metrics = computePolygonMetrics(path, window.google)
             nextZoneRecord = {
@@ -1417,17 +1417,16 @@ export default function App() {
         const oldRotation = Number(previousZone?.rotation || 0)
         const newRotation = Number(updated.rotation || 0)
         const deltaRotation = newRotation - oldRotation
-        const radians = -(deltaRotation * Math.PI) / 180
-        const cos = Math.cos(radians)
-        const sin = Math.sin(radians)
-
-        if (center) {
+        if (center && window.google?.maps?.geometry?.spherical) {
+          const centerLatLng = new window.google.maps.LatLng(center.lat, center.lng)
           const rotatedPath = nextZoneRecord.path.map((point) => {
-            const dx = point.lng - center.lng
-            const dy = point.lat - center.lat
+            const pointLatLng = new window.google.maps.LatLng(point.lat, point.lng)
+            const heading = window.google.maps.geometry.spherical.computeHeading(centerLatLng, pointLatLng)
+            const distance = window.google.maps.geometry.spherical.computeDistanceBetween(centerLatLng, pointLatLng)
+            const rotatedPoint = window.google.maps.geometry.spherical.computeOffset(centerLatLng, distance, heading + deltaRotation)
             return {
-              lat: center.lat + (dy * cos - dx * sin),
-              lng: center.lng + (dx * cos + dy * sin),
+              lat: rotatedPoint.lat(),
+              lng: rotatedPoint.lng(),
             }
           })
           nextZoneRecord = {
