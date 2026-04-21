@@ -37,8 +37,8 @@ export function shortestAngleDelta(fromAngle, toAngle) {
 export function projectScreenDelta(dx, dy, rotationDeg) {
   const radians = rotationDeg * Math.PI / 180
   return {
-    localX: dx * Math.cos(radians) + dy * Math.sin(radians),
-    localY: -dx * Math.sin(radians) + dy * Math.cos(radians),
+    localX: dx * Math.cos(radians) - dy * Math.sin(radians),
+    localY: dx * Math.sin(radians) + dy * Math.cos(radians),
   }
 }
 
@@ -244,8 +244,10 @@ export function isPointInsideFloorOverlay(map, floorPlan, clickPoint) {
   const localX = clickPoint.x - geometry.centerPoint.x
   const localY = clickPoint.y - geometry.centerPoint.y
   const radians = ((floorPlan.rotation || 0) * Math.PI) / 180
-  const rotatedX = localX * Math.cos(-radians) - localY * Math.sin(-radians)
-  const rotatedY = localX * Math.sin(-radians) + localY * Math.cos(-radians)
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  const rotatedX = localX * cos + localY * sin
+  const rotatedY = -localX * sin + localY * cos
 
   return (
     Math.abs(rotatedX) <= geometry.widthPx / 2 &&
@@ -631,8 +633,8 @@ export function buildRectanglePath(center, halfWidthM, halfHeightM, google, rota
   ]
 
   return corners.map(({ x, y }) => {
-    const rotatedX = x * Math.cos(rotationRad) - y * Math.sin(rotationRad)
-    const rotatedY = x * Math.sin(rotationRad) + y * Math.cos(rotationRad)
+    const rotatedX = x * Math.cos(rotationRad) + y * Math.sin(rotationRad)
+    const rotatedY = -x * Math.sin(rotationRad) + y * Math.cos(rotationRad)
     const distance = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY)
     const bearing = (Math.atan2(rotatedX, rotatedY) * 180 / Math.PI + 360) % 360
     const point = google.maps.geometry.spherical.computeOffset(origin, distance, bearing)

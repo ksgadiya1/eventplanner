@@ -1370,14 +1370,14 @@ export default function App() {
       const radiusChanged = isCircleShape && Number(updated.radiusM) !== Number(previousZone?.radiusM)
       const rotationChanged = Number(updated.rotation) !== Number(previousZone?.rotation)
 
-      if ((widthChanged || lengthChanged) && window.google?.maps?.geometry?.spherical) {
+      if (isRectangleShape && (widthChanged || lengthChanged || rotationChanged) && window.google?.maps?.geometry?.spherical) {
         const center = updated.center || getPathCenter(previousZone?.path || updated.path)
         const widthM = Number(updated.widthM)
         const lengthM = Number(updated.lengthM)
-        const rotationDeg = isRectangleShape ? 0 : Number(updated.rotation || 0)
+        const rotationDeg = Number(updated.rotation || 0)
 
         if (center && Number.isFinite(widthM) && Number.isFinite(lengthM)) {
-          const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, -rotationDeg)
+          const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, rotationDeg)
           if (path.length >= 3) {
             const metrics = computePolygonMetrics(path, window.google)
             nextZoneRecord = {
@@ -1388,7 +1388,7 @@ export default function App() {
               lengthM,
               areaM2: metrics.areaM2,
               perimeterM: metrics.perimeterM,
-              rotation: isRectangleShape ? 0 : nextZoneRecord.rotation,
+              rotation: rotationDeg,
             }
           }
         }
@@ -1436,8 +1436,6 @@ export default function App() {
             rotation: newRotation,
           }
         }
-      } else if (rotationChanged && isRectangleShape) {
-        nextZoneRecord = { ...nextZoneRecord, rotation: 0 }
       }
 
 

@@ -397,6 +397,54 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 
         {isZone && (
           <>
+            {/* Zone Rotation (NOT for circle) */}
+            {selected.shapeType !== 'circle' && (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Zone Rotation</div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Angle (0°-360°)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="360"
+                    step="1"
+                    style={styles.input}
+                    value={rotationInput}
+                    onChange={e => {
+                      const nextValue = e.target.value
+                      const parsed = parseFloat(nextValue)
+
+                      if (nextValue === '' || nextValue === '-') {
+                        setRotationInput(nextValue)
+                        return
+                      }
+
+                      if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
+                        setRotationInput(nextValue)
+                        onUpdate({ ...selected, rotation: parsed })
+                      }
+                    }}
+                    onBlur={() => {
+                      const parsed = parseFloat(rotationInput)
+
+                      if (rotationInput === '' || Number.isNaN(parsed)) {
+                        setRotationInput(
+                          Number.isFinite(selected.rotation)
+                            ? selected.rotation.toString()
+                            : '0'
+                        )
+                      } else if (parsed < 0) {
+                        setRotationInput('0')
+                        onUpdate({ ...selected, rotation: 0 })
+                      } else if (parsed > 360) {
+                        setRotationInput('360')
+                        onUpdate({ ...selected, rotation: 360 })
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
 
 {isRectangleZone && (
@@ -488,55 +536,6 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 ? convertDistance(selected.radiusM, measurementUnit).toFixed(2)
                 : ''
             )
-          }
-        }}
-      />
-    </div>
-  </div>
-)}
-
-{/* Zone Rotation (NOT for circle) */}
-{selected.shapeType !== 'circle' && !isRectangleZone && (
-  <div style={styles.statCard}>
-    <div style={styles.blockTitle}>Zone Rotation</div>
-    <div style={styles.field}>
-      <label style={styles.label}>Angle (0°-360°)</label>
-      <input
-        type="number"
-        min="0"
-        max="360"
-        step="1"
-        style={styles.input}
-        value={rotationInput}
-        onChange={e => {
-          const nextValue = e.target.value
-          const parsed = parseFloat(nextValue)
-
-          if (nextValue === '' || nextValue === '-') {
-            setRotationInput(nextValue)
-            return
-          }
-
-          if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
-            setRotationInput(nextValue)
-            onUpdate({ ...selected, rotation: parsed })
-          }
-        }}
-        onBlur={() => {
-          const parsed = parseFloat(rotationInput)
-
-          if (rotationInput === '' || Number.isNaN(parsed)) {
-            setRotationInput(
-              Number.isFinite(selected.rotation)
-                ? selected.rotation.toString()
-                : '0'
-            )
-          } else if (parsed < 0) {
-            setRotationInput('0')
-            onUpdate({ ...selected, rotation: 0 })
-          } else if (parsed > 360) {
-            setRotationInput('360')
-            onUpdate({ ...selected, rotation: 360 })
           }
         }}
       />

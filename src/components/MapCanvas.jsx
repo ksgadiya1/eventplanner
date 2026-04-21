@@ -950,7 +950,7 @@ export default function MapCanvas({
         const centerClient = { x: rect.left + centerPoint.x, y: rect.top + centerPoint.y }
         const startAngle = Math.atan2(interaction.startY - centerClient.y, interaction.startX - centerClient.x)
         const currentAngle = Math.atan2(event.clientY - centerClient.y, event.clientX - centerClient.x)
-        const delta = startAngle - currentAngle
+        const delta = currentAngle - startAngle
         const cos = Math.cos(delta)
         const sin = Math.sin(delta)
 
@@ -965,8 +965,8 @@ export default function MapCanvas({
           if (!screenPoint) return point
           const localX = screenPoint.x - centerPoint.x
           const localY = screenPoint.y - centerPoint.y
-          const rotatedX = localX * cos - localY * sin
-          const rotatedY = localX * sin + localY * cos
+          const rotatedX = localX * cos + localY * sin
+          const rotatedY = -localX * sin + localY * cos
           const nextClientX = rect.left + centerPoint.x + rotatedX
           const nextClientY = rect.top + centerPoint.y + rotatedY
           const nextLatLng = clientPointToLatLng(map, nextClientX, nextClientY)
@@ -1100,7 +1100,7 @@ export default function MapCanvas({
     const path = extractPathFromOverlay(overlay)
     if (path.length < 3) return
 
-    if (zone.shapeType === 'square') {
+    if (isRectangleZone(zone)) {
       const prevPath = zone.path
       if (!Array.isArray(prevPath) || prevPath.length !== 4) {
         const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
@@ -1428,7 +1428,7 @@ export default function MapCanvas({
     }
 
     const activeShape = shapeDraftRef.current
-    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'rectangle')) {
+    if (activeShape?.center && (activeShape.type === 'circle' || activeShape.type === 'rectangle' || activeShape.type === 'square')) {
       const centerLatLng = new window.google.maps.LatLng(activeShape.center.lat, activeShape.center.lng)
       const currentDist = window.google.maps.geometry.spherical.computeDistanceBetween(centerLatLng, event.latLng)
       setLineMeasurement(currentDist)
@@ -1538,7 +1538,7 @@ export default function MapCanvas({
 
     if (placePendingZoneTemplateAtLatLng(event.latLng)) return
 
-    if ((drawMode === 'square' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
+    if ((drawMode === 'square' || drawMode === 'rectangle' || drawMode === 'circle') && !layers.zones?.locked && window.google) {
       const point = { lat: event.latLng.lat(), lng: event.latLng.lng() }
       const currentDraft = shapeDraftRef.current
 
@@ -2215,7 +2215,7 @@ export default function MapCanvas({
                     delete lastCircleSnapshotRef.current[zone.id]
                   }}
                 />
-              ) : (zone.shapeType === 'square' && (!zone.rotation || zone.rotation === 0)) ? (
+              ) : (isRectangleZone(zone) && (!zone.rotation || zone.rotation === 0)) ? (
                 <ZoneRectangle
                   zone={zone}
                   selectedId={selectedId}
