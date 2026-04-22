@@ -604,11 +604,11 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               <div style={styles.statCard}>
                 <div style={styles.blockTitle}>Zone Rotation</div>
                 <div style={styles.field}>
-                  <label style={styles.label}>Angle (0°-360°)</label>
+                  <label style={styles.label}>Angle (-180°-180°)</label>
                   <input
                     type="number"
-                    min="0"
-                    max="360"
+                    min="-180"
+                    max="180"
                     step="1"
                     style={styles.input}
                     value={rotationInput}
@@ -621,7 +621,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                         return
                       }
 
-                      if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
+                      if (!Number.isNaN(parsed) && parsed >= -180 && parsed <= 180) {
                         setRotationInput(nextValue)
                         onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, parsed) : { ...selected, rotation: parsed })
                       }
@@ -635,12 +635,12 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                             ? selected.rotation.toString()
                             : '0'
                         )
-                      } else if (parsed < 0) {
-                        setRotationInput('0')
-                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, 0) : { ...selected, rotation: 0 })
-                      } else if (parsed > 360) {
-                        setRotationInput('360')
-                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, 360) : { ...selected, rotation: 360 })
+                      } else if (parsed < -180) {
+                        setRotationInput('-180')
+                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, -180) : { ...selected, rotation: -180 })
+                      } else if (parsed > 180) {
+                        setRotationInput('180')
+                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, 180) : { ...selected, rotation: 180 })
                       }
                     }}
                   />
@@ -1309,85 +1309,89 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               </div>
             ) : zonePreset?.id === 'arena' ? (
               <div style={styles.statCard}>
-                <div style={styles.blockTitle}>Arena Setup</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Stage Width ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageWidth ?? 12} onChange={e => updateZoneSetup({ stageWidth: clampMetric(e.target.value, 12) })} />
+                <details>
+                  <summary style={{ ...styles.blockTitle, cursor: 'pointer', marginBottom: '10px' }}>Arena Setup</summary>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Stage Width ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageWidth ?? 12} onChange={e => updateZoneSetup({ stageWidth: clampMetric(e.target.value, 12) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Stage Depth ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageDepth ?? 8} onChange={e => updateZoneSetup({ stageDepth: clampMetric(e.target.value, 8) })} />
+                    </div>
                   </div>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Stage Depth ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageDepth ?? 8} onChange={e => updateZoneSetup({ stageDepth: clampMetric(e.target.value, 8) })} />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Front Clearance ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.frontClearance ?? 5} onChange={e => updateZoneSetup({ frontClearance: clampMetric(e.target.value, 5, 0) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Aisle Width ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.aisleWidth ?? 2.5} onChange={e => updateZoneSetup({ aisleWidth: clampMetric(e.target.value, 2.5) })} />
+                    </div>
                   </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Front Clearance ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.frontClearance ?? 5} onChange={e => updateZoneSetup({ frontClearance: clampMetric(e.target.value, 5, 0) })} />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Row Spacing ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.rowSpacing ?? 0.9} onChange={e => updateZoneSetup({ rowSpacing: clampMetric(e.target.value, 0.9) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Seat Width ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.05" style={styles.input} value={selected.layoutConfig?.seatWidth ?? 0.55} onChange={e => updateZoneSetup({ seatWidth: clampMetric(e.target.value, 0.55) })} />
+                    </div>
                   </div>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Aisle Width ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.aisleWidth ?? 2.5} onChange={e => updateZoneSetup({ aisleWidth: clampMetric(e.target.value, 2.5) })} />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Seating Blocks</label>
+                      <input type="number" min="1" step="1" style={styles.input} value={selected.layoutConfig?.blockCount ?? 3} onChange={e => updateZoneSetup({ blockCount: clampCount(e.target.value, 3, 1, 20) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Entry Points</label>
+                      <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 4} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 4, 0, 20) })} />
+                    </div>
                   </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Row Spacing ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.rowSpacing ?? 0.9} onChange={e => updateZoneSetup({ rowSpacing: clampMetric(e.target.value, 0.9) })} />
-                  </div>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Seat Width ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.05" style={styles.input} value={selected.layoutConfig?.seatWidth ?? 0.55} onChange={e => updateZoneSetup({ seatWidth: clampMetric(e.target.value, 0.55) })} />
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Seating Blocks</label>
-                    <input type="number" min="1" step="1" style={styles.input} value={selected.layoutConfig?.blockCount ?? 3} onChange={e => updateZoneSetup({ blockCount: clampCount(e.target.value, 3, 1, 20) })} />
-                  </div>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Entry Points</label>
-                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 4} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 4, 0, 20) })} />
-                  </div>
-                </div>
+                </details>
               </div>
             ) : zonePreset?.id === 'custom' ? (
               <div style={styles.statCard}>
-                <div style={styles.blockTitle}>Custom Zone Setup</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Unit Width ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleWidth ?? 4} onChange={e => updateZoneSetup({ moduleWidth: clampMetric(e.target.value, 4) })} />
+                <details>
+                  <summary style={{ ...styles.blockTitle, cursor: 'pointer', marginBottom: '10px' }}>Custom Zone Setup</summary>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Unit Width ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleWidth ?? 4} onChange={e => updateZoneSetup({ moduleWidth: clampMetric(e.target.value, 4) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Unit Length ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleLength ?? 4} onChange={e => updateZoneSetup({ moduleLength: clampMetric(e.target.value, 4) })} />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Unit Spacing ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleSpacing ?? 1} onChange={e => updateZoneSetup({ moduleSpacing: clampMetric(e.target.value, 1, 0) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Circulation Width ({getUnitLabel(measurementUnit)})</label>
+                      <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.circulationWidth ?? 2.5} onChange={e => updateZoneSetup({ circulationWidth: clampMetric(e.target.value, 2.5, 0) })} />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Entry Points</label>
+                      <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 2} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 2, 0, 20) })} />
+                    </div>
+                    <div style={styles.field}>
+                      <label style={styles.label}>Exit Points</label>
+                      <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.exitPoints ?? 2} onChange={e => updateZoneSetup({ exitPoints: clampCount(e.target.value, 2, 0, 20) })} />
+                    </div>
                   </div>
                   <div style={styles.field}>
-                    <label style={styles.label}>Unit Length ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleLength ?? 4} onChange={e => updateZoneSetup({ moduleLength: clampMetric(e.target.value, 4) })} />
+                    <label style={styles.label}>Planning Notes</label>
+                    <textarea style={{ ...styles.input, minHeight: '60px', resize: 'vertical' }} value={selected.layoutConfig?.notes || ''} onChange={e => updateZoneSetup({ notes: e.target.value })} placeholder="Utilities, queue, storage, buffer, special ops..." />
                   </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Unit Spacing ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleSpacing ?? 1} onChange={e => updateZoneSetup({ moduleSpacing: clampMetric(e.target.value, 1, 0) })} />
-                  </div>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Circulation Width ({getUnitLabel(measurementUnit)})</label>
-                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.circulationWidth ?? 2.5} onChange={e => updateZoneSetup({ circulationWidth: clampMetric(e.target.value, 2.5, 0) })} />
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Entry Points</label>
-                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 2} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 2, 0, 20) })} />
-                  </div>
-                  <div style={styles.field}>
-                    <label style={styles.label}>Exit Points</label>
-                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.exitPoints ?? 2} onChange={e => updateZoneSetup({ exitPoints: clampCount(e.target.value, 2, 0, 20) })} />
-                  </div>
-                </div>
-                <div style={styles.field}>
-                  <label style={styles.label}>Planning Notes</label>
-                  <textarea style={{ ...styles.input, minHeight: '60px', resize: 'vertical' }} value={selected.layoutConfig?.notes || ''} onChange={e => updateZoneSetup({ notes: e.target.value })} placeholder="Utilities, queue, storage, buffer, special ops..." />
-                </div>
+                </details>
               </div>
             ) : subTypes.length > 0 && (
               <div style={styles.field}>

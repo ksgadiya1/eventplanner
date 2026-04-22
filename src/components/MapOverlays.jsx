@@ -52,6 +52,7 @@ function hexToRgba(hex, opacity) {
 
 export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, selected, locked, interactive, onSelect, onStartInteraction, drawMode, onEraseAsset, onHover, map, onAssetUpdate, gridSnap, gridSize }) {
   const ASSET_MIN_ZOOM = 11
+  const ASSET_HANDLE_MIN_ZOOM = 15
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   if (liveZoom < ASSET_MIN_ZOOM) return null
 
@@ -127,6 +128,7 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
   const dragState = useRef(null)
 
   const resizeHandles = RESIZE_HANDLES
+  const showEditingHandles = selected && interactive && !locked && liveZoom >= ASSET_HANDLE_MIN_ZOOM
 
   // ── Native pointer event handlers (used via addEventListener for reliable capture) ──
 
@@ -347,7 +349,7 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
             </div>
           </button>
 
-          {selected && interactive && !locked && (
+          {showEditingHandles && (
             <>
               <div style={{ position: 'absolute', top: '-34px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)' }} />
               <button
@@ -423,6 +425,7 @@ export const AssetOverlay = React.memo(function AssetOverlay({ asset, zoom, sele
 export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan, selected, locked, onSelect, onStartInteraction, map, zoom }) {
   
   const baseZoom = 18
+  const FLOOR_HANDLE_MIN_ZOOM = 15
   const liveZoom = Number.isFinite(map?.getZoom?.()) ? map.getZoom() : (Number.isFinite(zoom) ? zoom : 15)
   const geometry = getFloorGeometry(map, floorPlan, baseZoom)
   if (!geometry) return null
@@ -435,6 +438,7 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
     { key: 'sw', left: '-8px', bottom: '-8px', cursor: 'nesw-resize', xSign: -1, ySign: 1 },
     { key: 'se', right: '-8px', bottom: '-8px', cursor: 'nwse-resize', xSign: 1, ySign: 1 },
   ]
+  const showEditingHandles = selected && !locked && liveZoom >= FLOOR_HANDLE_MIN_ZOOM
 
   return (
     <OverlayView
@@ -492,7 +496,7 @@ export const FloorPlanOverlay = React.memo(function FloorPlanOverlay({ floorPlan
             }}
           />
 
-          {selected && !locked && (
+          {showEditingHandles && (
             <>
               <div style={{ position: 'absolute', top: '-32px', left: '50%', width: '2px', height: '24px', background: '#111827', transform: 'translateX(-50%)', pointerEvents: 'auto' }} />
               <button

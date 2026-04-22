@@ -509,8 +509,11 @@ function normalizeZoneParent(zone, zones, floorPlans) {
   const centroid = getPathCentroid(zone.path)
   const anchorPoint = centroid || zone.path[0]
   if (!anchorPoint) return zone
+  const parentZone = findDeepestZoneForPoint(anchorPoint, zones, zone.id)
+  const descendantIds = zone?.id ? collectDescendantZoneIds(zone.id, zones) : new Set()
   const parentFloor = getDeepestParentFloor(anchorPoint, floorPlans, window.google)
-  return { ...zone, parentId: parentFloor?.id || null }
+  const safeParentZone = parentZone && !descendantIds.has(parentZone.id) ? parentZone : null
+  return { ...zone, parentId: safeParentZone?.id || parentFloor?.id || null }
 }
 function normalizeLineParent(line, zones, floorPlans) {
   const anchorPoint = getPathCentroid(line.path)
@@ -883,7 +886,12 @@ export default function App() {
   const handleZoneCreate = useCallback((zone) => {
     pushHistory()
     const normalizedZone = normalizeZoneParent(zone, zones, floorPlans)
-    setZones(prev => [...prev, { ...normalizedZone, capacity: computeZoneCapacity(normalizedZone) }])
+    const nextZoneRecord = { ...normalizedZone, capacity: computeZoneCapacity(normalizedZone) }
+    const nextZones = [...zones, nextZoneRecord]
+    setZones(nextZones)
+    setAssets(prev => prev.map(asset => normalizeAssetParent(asset, nextZones, floorPlans)))
+    setAnnotations(prev => prev.map(annotation => normalizeAnnotationParent(annotation, nextZones, floorPlans)))
+    setLines(prev => prev.map(line => normalizeLineParent(line, nextZones, floorPlans)))
     setSelectedId(zone.id)
     setDrawMode('select')
   }, [pushHistory, zones, floorPlans])
@@ -1416,6 +1424,12 @@ export default function App() {
         }
       }
 
+      nextZoneRecord = normalizeZoneParent(
+        nextZoneRecord,
+        zones.filter(zone => zone.id !== updated.id),
+        floorPlans
+      )
+
       if (rotationChanged && !isRectangleShape && Array.isArray(nextZoneRecord.path) && nextZoneRecord.path.length >= 3) {
         const center = nextZoneRecord.center || getPathCenter(nextZoneRecord.path)
         const oldRotation = Number(previousZone?.rotation || 0)
@@ -1472,8 +1486,7 @@ export default function App() {
       }
 
       if (isZoneGeometryChange) {
-        const translation = detectPathTranslation(previousZone?.path, updated.path)
-          || detectPathTranslationByCentroid(previousZone?.path, updated.path)
+        const translation = detectPathTranslation(previousZone?.path, nextZoneRecord.path)
         const zoneIdsToMove = collectRelatedZoneIds(updated.id, zones)
         const nextZones = zones.map(zone => {
           if (zone.id === updated.id) return nextZoneRecord

@@ -44,6 +44,7 @@ import AssetGlyph from './AssetGlyph'
 const MAP_CENTER = { lat: 23.0225, lng: 72.5714 }
 const LIBRARIES = ['drawing', 'geometry', 'places']
 const ROTATED_RECT_HANDLE_SIZE = 12
+const ZONE_HANDLE_MIN_ZOOM = 15
 const ZONE_RESIZE_HANDLES = [
   { key: 'ne', pointIndex: 0, cursor: 'nesw-resize', xSign: 1, ySign: -1 },
   { key: 'nw', pointIndex: 1, cursor: 'nwse-resize', xSign: -1, ySign: -1 },
@@ -585,14 +586,39 @@ export default function MapCanvas({
   }, [drawMode, layers.lines?.visible])
 
   const zoneById = useMemo(() => new Map(zones.map(zone => [zone.id, zone])), [zones])
+  const orderedZones = useMemo(() => {
+    const depthCache = new Map()
+    const getDepth = (zone, visiting = new Set()) => {
+      if (!zone?.id) return 0
+      if (depthCache.has(zone.id)) return depthCache.get(zone.id)
+      if (visiting.has(zone.id)) {
+        depthCache.set(zone.id, 0)
+        return 0
+      }
+      const nextVisiting = new Set(visiting)
+      nextVisiting.add(zone.id)
+      const parent = zone.parentId ? zoneById.get(zone.parentId) : null
+      const depth = parent && parent.id !== zone.id ? getDepth(parent, nextVisiting) + 1 : 0
+      depthCache.set(zone.id, depth)
+      return depth
+    }
+
+    return zones
+      .map((zone, index) => ({ zone, index, depth: getDepth(zone) }))
+      .sort((a, b) => {
+        if (a.depth !== b.depth) return a.depth - b.depth
+        return a.index - b.index
+      })
+      .map(item => item.zone)
+  }, [zoneById, zones])
 
   // Check if zone or any of its parent zones are hidden
   const isZoneOrParentHidden = useCallback(function checkZone(zone) {
     if (!zone) return false
     if (zone.visible === false) return true
-    if (zone.parentId) {
+    if (zone.parentId && zone.parentId !== zone.id) {
       const parent = zoneById.get(zone.parentId)
-      if (parent) return checkZone(parent)
+      if (parent && parent !== zone) return checkZone(parent)
     }
     return false
   }, [zoneById])
@@ -1210,11 +1236,6 @@ export default function MapCanvas({
   const finalizePolygon = useCallback((path) => {
     if (!window.google || !path || path.length < 3) return
     const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
-    const isInsideExistingZone = path.some(point => getDeepestParentZone(point, zones, window.google))
-    if (isInsideExistingZone) {
-      window.alert('Zones can contain elements and assets, but not another zone inside them.')
-      return
-    }
     const zoneType = selectedZoneType || { id: 'generic', name: 'Zone', color: '#3d8ef8', fillOpacity: 0.2 }
     const defaultSubType = zoneType?.defaultSubTypeId
       ? zoneType.subTypes?.find(subType => subType.id === zoneType.defaultSubTypeId) || null
@@ -1240,7 +1261,7 @@ export default function MapCanvas({
       status: 'planned',
       notes: '',
     })
-  }, [onZoneCreate, selectedZoneType, zones])
+  }, [onZoneCreate, selectedZoneType])
 
   const handleZonePathChange = useCallback((zone) => {
     const overlay = zoneOverlayRefs.current[zone.id]
@@ -1674,16 +1695,10 @@ export default function MapCanvas({
       return true
     }
 
-    const isInsideExistingZone = placedZone.path.some(point => getDeepestParentZone(point, zones, window.google))
-    if (isInsideExistingZone) {
-      window.alert('Saved areas cannot be placed inside another zone.')
-      return true
-    }
-
     onZoneCreate(placedZone)
     onPendingZoneTemplateClear?.()
     return true
-  }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate, zones])
+  }, [drawMode, layers.zones, onPendingZoneTemplateClear, onZoneCreate, pendingZoneTemplate])
 
   const handleFloorPlanClick = useCallback((event, plan) => {
     event?.preventDefault?.()
@@ -2312,7 +2327,7 @@ export default function MapCanvas({
           )
         })}
 
-        {layers.zones?.visible && zones.map(zone => {
+        {layers.zones?.visible && orderedZones.map(zone => {
           // Skip rendering zone if it or any parent zone is hidden
           if (isZoneOrParentHidden(zone)) return null
 
@@ -2471,7 +2486,14 @@ export default function MapCanvas({
                   }}
                   onMouseOut={() => setHoveredItem(null)}
                   onMouseDown={(event) => {
-                    if (drawMode !== 'select' || !isRectangleZone(zone) || layers.zones?.locked) return
+                    if (
+                      drawMode !== 'select'
+                      || !isRectangleZone(zone)
+                      || layers.zones?.locked
+                      || selectedId !== zone.id
+                      || pendingAssetDef
+                      || pendingZoneTemplate
+                    ) return
                     handleStartInteraction(event.domEvent, zone, 'move')
                   }}
                   onMouseUp={() => {
@@ -2514,7 +2536,7 @@ export default function MapCanvas({
                   </div>
                 </OverlayView>
               )}
-              {selectedId === zone.id && isRectangleZone(zone) && Number(zone.rotation || 0) !== 0 && !layers.zones?.locked && Array.isArray(zone.path) && zone.path.length >= 4 && (
+              {selectedId === zone.id && isRectangleZone(zone) && Number(zone.rotation || 0) !== 0 && !layers.zones?.locked && currentLiveZoom >= ZONE_HANDLE_MIN_ZOOM && Array.isArray(zone.path) && zone.path.length >= 4 && (
                 <>
                   {ZONE_RESIZE_HANDLES.map(handle => {
                     const point = zone.path[handle.pointIndex]
