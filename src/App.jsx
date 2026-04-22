@@ -1209,6 +1209,8 @@ export default function App() {
       setLeftSidebarCollapsed(false)
     }
 
+    return
+
     // Auto-zoom to selected item on map
     if (mapRef.current && window.google) {
       let targetLat = null

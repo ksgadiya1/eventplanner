@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { X, Users, Ruler, ChevronLeft, Trash2 } from 'lucide-react'
-import { computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZoneAllowedAssetTypes, getZoneCapacityLabel } from '../data/assets'
+import { computeZoneCapacity, computeParkingCapacity, getParkingStandard, getZoneAllowedAssetTypes, getZoneCapacityLabel, PARKING_STANDARDS, isParkingZone } from '../data/assets'
+import { getDefaultZoneLayoutConfig, getZoneVisualPreset } from '../data/zoneLayouts'
 import { ROUTE_TYPE_OPTIONS, getRouteStylePreset } from '../data/routeTypes'
 import { formatArea, formatDistance, getUnitLabel, convertDistance, convertToMeters } from '../utils/units'
+import { buildRectanglePath, computePolygonMetrics } from '../utils/mapGeometry'
 
 /**
  * Generates a unique name for a new version of an item based on existing names.
@@ -211,7 +213,155 @@ const styles = {
     letterSpacing: '0.06em',
     marginBottom: '8px',
   },
+  helperText: {
+    fontSize: '11px',
+    color: 'var(--text-dim)',
+    lineHeight: 1.5,
+  },
 }
+
+function clampCount(value, fallback = 1, min = 0, max = 50) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, Math.round(parsed)))
+}
+
+function clampMetric(value, fallback = 1, min = 0.1, max = 999) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function getDefaultParkingLayoutConfig() {
+  return {
+    unitType: 'car',
+    selectedVehicleTypes: ['car'],
+    allocationPercentages: {
+      car: 100,
+      bike: 0,
+      bus: 0,
+    },
+    vehicleConfigs: {
+      car: { widthM: PARKING_STANDARDS.car.widthM, lengthM: PARKING_STANDARDS.car.lengthM },
+      bike: { widthM: PARKING_STANDARDS.bike.widthM, lengthM: PARKING_STANDARDS.bike.lengthM },
+      bus: { widthM: PARKING_STANDARDS.bus.widthM, lengthM: PARKING_STANDARDS.bus.lengthM },
+    },
+    laneWidth: PARKING_STANDARDS.car.aisleWidthM,
+    laneCount: 2,
+    entryPoints: 1,
+    exitPoints: 1,
+    vehicleSpacing: 0.3,
+    edgeClearance: 1,
+  }
+}
+
+function getDefaultPresetLayoutConfig(zoneType) {
+  return getDefaultZoneLayoutConfig(zoneType, {})
+}
+
+function buildSizedZoneUpdate(zone, nextWidthM, nextLengthM) {
+  const widthM = Math.max(0.5, Number(nextWidthM) || 0.5)
+  const lengthM = Math.max(0.5, Number(nextLengthM) || 0.5)
+  const center = zone?.center
+
+  const baseZone = {
+    ...zone,
+    widthM: Number(widthM.toFixed(2)),
+    lengthM: Number(lengthM.toFixed(2)),
+  }
+
+  if (!center || !window.google?.maps?.geometry?.spherical) {
+    return baseZone
+  }
+
+  const path = buildRectanglePath(center, widthM / 2, lengthM / 2, window.google, zone.rotation || 0)
+
+  const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
+
+  return {
+    ...baseZone,
+    path,
+    areaM2,
+    perimeterM,
+    capacity: computeZoneCapacity({ ...baseZone, path, areaM2 }),
+  }
+}
+
+function buildRotatedRectZoneUpdate(zone, nextRotation) {
+  const rotation = Number(nextRotation) || 0
+  const widthM = Math.max(0.5, Number(zone?.widthM) || 0.5)
+  const lengthM = Math.max(0.5, Number(zone?.lengthM) || 0.5)
+  const center = zone?.center
+
+  const baseZone = {
+    ...zone,
+    rotation,
+    widthM: Number(widthM.toFixed(2)),
+    lengthM: Number(lengthM.toFixed(2)),
+  }
+
+  if (!center || !window.google?.maps?.geometry?.spherical) {
+    return baseZone
+  }
+
+  const path = buildRectanglePath(center, baseZone.widthM / 2, baseZone.lengthM / 2, window.google, rotation)
+
+  const { areaM2, perimeterM } = computePolygonMetrics(path, window.google)
+
+  return {
+    ...baseZone,
+    path,
+    areaM2,
+    perimeterM,
+    capacity: computeZoneCapacity({ ...baseZone, path, areaM2 }),
+  }
+}
+
+function normalizeParkingAllocations(selectedTypes = [], rawAllocations = {}) {
+  const activeTypes = Array.isArray(selectedTypes) ? selectedTypes.filter(Boolean) : []
+  if (!activeTypes.length) return { car: 100, bike: 0, bus: 0 }
+
+  const base = { car: 0, bike: 0, bus: 0 }
+  const positiveValues = activeTypes.map(type => {
+    const value = Number(rawAllocations?.[type])
+    return Number.isFinite(value) && value >= 0 ? value : 0
+  })
+  const total = positiveValues.reduce((sum, value) => sum + value, 0)
+
+  if (total <= 0) {
+    const equal = Math.floor(100 / activeTypes.length)
+    let remainder = 100 - (equal * activeTypes.length)
+    activeTypes.forEach(type => {
+      base[type] = equal + (remainder > 0 ? 1 : 0)
+      if (remainder > 0) remainder -= 1
+    })
+    return base
+  }
+
+  const normalized = activeTypes.map((type, index) => {
+    const ratio = positiveValues[index] / total
+    const exact = ratio * 100
+    const floored = Math.floor(exact)
+    return { type, exact, value: floored, remainder: exact - floored }
+  })
+  let used = normalized.reduce((sum, item) => sum + item.value, 0)
+  let remainder = 100 - used
+
+  normalized
+    .sort((a, b) => b.remainder - a.remainder)
+    .forEach(item => {
+      if (remainder <= 0) return
+      item.value += 1
+      remainder -= 1
+    })
+
+  normalized.forEach(item => {
+    base[item.type] = item.value
+  })
+
+  return base
+}
+
 
 export default function PropertiesPanel({ collapsed = false, selected, zones = [], assets = [], lines = [], annotations = [], zoneTypes = [], assetCategories = {}, onUpdate, onClose, onDuplicate, onDelete, onSaveZoneTemplate, onSaveCustomAsset, zoneTemplates = [], measurementUnit = 'meters', crowdDensityOptions = [] }) {
 
@@ -232,7 +382,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   const [assetDraftName, setAssetDraftName] = useState('')
   const [templateNameError, setTemplateNameError] = useState(false)
   const [assetNameError, setAssetNameError] = useState(false)
-  const isRectangleZone = selected?.shapeType === 'rectangle' || selected?.shapeType === 'square'
+  const isRectangleZone = selected?.shapeType === 'rectangle'
 
   useEffect(() => {
     if (isRectangleZone) {
@@ -257,7 +407,20 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
       setRotationInput(Number.isFinite(selected.rotation) ? selected.rotation.toString() : '0')
     }
   }, [selected?.id, selected?.rotation, isZone, selected?.shapeType])
-  const isCarPark = isZone && (selected?.zoneType?.id === 'car_park' || selected?.zoneType?.name === 'Car Park')
+  const isCarPark = isZone && isParkingZone(selected)
+  const zonePreset = isZone ? getZoneVisualPreset(selected?.zoneType) : null
+  const parkingLayoutConfig = isCarPark ? {
+    ...getDefaultParkingLayoutConfig(),
+    ...(selected?.layoutConfig || {}),
+    allocationPercentages: normalizeParkingAllocations(
+      selected?.layoutConfig?.selectedVehicleTypes || getDefaultParkingLayoutConfig().selectedVehicleTypes,
+      selected?.layoutConfig?.allocationPercentages || getDefaultParkingLayoutConfig().allocationPercentages
+    ),
+    vehicleConfigs: {
+      ...getDefaultParkingLayoutConfig().vehicleConfigs,
+      ...(selected?.layoutConfig?.vehicleConfigs || {}),
+    },
+  } : null
   const subTypes = selected?.zoneType?.subTypes || []
   const childZones = useMemo(() => (isZone ? zones.filter(zone => zone.parentId === selectedId) : []), [isZone, selectedId, zones])
   const childAssets = useMemo(() => (isZone ? assets.filter(asset => asset.parentId === selectedId) : []), [assets, isZone, selectedId])
@@ -325,8 +488,9 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
   }
 
   const crowdCapacity = isZone ? computeZoneCapacity(selected, selected?.density || 0.5) : null
-  const parkingCapacity = isCarPark ? computeParkingCapacity(selected) : null
-  const parkingStandard = isCarPark ? getParkingStandard(selected) : null
+  const parkingZoneForMetrics = isCarPark ? { ...selected, layoutConfig: parkingLayoutConfig, routeLineCount: childLines.length } : null
+  const parkingCapacity = isCarPark ? computeParkingCapacity(parkingZoneForMetrics) : null
+  const parkingStandard = isCarPark ? getParkingStandard(parkingZoneForMetrics) : null
   const totalRouteLengthM = isZone ? childLines.reduce((sum, line) => sum + (line.lengthM || 0), 0) : 0
   const allowedAssetTypes = isZone ? getZoneAllowedAssetTypes(selected) : []
   const effectiveZoneCapacity = isCarPark ? parkingCapacity : crowdCapacity
@@ -337,7 +501,37 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
     // Deprecated: Naming is now handled via inline inputs in the sidebar.
     return null
   }
-
+  const updateParkingLayout = (patch = {}) => {
+    if (!isCarPark) return
+    const nextSelectedVehicleTypes = patch.selectedVehicleTypes || parkingLayoutConfig.selectedVehicleTypes
+    const nextAllocationPercentages = normalizeParkingAllocations(
+      nextSelectedVehicleTypes,
+      patch.allocationPercentages || parkingLayoutConfig.allocationPercentages
+    )
+    onUpdate({
+      ...selected,
+      layoutConfig: {
+        ...parkingLayoutConfig,
+        ...patch,
+        allocationPercentages: nextAllocationPercentages,
+        vehicleConfigs: {
+          ...parkingLayoutConfig.vehicleConfigs,
+          ...(patch.vehicleConfigs || {}),
+        },
+      },
+    })
+  }
+  const updateZoneSetup = (patch = {}) => {
+    if (!isZone || isCarPark) return
+    onUpdate({
+      ...selected,
+      layoutConfig: {
+        ...getDefaultPresetLayoutConfig(selected.zoneType),
+        ...(selected.layoutConfig || {}),
+        ...patch,
+      },
+    })
+  }
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
@@ -429,7 +623,7 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
 
                       if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 360) {
                         setRotationInput(nextValue)
-                        onUpdate({ ...selected, rotation: parsed })
+                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, parsed) : { ...selected, rotation: parsed })
                       }
                     }}
                     onBlur={() => {
@@ -443,10 +637,10 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                         )
                       } else if (parsed < 0) {
                         setRotationInput('0')
-                        onUpdate({ ...selected, rotation: 0 })
+                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, 0) : { ...selected, rotation: 0 })
                       } else if (parsed > 360) {
                         setRotationInput('360')
-                        onUpdate({ ...selected, rotation: 360 })
+                        onUpdate(isRectangleZone ? buildRotatedRectZoneUpdate(selected, 360) : { ...selected, rotation: 360 })
                       }
                     }}
                   />
@@ -472,7 +666,11 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             setWidthInput(nextValue)
             const parsed = parseFloat(nextValue)
             if (!Number.isNaN(parsed)) {
-              onUpdate({ ...selected, widthM: convertToMeters(parsed, measurementUnit) })
+              onUpdate(buildSizedZoneUpdate(
+                selected,
+                convertToMeters(parsed, measurementUnit),
+                selected.lengthM
+              ))
             }
           }}
           onBlur={() => {
@@ -500,7 +698,11 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
             setLengthInput(nextValue)
             const parsed = parseFloat(nextValue)
             if (!Number.isNaN(parsed)) {
-              onUpdate({ ...selected, lengthM: convertToMeters(parsed, measurementUnit) })
+              onUpdate(buildSizedZoneUpdate(
+                selected,
+                selected.widthM,
+                convertToMeters(parsed, measurementUnit)
+              ))
             }
           }}
           onBlur={() => {
@@ -640,6 +842,9 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                       ...selected,
                       zoneType: { ...nextType },
                       subType: defaultSubType,
+                      layoutConfig: isParkingZone(nextType)
+                        ? getDefaultParkingLayoutConfig()
+                        : getDefaultPresetLayoutConfig(nextType),
                       layoutType: (selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType)) ? 'grid' : 'free',
                       showGrid: Boolean(selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType)),
                       gridSize: selected.gridSize || selected.rowSpacing || 3,
@@ -860,7 +1065,331 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               )}
             </div>
 
-            {subTypes.length > 0 && (
+            {isCarPark ? (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Parking Setup</div>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Vehicle Types</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                    {['car', 'bike', 'bus'].map((type) => {
+                      const checked = parkingLayoutConfig.selectedVehicleTypes.includes(type)
+                      return (
+                        <label key={type} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-primary)' }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const nextTypes = e.target.checked
+                                ? [...new Set([...parkingLayoutConfig.selectedVehicleTypes, type])]
+                                : parkingLayoutConfig.selectedVehicleTypes.filter(item => item !== type)
+                              const safeTypes = nextTypes.length ? nextTypes : [type]
+                              const nextAllocations = { ...parkingLayoutConfig.allocationPercentages }
+                              if (!e.target.checked) nextAllocations[type] = 0
+                              if (e.target.checked && !nextAllocations[type]) nextAllocations[type] = 1
+                              updateParkingLayout({
+                                selectedVehicleTypes: safeTypes,
+                                unitType: safeTypes.includes(parkingLayoutConfig.unitType) ? parkingLayoutConfig.unitType : safeTypes[0],
+                                allocationPercentages: nextAllocations,
+                              })
+                            }}
+                          />
+                          {PARKING_STANDARDS[type].label}
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {parkingLayoutConfig.selectedVehicleTypes.map((type) => {
+                  const vehicleConfig = parkingLayoutConfig.vehicleConfigs[type] || getDefaultParkingLayoutConfig().vehicleConfigs[type]
+                  return (
+                    <div key={type} style={{ ...styles.statCard, marginBottom: '10px', padding: '10px', background: 'var(--bg-primary)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>{PARKING_STANDARDS[type].label}</div>
+                        <button
+                          type="button"
+                          style={{ ...styles.input, width: 'auto', padding: '5px 8px', cursor: 'pointer' }}
+                          onClick={() => updateParkingLayout({
+                            unitType: type,
+                            vehicleConfigs: {
+                              [type]: {
+                                widthM: PARKING_STANDARDS[type].widthM,
+                                lengthM: PARKING_STANDARDS[type].lengthM,
+                              },
+                            },
+                            laneWidth: PARKING_STANDARDS[type].aisleWidthM,
+                          })}
+                        >
+                          Default
+                        </button>
+                      </div>
+                      <div style={styles.field}>
+                        <label style={styles.label}>Area Allocation (%)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={styles.input}
+                          value={parkingLayoutConfig.allocationPercentages[type] ?? 0}
+                          onChange={e => updateParkingLayout({
+                            allocationPercentages: {
+                              ...parkingLayoutConfig.allocationPercentages,
+                              [type]: clampCount(e.target.value, parkingLayoutConfig.allocationPercentages[type] ?? 0, 0, 100),
+                            },
+                          })}
+                        />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        <div style={styles.field}>
+                          <label style={styles.label}>Width ({getUnitLabel(measurementUnit)})</label>
+                          <input
+                            type="number"
+                            min="0.1"
+                            step="0.1"
+                            style={styles.input}
+                            value={vehicleConfig.widthM}
+                            onChange={e => updateParkingLayout({
+                              unitType: type,
+                              vehicleConfigs: {
+                                [type]: {
+                                  ...vehicleConfig,
+                                  widthM: clampMetric(e.target.value, PARKING_STANDARDS[type].widthM),
+                                },
+                              },
+                            })}
+                          />
+                        </div>
+                        <div style={styles.field}>
+                          <label style={styles.label}>Length ({getUnitLabel(measurementUnit)})</label>
+                          <input
+                            type="number"
+                            min="0.1"
+                            step="0.1"
+                            style={styles.input}
+                            value={vehicleConfig.lengthM}
+                            onChange={e => updateParkingLayout({
+                              unitType: type,
+                              vehicleConfigs: {
+                                [type]: {
+                                  ...vehicleConfig,
+                                  lengthM: clampMetric(e.target.value, PARKING_STANDARDS[type].lengthM),
+                                },
+                              },
+                            })}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+                <div style={{ ...styles.helperText, marginBottom: '10px' }}>
+                  Total active allocation always normalizes to 100%.
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Lane Width ({getUnitLabel(measurementUnit)})</label>
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      style={styles.input}
+                      value={parkingLayoutConfig.laneWidth}
+                      onChange={e => updateParkingLayout({ laneWidth: clampMetric(e.target.value, 6) })}
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Lane Count</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      style={styles.input}
+                      value={parkingLayoutConfig.laneCount}
+                      onChange={e => updateParkingLayout({ laneCount: clampCount(e.target.value, 2, 1, 12) })}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Entry Points</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      style={styles.input}
+                      value={parkingLayoutConfig.entryPoints}
+                      onChange={e => updateParkingLayout({ entryPoints: clampCount(e.target.value, 1, 0, 12) })}
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Exit Points</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      style={styles.input}
+                      value={parkingLayoutConfig.exitPoints}
+                      onChange={e => updateParkingLayout({ exitPoints: clampCount(e.target.value, 1, 0, 12) })}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Spacing Between Vehicles ({getUnitLabel(measurementUnit)})</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      style={styles.input}
+                      value={parkingLayoutConfig.vehicleSpacing}
+                      onChange={e => updateParkingLayout({ vehicleSpacing: clampMetric(e.target.value, 0.3, 0) })}
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Edge Clearance ({getUnitLabel(measurementUnit)})</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      style={styles.input}
+                      value={parkingLayoutConfig.edgeClearance}
+                      onChange={e => updateParkingLayout({ edgeClearance: clampMetric(e.target.value, 1, 0) })}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : zonePreset?.id === 'food_court' ? (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Food Court Setup</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Stall Width ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stallWidth ?? 3} onChange={e => updateZoneSetup({ stallWidth: clampMetric(e.target.value, 3) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Stall Length ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stallLength ?? 3} onChange={e => updateZoneSetup({ stallLength: clampMetric(e.target.value, 3) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Front Spacing ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.frontSpacing ?? 3} onChange={e => updateZoneSetup({ frontSpacing: clampMetric(e.target.value, 3, 0) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Side Spacing ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.sideSpacing ?? 1} onChange={e => updateZoneSetup({ sideSpacing: clampMetric(e.target.value, 1, 0) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Back Service Lane ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.backServiceLane ?? 2} onChange={e => updateZoneSetup({ backServiceLane: clampMetric(e.target.value, 2, 0) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Seating Gap ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.seatingGap ?? 4} onChange={e => updateZoneSetup({ seatingGap: clampMetric(e.target.value, 4, 0) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Entry Points</label>
+                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 2} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 2, 0, 20) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Exit Points</label>
+                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.exitPoints ?? 2} onChange={e => updateZoneSetup({ exitPoints: clampCount(e.target.value, 2, 0, 20) })} />
+                  </div>
+                </div>
+              </div>
+            ) : zonePreset?.id === 'arena' ? (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Arena Setup</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Stage Width ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageWidth ?? 12} onChange={e => updateZoneSetup({ stageWidth: clampMetric(e.target.value, 12) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Stage Depth ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageDepth ?? 8} onChange={e => updateZoneSetup({ stageDepth: clampMetric(e.target.value, 8) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Front Clearance ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.frontClearance ?? 5} onChange={e => updateZoneSetup({ frontClearance: clampMetric(e.target.value, 5, 0) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Aisle Width ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.aisleWidth ?? 2.5} onChange={e => updateZoneSetup({ aisleWidth: clampMetric(e.target.value, 2.5) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Row Spacing ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.rowSpacing ?? 0.9} onChange={e => updateZoneSetup({ rowSpacing: clampMetric(e.target.value, 0.9) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Seat Width ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.05" style={styles.input} value={selected.layoutConfig?.seatWidth ?? 0.55} onChange={e => updateZoneSetup({ seatWidth: clampMetric(e.target.value, 0.55) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Seating Blocks</label>
+                    <input type="number" min="1" step="1" style={styles.input} value={selected.layoutConfig?.blockCount ?? 3} onChange={e => updateZoneSetup({ blockCount: clampCount(e.target.value, 3, 1, 20) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Entry Points</label>
+                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 4} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 4, 0, 20) })} />
+                  </div>
+                </div>
+              </div>
+            ) : zonePreset?.id === 'custom' ? (
+              <div style={styles.statCard}>
+                <div style={styles.blockTitle}>Custom Zone Setup</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Unit Width ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleWidth ?? 4} onChange={e => updateZoneSetup({ moduleWidth: clampMetric(e.target.value, 4) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Unit Length ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleLength ?? 4} onChange={e => updateZoneSetup({ moduleLength: clampMetric(e.target.value, 4) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Unit Spacing ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.moduleSpacing ?? 1} onChange={e => updateZoneSetup({ moduleSpacing: clampMetric(e.target.value, 1, 0) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Circulation Width ({getUnitLabel(measurementUnit)})</label>
+                    <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.circulationWidth ?? 2.5} onChange={e => updateZoneSetup({ circulationWidth: clampMetric(e.target.value, 2.5, 0) })} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Entry Points</label>
+                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 2} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 2, 0, 20) })} />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Exit Points</label>
+                    <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.exitPoints ?? 2} onChange={e => updateZoneSetup({ exitPoints: clampCount(e.target.value, 2, 0, 20) })} />
+                  </div>
+                </div>
+                <div style={styles.field}>
+                  <label style={styles.label}>Planning Notes</label>
+                  <textarea style={{ ...styles.input, minHeight: '60px', resize: 'vertical' }} value={selected.layoutConfig?.notes || ''} onChange={e => updateZoneSetup({ notes: e.target.value })} placeholder="Utilities, queue, storage, buffer, special ops..." />
+                </div>
+              </div>
+            ) : subTypes.length > 0 && (
               <div style={styles.field}>
                 <label style={styles.label}>Subtype</label>
                 <select
@@ -950,7 +1479,12 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
               )}
               {isCarPark && parkingStandard && (
                 <div style={{ marginBottom: '8px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Standard: {parkingStandard.label} | Stall {parkingStandard.stallSize} | Aisle {parkingStandard.aisleWidth}
+                  Vehicles: {parkingStandard.perType.map(vehicle => vehicle.label).join(', ')} | Lane {parkingStandard.aisleWidth}
+                </div>
+              )}
+              {isCarPark && parkingStandard?.perType?.length > 0 && (
+                <div style={{ marginBottom: '8px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  Entry {parkingStandard.entryPoints} | Exit {parkingStandard.exitPoints} | Lanes {parkingStandard.routeLineCount > 0 ? `${parkingStandard.routeLineCount} route lines` : parkingStandard.requestedLaneCount}
                 </div>
               )}
               {(isCarPark ? parkingCapacity : crowdCapacity) !== null && (
@@ -958,11 +1492,21 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   <div style={styles.capacityNum}>{effectiveZoneCapacity.toLocaleString()}</div>
                   <div style={styles.capacityLabel}>
                     {isCarPark
-                      ? `${parkingStandard?.label || 'vehicle'} slots (approx.)`
+                      ? `Total parking capacity (${parkingStandard?.capacityMethod === 'layout' ? 'derived' : 'approx.'})`
                       : selected.subType?.label
                         ? `${selected.subType.label}`
                         : `estimated ${capLabel.unit}`}
                   </div>
+                </div>
+              )}
+              {isCarPark && parkingStandard?.perType?.length > 0 && (
+                <div style={{ marginTop: '10px' }}>
+                  {parkingStandard.perType.map(vehicle => (
+                    <div key={vehicle.type} style={styles.statRow}>
+                      <span style={styles.statLabel}>{vehicle.label} {vehicle.areaPercentage}% ({vehicle.boxSize})</span>
+                      <span style={styles.statValue}>{(vehicle.capacity || 0).toLocaleString()}</span>
+                    </div>
+                  ))}
                 </div>
               )}
               <div style={{ marginTop: '10px' }}>

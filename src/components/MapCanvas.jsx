@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GoogleMap, useJsApiLoader, Polygon, Circle, Rectangle, OverlayView, Polyline, MarkerF } from '@react-google-maps/api'
-import { computeZoneCapacity, getAssetName, getZoneAllowedAssetTypes, isAssetAllowedInZone } from '../data/assets'
+import { computeZoneCapacity, getAssetName, getZoneAllowedAssetTypes, isAssetAllowedInZone, getParkingStandard, isParkingZone } from '../data/assets'
 import {
   metersPerPixel,
   normalizeAngle,
@@ -293,10 +293,44 @@ function getPathCenter(path = []) {
 }
 
 function isRectangleZone(zone) {
-  return zone?.shapeType === 'rectangle' || zone?.shapeType === 'square'
+  return zone?.shapeType === 'rectangle'
 }
 
-function buildZoneGridOverlay(zone, map, zoom) {
+function getDraftRectangleDimensions(center, point, googleApi) {
+  const centerLat = Number(center?.lat)
+  const centerLng = Number(center?.lng)
+  const pointLat = Number(point?.lat)
+  const pointLng = Number(point?.lng)
+  const g = googleApi || window.google
+
+  if (!g?.maps?.geometry?.spherical) {
+    return { widthM: 0, lengthM: 0 }
+  }
+
+  const spherical = g.maps.geometry.spherical
+  const centerLatLng = new g.maps.LatLng(centerLat, centerLng)
+  const eastWestPoint = new g.maps.LatLng(centerLat, pointLng)
+  const northSouthPoint = new g.maps.LatLng(pointLat, centerLng)
+
+  return {
+    widthM: spherical.computeDistanceBetween(centerLatLng, eastWestPoint) * 2,
+    lengthM: spherical.computeDistanceBetween(centerLatLng, northSouthPoint) * 2,
+  }
+}
+
+function clampCount(value, fallback = 1, min = 1, max = 50) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, Math.round(parsed)))
+}
+
+function clampMetric(value, fallback = 1, min = 0.1) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, parsed)
+}
+
+function buildZoneOverlayBase(zone, map, zoom) {
   if (!map || !Array.isArray(zone?.path) || zone.path.length < 3) return null
 
   const screenPoints = zone.path
@@ -342,22 +376,80 @@ function buildZoneGridOverlay(zone, map, zoom) {
     .join(', ')
 
   return {
-    id: `${zone.id}-grid-overlay`,
     position: { lat: bboxCenterLatLng.lat(), lng: bboxCenterLatLng.lng() },
     offsetX: 0,
     offsetY: 0,
     width,
     height,
+    center,
     cellPx: Math.max(12, Math.round(cellPx)),
     gridSizeM: visibleSpacingM,
-    color: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
-    opacity: zone.gridOpacity ?? 0.22,
-    rotationDeg: Number(zone.gridRotation || 0),
     anchorX: Math.round(centerPoint.x - minX),
     anchorY: Math.round(centerPoint.y - minY),
     clipPath: `polygon(${clipPoints})`,
   }
 }
+
+function buildZoneGridOverlay(zone, map, zoom) {
+  const base = buildZoneOverlayBase(zone, map, zoom)
+  if (!base) return null
+
+  return {
+    ...base,
+    id: `${zone.id}-grid-overlay`,
+    color: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
+    opacity: zone.gridOpacity ?? 0.22,
+    rotationDeg: Number(zone.gridRotation || 0),
+  }
+}
+
+function buildParkingTextureOverlay(zone, map, zoom, routeLineCount = 0) {
+  const base = buildZoneOverlayBase(zone, map, zoom)
+  if (!base) return null
+
+  const parkingMetrics = getParkingStandard({ ...zone, routeLineCount })
+  const bands = (parkingMetrics?.perType || [])
+    .filter(vehicle => Number(vehicle.areaPercentageExact ?? vehicle.areaPercentage) > 0)
+    .map(vehicle => ({
+      type: vehicle.type,
+      label: vehicle.label,
+      percentage: Number(vehicle.areaPercentageExact ?? vehicle.areaPercentage) || 0,
+      percentageLabel: Number(vehicle.areaPercentage) || 0,
+    }))
+
+  if (!bands.length) return null
+
+  return {
+    ...base,
+    id: `${zone.id}-parking-texture-overlay`,
+    rotationDeg: Number(zone.rotation || 0),
+    opacity: 0.46,
+    bands,
+  }
+}
+
+function getParkingTextureStyle(type) {
+  switch (type) {
+    case 'bike':
+      return {
+        backgroundColor: 'rgba(16, 185, 129, 0.18)',
+        backgroundImage: 'radial-gradient(circle, rgba(5,150,105,0.72) 1.8px, transparent 2px)',
+        backgroundSize: '14px 14px',
+      }
+    case 'bus':
+      return {
+        backgroundColor: 'rgba(249, 115, 22, 0.18)',
+        backgroundImage: 'repeating-linear-gradient(135deg, rgba(234,88,12,0.78) 0 8px, transparent 8px 16px)',
+      }
+    case 'car':
+    default:
+      return {
+        backgroundColor: 'rgba(59, 130, 246, 0.14)',
+        backgroundImage: 'repeating-linear-gradient(135deg, rgba(37,99,235,0.50) 0 3px, transparent 3px 11px)',
+      }
+  }
+}
+
 
 export default function MapCanvas({
   drawMode,
@@ -520,6 +612,19 @@ export default function MapCanvas({
       return overlay ? [overlay] : []
     })
   }, [isLoaded, isZoneOrParentHidden, layers.zones?.visible, mapZoom, zones])
+  const parkingTextureOverlays = useMemo(() => {
+    const map = mapRef.current
+    if (!isLoaded || !map || layers.zones?.visible === false) return []
+
+    const currentZoom = map.getZoom() || mapZoom || 15
+    return zones.flatMap(zone => {
+      if (isZoneOrParentHidden(zone)) return []
+      if (!isParkingZone(zone)) return []
+      const routeLineCount = lines.filter(line => line.parentId === zone.id && line.visible !== false).length
+      const overlay = buildParkingTextureOverlay(zone, map, currentZoom, routeLineCount)
+      return overlay ? [overlay] : []
+    })
+  }, [isLoaded, isZoneOrParentHidden, layers.zones?.visible, lines, mapZoom, zones])
   const visibleAssets = useMemo(() => {
     if (layers.assets?.visible === false) return []
 
@@ -981,6 +1086,36 @@ export default function MapCanvas({
         return
       }
 
+      if (interaction.objectType === 'zone' && interaction.type === 'move') {
+        const latLng = clientPointToLatLng(map, event.clientX, event.clientY)
+        if (!latLng) return
+
+        const nextCenter = {
+          lat: latLng.lat() - (interaction.latOffset || 0),
+          lng: latLng.lng() - (interaction.lngOffset || 0),
+        }
+        const widthM = Math.max(MIN_ZONE_SIZE_M, Number(interaction.object.widthM) || MIN_ZONE_SIZE_M)
+        const lengthM = Math.max(MIN_ZONE_SIZE_M, Number(interaction.object.lengthM) || MIN_ZONE_SIZE_M)
+        const nextPath = buildRectanglePath(
+          nextCenter,
+          widthM / 2,
+          lengthM / 2,
+          window.google,
+          interaction.object.rotation || 0
+        )
+        const { areaM2, perimeterM } = computePolygonMetrics(nextPath, window.google)
+
+        onAssetUpdate({
+          ...interaction.object,
+          center: nextCenter,
+          path: nextPath,
+          areaM2,
+          perimeterM,
+          capacity: computeZoneCapacity({ ...interaction.object, path: nextPath, areaM2 }),
+        })
+        return
+      }
+
       if (interaction.objectType === 'zone' && interaction.type === 'resize') {
         const dx = event.clientX - interaction.startX
         const dy = event.clientY - interaction.startY
@@ -1008,18 +1143,24 @@ export default function MapCanvas({
         const nextLengthM = Number(Math.max(MIN_ZONE_SIZE_M, lengthPx * interaction.metersPerPixel).toFixed(2))
         const nextCenterLatLng = { lat: nextCenter.lat(), lng: nextCenter.lng() }
 
+        const nextPath = buildRectanglePath(
+          nextCenterLatLng,
+          nextWidthM / 2,
+          nextLengthM / 2,
+          window.google,
+          interaction.object.rotation || 0
+        )
+        const { areaM2, perimeterM } = computePolygonMetrics(nextPath, window.google)
+
         onAssetUpdate({
           ...interaction.object,
           center: nextCenterLatLng,
           widthM: nextWidthM,
           lengthM: nextLengthM,
-          path: buildRectanglePath(
-            nextCenterLatLng,
-            nextWidthM / 2,
-            nextLengthM / 2,
-            window.google,
-            interaction.object.rotation || 0
-          ),
+          path: nextPath,
+          areaM2,
+          perimeterM,
+          capacity: computeZoneCapacity({ ...interaction.object, path: nextPath, areaM2 }),
         })
         return
       }
@@ -1200,9 +1341,11 @@ export default function MapCanvas({
       matched.forEach((pt, i) => gmPath.setAt(i, new window.google.maps.LatLng(pt.lat, pt.lng)))
 
       const { areaM2, perimeterM } = computePolygonMetrics(constrainedPath, window.google)
+      const nextWidthM = Number((nextHalfW * 2).toFixed(2))
+      const nextLengthM = Number((nextHalfH * 2).toFixed(2))
       onAssetUpdate({
         ...zone, path: constrainedPath, center: nextCenter,
-        widthM: Number((nextHalfW * 2).toFixed(2)), lengthM: Number((nextHalfH * 2).toFixed(2)),
+        widthM: nextWidthM, lengthM: nextLengthM,
         areaM2, perimeterM, capacity: computeZoneCapacity({ ...zone, path: constrainedPath, areaM2 })
       })
     } else {
@@ -1260,22 +1403,22 @@ export default function MapCanvas({
       return
     }
 
-    const newPath = [
-      { lat: tn, lng: te }, // NE (Index 0)
-      { lat: tn, lng: tw }, // NW (Index 1)
-      { lat: ts, lng: tw }, // SW (Index 2)
-      { lat: ts, lng: te }, // SE (Index 3)
-    ]
     const newCenter = { lat: tr((tn + ts) / 2), lng: tr((te + tw) / 2) }
     const spherical = window.google.maps.geometry.spherical
-    const widthM = spherical.computeDistanceBetween(
+    let widthM = spherical.computeDistanceBetween(
       new window.google.maps.LatLng(newCenter.lat, tw),
       new window.google.maps.LatLng(newCenter.lat, te)
     )
-    const lengthM = spherical.computeDistanceBetween(
+    let lengthM = spherical.computeDistanceBetween(
       new window.google.maps.LatLng(ts, newCenter.lng),
       new window.google.maps.LatLng(tn, newCenter.lng)
     )
+    const newPath = [
+      { lat: tn, lng: te },
+      { lat: tn, lng: tw },
+      { lat: ts, lng: tw },
+      { lat: ts, lng: te },
+    ]
 
     const prevCenter = zone.center || getPathCenter(zone.path)
     const dLat = Math.abs(prevCenter.lat - newCenter.lat)
@@ -1284,6 +1427,28 @@ export default function MapCanvas({
     const dL = Math.abs((zone.lengthM || 0) - lengthM)
 
     if (dLat < 1e-10 && dLng < 1e-10 && dW < 0.001 && dL < 0.001) return
+
+    const isLikelyMoveOnly = (dLat > 1e-10 || dLng > 1e-10) && dW < 0.35 && dL < 0.35
+    if (isLikelyMoveOnly && Number(zone.widthM) > 0 && Number(zone.lengthM) > 0) {
+      const stabilizedPath = buildRectanglePath(
+        newCenter,
+        Number(zone.widthM) / 2,
+        Number(zone.lengthM) / 2,
+        window.google,
+        zone.rotation || 0
+      )
+      const { areaM2, perimeterM } = computePolygonMetrics(stabilizedPath, window.google)
+      onAssetUpdate({
+        ...zone,
+        path: stabilizedPath,
+        center: newCenter,
+        areaM2,
+        perimeterM,
+        parentId: zone.parentId || null,
+        capacity: computeZoneCapacity({ ...zone, path: stabilizedPath, areaM2 }),
+      })
+      return
+    }
 
     const { areaM2, perimeterM } = computePolygonMetrics(newPath, window.google)
     onAssetUpdate({
@@ -1553,8 +1718,19 @@ export default function MapCanvas({
       const radiusM = window.google.maps.geometry.spherical.computeDistanceBetween(originLatLng, targetLatLng)
 
       let path = []
+      let widthM
+      let lengthM
       if (drawMode === 'square' || drawMode === 'rectangle') {
-        path = buildSquarePath(currentDraft.center, radiusM / Math.SQRT2, window.google)
+        if (drawMode === 'rectangle') {
+          const nextDimensions = getDraftRectangleDimensions(currentDraft.center, point, window.google)
+          widthM = Number(nextDimensions.widthM.toFixed(2))
+          lengthM = Number(nextDimensions.lengthM.toFixed(2))
+          path = buildRectanglePath(currentDraft.center, widthM / 2, lengthM / 2, window.google)
+        } else {
+          widthM = Number((radiusM * Math.SQRT2).toFixed(2))
+          lengthM = widthM
+          path = buildSquarePath(currentDraft.center, radiusM / Math.SQRT2, window.google)
+        }
       } else {
         path = buildCirclePath(currentDraft.center, radiusM, window.google, 72)
       }
@@ -1591,8 +1767,8 @@ export default function MapCanvas({
           contentLocked: !!zoneType?.allowedAssetTypes?.length,
           status: 'planned',
           notes: '',
-          widthM: (drawMode === 'square' || drawMode === 'rectangle') ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
-          lengthM: (drawMode === 'square' || drawMode === 'rectangle') ? Number((radiusM * Math.SQRT2).toFixed(2)) : undefined,
+          widthM: (drawMode === 'square' || drawMode === 'rectangle') ? widthM : undefined,
+          lengthM: (drawMode === 'square' || drawMode === 'rectangle') ? lengthM : undefined,
         })
       }
 
@@ -1923,6 +2099,24 @@ export default function MapCanvas({
       return
     }
 
+    if (object.type === 'zone' && type === 'move') {
+      if (layers.zones?.locked || !isRectangleZone(object)) return
+      const clickLatLng = clientPointToLatLng(map, event.clientX, event.clientY)
+      const zoneCenter = object.center || getPathCenter(object.path)
+      if (!clickLatLng || !zoneCenter) return
+
+      interactionRef.current = {
+        objectType: 'zone',
+        type,
+        object,
+        latOffset: clickLatLng.lat() - zoneCenter.lat,
+        lngOffset: clickLatLng.lng() - zoneCenter.lng,
+      }
+      document.body.style.userSelect = 'none'
+      onSelect(object)
+      return
+    }
+
     if (object.type === 'zone' && type === 'resize') {
       if (layers.zones?.locked || !isRectangleZone(object)) return
       const rect = map.getDiv().getBoundingClientRect()
@@ -2246,8 +2440,8 @@ export default function MapCanvas({
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
                     strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
-                    editable: selectedId === zone.id && !layers.zones?.locked,
-                    draggable: selectedId === zone.id && !layers.zones?.locked,
+                    editable: selectedId === zone.id && !layers.zones?.locked && !isRectangleZone(zone),
+                    draggable: selectedId === zone.id && !layers.zones?.locked && !isRectangleZone(zone),
                     clickable: drawMode === 'select' || drawMode === 'erase',
                     zIndex: selectedId === zone.id ? 1 : 0,
                   }}
@@ -2269,11 +2463,21 @@ export default function MapCanvas({
                     })
                   }}
                   onMouseOut={() => setHoveredItem(null)}
-                  onMouseUp={() => handleZonePathChange(zone)}
-                  onDragEnd={() => handleZonePathChange(zone)}
+                  onMouseDown={(event) => {
+                    if (drawMode !== 'select' || !isRectangleZone(zone) || layers.zones?.locked) return
+                    handleStartInteraction(event.domEvent, zone, 'move')
+                  }}
+                  onMouseUp={() => {
+                    if (isRectangleZone(zone)) return
+                    handleZonePathChange(zone)
+                  }}
+                  onDragEnd={() => {
+                    if (isRectangleZone(zone)) return
+                    handleZonePathChange(zone)
+                  }}
                   onLoad={(polygon) => {
                     zoneOverlayRefs.current[zone.id] = polygon
-                    if (selectedId === zone.id && !layers.zones?.locked) {
+                    if (selectedId === zone.id && !layers.zones?.locked && !isRectangleZone(zone)) {
                       const path = polygon.getPath()
                       path.addListener('set_at', () => handleZonePathChange(zone))
                       path.addListener('insert_at', () => handleZonePathChange(zone))
@@ -2356,6 +2560,71 @@ export default function MapCanvas({
                   )
                 })()}
               </div>
+            </div>
+          </OverlayView>
+        ))}
+
+        {parkingTextureOverlays.map(overlay => (
+          <OverlayView
+            key={overlay.id}
+            position={overlay.position}
+            mapPaneName={OverlayView.OVERLAY_LAYER}
+            getPixelPositionOffset={() => ({ x: overlay.offsetX, y: overlay.offsetY })}
+          >
+            <div
+              style={{
+                width: `${overlay.width}px`,
+                height: `${overlay.height}px`,
+                transform: 'translate(-50%, -50%)',
+                pointerEvents: 'none',
+                clipPath: overlay.clipPath,
+                WebkitClipPath: overlay.clipPath,
+                overflow: 'hidden',
+                boxSizing: 'border-box',
+              }}
+            >
+              {(() => {
+                const bleed = Math.ceil(Math.max(overlay.width, overlay.height) * 0.35)
+                let cursor = 0
+                return (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: `${-bleed}px`,
+                      top: `${-bleed}px`,
+                      width: `${overlay.width + bleed * 2}px`,
+                      height: `${overlay.height + bleed * 2}px`,
+                      transform: `rotate(${overlay.rotationDeg || 0}deg)`,
+                      transformOrigin: `${bleed + overlay.anchorX}px ${bleed + overlay.anchorY}px`,
+                      willChange: 'transform',
+                    }}
+                  >
+                    {overlay.bands.map((band, index) => {
+                      const widthPct = index === overlay.bands.length - 1
+                        ? Math.max(0, 100 - cursor)
+                        : Math.max(0, Math.min(100 - cursor, band.percentage))
+                      const leftPct = cursor
+                      cursor += widthPct
+                      return (
+                        <div
+                          key={`${overlay.id}-${band.type}-${index}`}
+                          title={`${band.label} ${Math.round(band.percentageLabel)}%`}
+                          style={{
+                            position: 'absolute',
+                            left: `${leftPct}%`,
+                            top: 0,
+                            width: `${widthPct}%`,
+                            height: '100%',
+                            opacity: overlay.opacity,
+                            borderRight: index < overlay.bands.length - 1 ? '1px solid rgba(15,23,42,0.10)' : 'none',
+                            ...getParkingTextureStyle(band.type),
+                          }}
+                        />
+                      )
+                    })}
+                  </div>
+                )
+              })()}
             </div>
           </OverlayView>
         ))}
@@ -2551,7 +2820,19 @@ export default function MapCanvas({
             ) : (
               <Polygon
                 key="shape-draft"
-                paths={buildRectanglePath(shapeDraft.center, lineMeasurement / Math.SQRT2, lineMeasurement / Math.SQRT2, window.google)}
+                paths={(() => {
+                  if (shapeDraft.type === 'rectangle' && cursorLatLngRef.current) {
+                    const nextDimensions = getDraftRectangleDimensions(shapeDraft.center, cursorLatLngRef.current, window.google)
+                    return buildRectanglePath(
+                      shapeDraft.center,
+                      Math.max(0.1, nextDimensions.widthM / 2),
+                      Math.max(0.1, nextDimensions.lengthM / 2),
+                      window.google
+                    )
+                  }
+
+                  return buildRectanglePath(shapeDraft.center, lineMeasurement / Math.SQRT2, lineMeasurement / Math.SQRT2, window.google)
+                })()}
                 options={{
                   fillColor: 'rgba(120, 210, 120, 0.2)',
                   strokeColor: '#22c55e',
@@ -2582,7 +2863,14 @@ export default function MapCanvas({
                 whiteSpace: 'nowrap',
                 transform: 'translateY(-120%)',
               }}>
-                {shapeDraft.type === 'circle' ? 'Radius' : 'Corner Distance'}: {formatDistance(lineMeasurement, measurementUnit)}
+                {shapeDraft.type === 'circle'
+                  ? `Radius: ${formatDistance(lineMeasurement, measurementUnit)}`
+                  : shapeDraft.type === 'rectangle' && cursorLatLngRef.current
+                    ? (() => {
+                      const nextDimensions = getDraftRectangleDimensions(shapeDraft.center, cursorLatLngRef.current, window.google)
+                      return `W ${formatDistance(nextDimensions.widthM, measurementUnit)} • L ${formatDistance(nextDimensions.lengthM, measurementUnit)}`
+                    })()
+                    : `Corner Distance: ${formatDistance(lineMeasurement, measurementUnit)}`}
               </div>
             </OverlayView>
           </>
