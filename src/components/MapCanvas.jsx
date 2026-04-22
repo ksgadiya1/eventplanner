@@ -43,6 +43,13 @@ import AssetGlyph from './AssetGlyph'
 
 const MAP_CENTER = { lat: 23.0225, lng: 72.5714 }
 const LIBRARIES = ['drawing', 'geometry', 'places']
+const ROTATED_RECT_HANDLE_SIZE = 12
+const ZONE_RESIZE_HANDLES = [
+  { key: 'ne', pointIndex: 0, cursor: 'nesw-resize', xSign: 1, ySign: -1 },
+  { key: 'nw', pointIndex: 1, cursor: 'nwse-resize', xSign: -1, ySign: -1 },
+  { key: 'sw', pointIndex: 2, cursor: 'nesw-resize', xSign: -1, ySign: 1 },
+  { key: 'se', pointIndex: 3, cursor: 'nwse-resize', xSign: 1, ySign: 1 },
+]
 
 const CircleDot = React.memo(function CircleDot({ position, scale = 4, fillColor = '#fff', fillOpacity = 1, strokeColor = '#000', strokeWeight = 2 }) {
   const size = scale * 2 + strokeWeight
@@ -2506,6 +2513,52 @@ export default function MapCanvas({
                     {zoneDisplayName}
                   </div>
                 </OverlayView>
+              )}
+              {selectedId === zone.id && isRectangleZone(zone) && Number(zone.rotation || 0) !== 0 && !layers.zones?.locked && Array.isArray(zone.path) && zone.path.length >= 4 && (
+                <>
+                  {ZONE_RESIZE_HANDLES.map(handle => {
+                    const point = zone.path[handle.pointIndex]
+                    if (!point) return null
+                    const handleColor = zone.strokeColor || zone.zoneType?.color || '#2563eb'
+
+                    return (
+                      <OverlayView
+                        key={`${zone.id}-${handle.key}`}
+                        position={point}
+                        mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+                        getPixelPositionOffset={() => ({ x: -ROTATED_RECT_HANDLE_SIZE / 2, y: -ROTATED_RECT_HANDLE_SIZE / 2 })}
+                      >
+                        <div
+                          onPointerDown={(event) => handleStartInteraction(event, zone, 'resize', handle)}
+                          style={{
+                            width: `${ROTATED_RECT_HANDLE_SIZE}px`,
+                            height: `${ROTATED_RECT_HANDLE_SIZE}px`,
+                            borderRadius: '999px',
+                            background: '#ffffff',
+                            border: `2px solid ${handleColor}`,
+                            boxShadow: '0 0 0 1px rgba(255,255,255,0.95), 0 2px 6px rgba(15,23,42,0.18)',
+                            cursor: handle.cursor,
+                            pointerEvents: 'auto',
+                            boxSizing: 'border-box',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                          title="Resize rectangle"
+                        >
+                          <div
+                            style={{
+                              width: '4px',
+                              height: '4px',
+                              borderRadius: '999px',
+                              background: handleColor,
+                            }}
+                          />
+                        </div>
+                      </OverlayView>
+                    )
+                  })}
+                </>
               )}
 
             </React.Fragment>
