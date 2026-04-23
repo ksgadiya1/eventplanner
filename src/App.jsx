@@ -2095,60 +2095,64 @@ export default function App() {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     }
 
-    const drawBaseMapFromDom = async () => {
-      const baseClone = mapDiv.cloneNode(true)
-      baseClone.style.width = `${width}px`
-      baseClone.style.height = `${height}px`
-      baseClone.style.position = 'fixed'
-      baseClone.style.left = '-20000px'
-      baseClone.style.top = '0'
-      baseClone.style.margin = '0'
-      baseClone.style.pointerEvents = 'none'
-      baseClone.style.zIndex = '-1'
-      baseClone.style.background = '#ffffff'
-      baseClone.style.overflow = 'hidden'
+    const captureLiveMapDom = async () => {
+      const hiddenNodes = []
+      const hideNode = (node, mode = 'visibility') => {
+        if (!(node instanceof HTMLElement)) return
+        hiddenNodes.push({
+          node,
+          visibility: node.style.visibility,
+          display: node.style.display,
+        })
+        if (mode === 'display') node.style.display = 'none'
+        else node.style.visibility = 'hidden'
+      }
 
-      Array.from(baseClone.querySelectorAll('.gm-style-cc, .gm-fullscreen-control, .gm-svpc, .gm-style-mtc, .gm-bundled-control, .gmnoprint')).forEach((node) => {
-        if (node instanceof HTMLElement) node.style.display = 'none'
-      })
-
-      Array.from(baseClone.querySelectorAll('button, textarea, svg, canvas')).forEach((node) => {
-        if (node instanceof HTMLElement) node.style.visibility = 'hidden'
-      })
-
-      Array.from(baseClone.querySelectorAll('img')).forEach((node) => {
-        if (!(node instanceof HTMLImageElement)) return
-        const src = node.getAttribute('src') || ''
-        const isGoogleTile = /googleapis|gstatic|googleusercontent|maps\.google/i.test(src)
-        if (!isGoogleTile) node.style.visibility = 'hidden'
-      })
-
-      document.body.appendChild(baseClone)
       try {
+        Array.from(mapDiv.querySelectorAll('.gm-style-cc, .gm-fullscreen-control, .gm-svpc, .gm-style-mtc, .gm-bundled-control, .gmnoprint')).forEach((node) => {
+          hideNode(node, 'display')
+        })
+        Array.from(mapDiv.querySelectorAll('button, textarea')).forEach((node) => {
+          hideNode(node, 'visibility')
+        })
+
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-        const baseCanvas = await toCanvas(baseClone, {
+        return await toCanvas(mapDiv, {
           cacheBust: true,
           pixelRatio,
           skipFonts: true,
           backgroundColor: '#ffffff',
         })
-        ctx.drawImage(baseCanvas, 0, 0, width, height)
       } finally {
-        baseClone.remove()
+        hiddenNodes.reverse().forEach(({ node, visibility, display }) => {
+          node.style.visibility = visibility
+          node.style.display = display
+        })
       }
     }
 
     try {
+      try {
+        const liveMapCanvas = await captureLiveMapDom()
+        return liveMapCanvas.toDataURL('image/png')
+      } catch (error) {
+        console.warn('Live map DOM export unavailable; falling back to canvas renderer.', error)
+      }
+
       const center = map.getCenter?.()
       const mapTypeId = map.getMapTypeId?.() || mapViewMode || 'roadmap'
-      const zoom = Math.max(1, Math.round(map.getZoom?.() || 14))
+      const liveZoom = Number(map.getZoom?.() || 14)
+      const roundedZoom = Math.max(1, Math.round(liveZoom))
+      const exportZoom = roundedZoom
       let baseMapDrawn = false
 
+      // Keep export on a single, consistent zoom model so the static basemap
+      // and the rendered overlays stay aligned in the final image.
       if (center && googleMapsKey) {
         const sizeScale = Math.min(1, 640 / Math.max(width, height))
         const requestWidth = Math.max(1, Math.round(width * sizeScale))
         const requestHeight = Math.max(1, Math.round(height * sizeScale))
-        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${center.lat()},${center.lng()}&zoom=${zoom}&size=${requestWidth}x${requestHeight}&scale=2&maptype=${encodeURIComponent(mapTypeId)}&format=png&key=${encodeURIComponent(googleMapsKey)}`
+        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${center.lat()},${center.lng()}&zoom=${roundedZoom}&size=${requestWidth}x${requestHeight}&scale=2&maptype=${encodeURIComponent(mapTypeId)}&format=png&key=${encodeURIComponent(googleMapsKey)}`
 
         try {
           const baseMapImage = await loadImage(staticMapUrl)
@@ -2160,7 +2164,8 @@ export default function App() {
       }
 
       if (!baseMapDrawn) {
-        await drawBaseMapFromDom()
+        const baseCanvas = await captureLiveMapDom()
+        ctx.drawImage(baseCanvas, 0, 0, width, height)
       }
 
       if (layers.floor?.visible !== false && floorPlans.length > 0) {
@@ -2168,7 +2173,7 @@ export default function App() {
           if (!plan.bounds || !plan.imageUrl) continue
           try {
             const floorImage = await loadImage(plan.imageUrl)
-            const geometry = getFloorGeometry(map, plan)
+            const geometry = getFloorGeometry(map, plan, exportZoom)
             if (geometry) {
               ctx.save()
               ctx.translate(geometry.centerPoint.x, geometry.centerPoint.y)
@@ -2187,7 +2192,7 @@ export default function App() {
         zones.forEach((zone) => {
           if (isZoneHidden(zone)) return
           const points = (zone.path || [])
-            .map(point => latLngToContainerPoint(map, point.lat, point.lng))
+            .map(point => latLngToContainerPoint(map, point.lat, point.lng, exportZoom))
             .filter(Boolean)
           if (points.length < 3) return
 
@@ -2208,7 +2213,7 @@ export default function App() {
         lines.forEach((line) => {
           if (line.visible === false || isParentHidden(line.parentId)) return
           const points = (line.path || [])
-            .map(point => latLngToContainerPoint(map, point.lat, point.lng))
+            .map(point => latLngToContainerPoint(map, point.lat, point.lng, exportZoom))
             .filter(Boolean)
           if (points.length < 2) return
 
@@ -2233,10 +2238,10 @@ export default function App() {
       if (layers.assets?.visible !== false) {
         for (const asset of assets) {
           if (isParentHidden(asset.parentId)) continue
-          const point = latLngToContainerPoint(map, asset.lat, asset.lng)
+          const point = latLngToContainerPoint(map, asset.lat, asset.lng, exportZoom)
           if (!point) continue
 
-          const { widthPx, lengthPx } = getAssetSize(asset, map.getZoom())
+          const { widthPx, lengthPx } = getAssetSize(asset, exportZoom)
           const fillColor = asset.fillColor || asset.assetDef?.color || '#3d8ef8'
           const strokeColor = asset.strokeColor || asset.assetDef?.color || '#3d8ef8'
           const fillOpacity = asset.fillOpacity !== undefined ? asset.fillOpacity : 0.85
@@ -2304,10 +2309,10 @@ export default function App() {
       if (layers.annotations?.visible !== false) {
         annotations.forEach((annotation) => {
           if (isParentHidden(annotation.parentId)) return
-          const point = latLngToContainerPoint(map, annotation.lat, annotation.lng)
+          const point = latLngToContainerPoint(map, annotation.lat, annotation.lng, exportZoom)
           if (!point) return
 
-          const compact = zoom < 14
+          const compact = exportZoom < 14
           drawCanvasPin(ctx, {
             x: point.x,
             y: point.y,
