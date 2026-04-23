@@ -849,7 +849,6 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                       showGrid: Boolean(selected.showGrid ?? ['grid', 'rows'].includes(selected.layoutType)),
                       gridSize: selected.gridSize || selected.rowSpacing || 3,
                       allowedAssetTypes: nextType.allowedAssetTypes || [],
-                      contentLocked: !!(nextType.allowedAssetTypes || []).length,
                     }
                     onUpdate({
                       ...nextZone,
@@ -1307,52 +1306,6 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                   </div>
                 </div>
               </div>
-            ) : zonePreset?.id === 'arena' ? (
-              <div style={styles.statCard}>
-                <details>
-                  <summary style={{ ...styles.blockTitle, cursor: 'pointer', marginBottom: '10px' }}>Arena Setup</summary>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Stage Width ({getUnitLabel(measurementUnit)})</label>
-                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageWidth ?? 12} onChange={e => updateZoneSetup({ stageWidth: clampMetric(e.target.value, 12) })} />
-                    </div>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Stage Depth ({getUnitLabel(measurementUnit)})</label>
-                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.stageDepth ?? 8} onChange={e => updateZoneSetup({ stageDepth: clampMetric(e.target.value, 8) })} />
-                    </div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Front Clearance ({getUnitLabel(measurementUnit)})</label>
-                      <input type="number" min="0" step="0.1" style={styles.input} value={selected.layoutConfig?.frontClearance ?? 5} onChange={e => updateZoneSetup({ frontClearance: clampMetric(e.target.value, 5, 0) })} />
-                    </div>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Aisle Width ({getUnitLabel(measurementUnit)})</label>
-                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.aisleWidth ?? 2.5} onChange={e => updateZoneSetup({ aisleWidth: clampMetric(e.target.value, 2.5) })} />
-                    </div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Row Spacing ({getUnitLabel(measurementUnit)})</label>
-                      <input type="number" min="0.1" step="0.1" style={styles.input} value={selected.layoutConfig?.rowSpacing ?? 0.9} onChange={e => updateZoneSetup({ rowSpacing: clampMetric(e.target.value, 0.9) })} />
-                    </div>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Seat Width ({getUnitLabel(measurementUnit)})</label>
-                      <input type="number" min="0.1" step="0.05" style={styles.input} value={selected.layoutConfig?.seatWidth ?? 0.55} onChange={e => updateZoneSetup({ seatWidth: clampMetric(e.target.value, 0.55) })} />
-                    </div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Seating Blocks</label>
-                      <input type="number" min="1" step="1" style={styles.input} value={selected.layoutConfig?.blockCount ?? 3} onChange={e => updateZoneSetup({ blockCount: clampCount(e.target.value, 3, 1, 20) })} />
-                    </div>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Entry Points</label>
-                      <input type="number" min="0" step="1" style={styles.input} value={selected.layoutConfig?.entryPoints ?? 4} onChange={e => updateZoneSetup({ entryPoints: clampCount(e.target.value, 4, 0, 20) })} />
-                    </div>
-                  </div>
-                </details>
-              </div>
             ) : zonePreset?.id === 'custom' ? (
               <div style={styles.statCard}>
                 <details>
@@ -1417,18 +1370,6 @@ export default function PropertiesPanel({ collapsed = false, selected, zones = [
                 </select>
               </div>
             )}
-
-            <div style={styles.field}>
-              <label style={styles.label}>Zone Content Rule</label>
-              <select
-                style={styles.select}
-                value={selected.contentLocked ? 'restricted' : 'open'}
-                onChange={e => onUpdate({ ...selected, contentLocked: e.target.value === 'restricted' })}
-              >
-                <option value="restricted">Restricted by zone type</option>
-                <option value="open">Open placement</option>
-              </select>
-            </div>
 
             {allowedAssetTypes.length > 0 && (
               <div style={styles.statCard}>

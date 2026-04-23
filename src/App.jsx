@@ -1269,6 +1269,72 @@ export default function App() {
     }
   }, [leftSidebarCollapsed])
 
+  const focusMapOnItem = useCallback((item) => {
+    if (!mapRef.current || !window.google || !item) return
+    const map = mapRef.current
+    const fitBoundsWithClamp = (bounds, padding = 80, minZoom = null, maxZoom = null) => {
+      if (!bounds || bounds.isEmpty?.()) return
+      map.fitBounds(bounds, padding)
+      window.google.maps.event.addListenerOnce(map, 'idle', () => {
+        const nextZoom = map.getZoom()
+        if (!Number.isFinite(nextZoom)) return
+        if (Number.isFinite(maxZoom) && nextZoom > maxZoom) {
+          map.setZoom(maxZoom)
+          return
+        }
+        if (Number.isFinite(minZoom) && nextZoom < minZoom) {
+          map.setZoom(minZoom)
+        }
+      })
+    }
+
+    if ((item.type === 'zone' || item.zoneType) && Array.isArray(item.path) && item.path.length) {
+      const bounds = new window.google.maps.LatLngBounds()
+      item.path.forEach(point => bounds.extend(point))
+      fitBoundsWithClamp(bounds, 80, null, 18)
+      return
+    }
+
+    if (item.type === 'line' && Array.isArray(item.path) && item.path.length) {
+      const bounds = new window.google.maps.LatLngBounds()
+      item.path.forEach(point => bounds.extend(point))
+      fitBoundsWithClamp(bounds, 80, null, 18)
+      return
+    }
+
+    if (item.type === 'floor' && item.bounds) {
+      fitBoundsWithClamp(item.bounds, 80, null, 18)
+      return
+    }
+
+    if (Number.isFinite(item.lat) && Number.isFinite(item.lng)) {
+      const parentZone = item.parentId ? zones.find(zone => zone.id === item.parentId) : null
+      if (parentZone?.path?.length) {
+        const bounds = new window.google.maps.LatLngBounds()
+        parentZone.path.forEach(point => bounds.extend(point))
+        fitBoundsWithClamp(bounds, 120, 16, 18)
+        return
+      }
+
+      const parentFloor = item.parentId ? floorPlans.find(plan => plan.id === item.parentId) : null
+      if (parentFloor?.bounds) {
+        fitBoundsWithClamp(parentFloor.bounds, 120, 16, 18)
+        return
+      }
+
+      map.panTo({ lat: item.lat, lng: item.lng })
+      const currentZoom = map.getZoom() || 14
+      if (currentZoom < 17) map.setZoom(17)
+    }
+  }, [floorPlans, zones])
+
+  const handleSidebarSelect = useCallback((item) => {
+    handleSelect(item)
+    requestAnimationFrame(() => {
+      focusMapOnItem(item)
+    })
+  }, [focusMapOnItem, handleSelect])
+
   const handleSaveZoneTemplate = useCallback((zone, options = {}) => {
     if (!zone || zone.type !== 'zone') return
     if (!window.google) {
@@ -3340,7 +3406,7 @@ export default function App() {
             lines={lines}
             annotations={annotations}
             selectedId={selectedId}
-            onSelectItem={handleSelect}
+            onSelectItem={handleSidebarSelect}
             onUpdateAsset={handleUpdate}
             floorPlans={floorPlans}
             pendingFloorImageUrl={pendingFloorImageUrl}
