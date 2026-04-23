@@ -24,6 +24,7 @@ const useMapEditorStore = create(
       },
       zones: [],
       assets: [],
+      floorPlans: [],
       version: STORE_VERSION,
 
       // Derived state helpers
@@ -52,6 +53,7 @@ const useMapEditorStore = create(
           grid: data.grid || { enabled: false, size: 10 },
           zones: data.zones || [],
           assets: data.assets || [],
+          floorPlans: data.floorPlans || [],
           version: data.version || STORE_VERSION,
         })
       },
@@ -104,6 +106,42 @@ const useMapEditorStore = create(
         set({ assets: [...state.assets, newAsset] })
       },
 
+      addFloorPlan: (plan) => {
+  const state = get()
+  const newPlan = {
+    id: plan.id || `floor_${Date.now()}`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    opacity: plan.opacity ?? 1,
+    visible: plan.visible ?? true,
+    ...plan,
+  }
+
+  set({
+    floorPlans: [...state.floorPlans, newPlan]
+  })
+},
+
+updateFloorPlan: (plan) => {
+  const state = get()
+
+  const updated = state.floorPlans.map(p =>
+    p.id === plan.id
+      ? { ...p, ...plan, updatedAt: new Date().toISOString() }
+      : p
+  )
+
+  set({ floorPlans: updated })
+},
+
+deleteFloorPlan: (id) => {
+  const state = get()
+
+  set({
+    floorPlans: state.floorPlans.filter(p => p.id !== id)
+  })
+},
+
       updateAsset: (asset) => {
         const state = get()
         const updatedAssets = state.assets.map(a =>
@@ -149,6 +187,7 @@ const useMapEditorStore = create(
           grid: { enabled: false, size: 10 },
           zones: [],
           assets: [],
+          floorPlans: [],
           version: STORE_VERSION,
         })
       },
@@ -193,6 +232,7 @@ export const getSaveableState = () => {
     grid: state.grid,
     zones: state.zones,
     assets: state.assets,
+    floorPlans: state.floorPlans,
     version: state.version,
     savedAt: new Date().toISOString(),
   }
