@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import { toCanvas } from 'html-to-image'
+import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
@@ -2117,11 +2117,13 @@ export default function App() {
         })
 
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-        return await toCanvas(mapDiv, {
-          cacheBust: true,
-          pixelRatio,
-          skipFonts: true,
+        return await html2canvas(mapDiv, {
           backgroundColor: '#ffffff',
+          scale: pixelRatio,
+          useCORS: true,
+          allowTaint: false,
+          logging: false,
+          removeContainer: true,
         })
       } finally {
         hiddenNodes.reverse().forEach(({ node, visibility, display }) => {
