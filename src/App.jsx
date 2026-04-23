@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import html2canvas from 'html2canvas'
+import { toCanvas } from 'html-to-image'
 import { jsPDF } from 'jspdf'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
@@ -36,6 +36,104 @@ function normalizePersistedZoom(value, fallback = DEFAULT_MAP_VIEWPORT.zoom) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(2, Math.min(21, Math.round(parsed)))
+}
+
+function normalizeEventText(...values) {
+  for (const value of values) {
+    if (value == null) continue
+    const text = String(value).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function normalizeCenterFromSource(source, fallback = DEFAULT_MAP_VIEWPORT.center) {
+  const nestedLat = Number(source?.center?.lat)
+  const nestedLng = Number(source?.center?.lng)
+  const rawLat = Number(source?.center_lat ?? source?.centerLat)
+  const rawLng = Number(source?.center_lng ?? source?.centerLng)
+  const fallbackLat = fallback && Number.isFinite(Number(fallback.lat)) ? Number(fallback.lat) : null
+  const fallbackLng = fallback && Number.isFinite(Number(fallback.lng)) ? Number(fallback.lng) : null
+  const lat = Number.isFinite(nestedLat) ? nestedLat : (Number.isFinite(rawLat) ? rawLat : fallbackLat)
+  const lng = Number.isFinite(nestedLng) ? nestedLng : (Number.isFinite(rawLng) ? rawLng : fallbackLng)
+  return { lat, lng }
+}
+
+function normalizeResolvedLocation(source) {
+  const locationQuery = normalizeEventText(
+    source?.eventLocation,
+    source?.event_location,
+    source?.locationQuery,
+    source?.location_query,
+    source?.resolvedLocation?.query,
+    source?.resolved_location?.query,
+    source?.resolvedLocation?.formattedAddress,
+    source?.resolved_location?.formatted_address,
+  )
+
+  if (!locationQuery) return null
+
+  const center = normalizeCenterFromSource({
+    center: source?.resolvedLocation?.center || source?.resolved_location?.center || source?.center,
+    center_lat: source?.resolvedLocation?.lat ?? source?.resolved_location?.lat ?? source?.center_lat ?? source?.centerLat,
+    center_lng: source?.resolvedLocation?.lng ?? source?.resolved_location?.lng ?? source?.center_lng ?? source?.centerLng,
+  }, null)
+
+  if (!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng)) {
+    return {
+      query: locationQuery,
+      formattedAddress: normalizeEventText(
+        source?.resolvedLocation?.formattedAddress,
+        source?.resolved_location?.formatted_address,
+        locationQuery,
+      ) || locationQuery,
+      center: null,
+      lat: null,
+      lng: null,
+    }
+  }
+
+  return {
+    query: locationQuery,
+    formattedAddress: normalizeEventText(
+      source?.resolvedLocation?.formattedAddress,
+      source?.resolved_location?.formatted_address,
+      locationQuery,
+    ) || locationQuery,
+    center,
+    lat: center.lat,
+    lng: center.lng,
+  }
+}
+
+function normalizeEventRecordShape(source) {
+  const center = normalizeCenterFromSource(source)
+  const resolvedLocation = normalizeResolvedLocation({ ...source, center })
+  return {
+    ...source,
+    center,
+    center_lat: center.lat,
+    center_lng: center.lng,
+    eventType: source?.eventType || source?.event_type || 'festival',
+    eventDate: normalizeEventText(source?.eventDate, source?.event_date, source?.date, source?.startDate),
+    date: normalizeEventText(source?.eventDate, source?.event_date, source?.date, source?.startDate),
+    eventLocation: normalizeEventText(
+      source?.eventLocation,
+      source?.event_location,
+      source?.locationQuery,
+      source?.location_query,
+      resolvedLocation?.formattedAddress,
+      resolvedLocation?.query,
+    ),
+    locationQuery: normalizeEventText(
+      source?.locationQuery,
+      source?.location_query,
+      source?.eventLocation,
+      source?.event_location,
+      resolvedLocation?.query,
+    ),
+    resolvedLocation,
+  }
 }
 
 function readRouteState() {
@@ -607,6 +705,9 @@ export default function App() {
   const [eventDetails, setEventDetails] = useState({
     name: '',
     eventType: 'festival',
+    eventDate: '',
+    date: '',
+    eventLocation: '',
     isArchived: false,
     locationQuery: '',
     resolvedLocation: null,
@@ -2117,13 +2218,11 @@ export default function App() {
         })
 
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-        return await html2canvas(mapDiv, {
+        return await toCanvas(mapDiv, {
+          cacheBust: true,
+          pixelRatio,
+          skipFonts: true,
           backgroundColor: '#ffffff',
-          scale: pixelRatio,
-          useCORS: true,
-          allowTaint: false,
-          logging: false,
-          removeContainer: true,
         })
       } finally {
         hiddenNodes.reverse().forEach(({ node, visibility, display }) => {
@@ -3005,6 +3104,31 @@ export default function App() {
     })
   }, [])
 
+  const resolveEventLocation = useCallback(async (locationQuery) => {
+    const query = normalizeEventText(locationQuery)
+    if (!query || !mapsApiKey) return null
+
+    try {
+      const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(mapsApiKey)}`)
+      const payload = await response.json()
+      const result = Array.isArray(payload?.results) ? payload.results[0] : null
+      const location = result?.geometry?.location
+      const lat = Number(location?.lat)
+      const lng = Number(location?.lng)
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+
+      return {
+        query,
+        formattedAddress: normalizeEventText(result?.formatted_address, query) || query,
+        center: { lat, lng },
+        lat,
+        lng,
+      }
+    } catch {
+      return null
+    }
+  }, [mapsApiKey])
+
   const loadEventRecord = useCallback(async (id) => {
     const res = await fetch(`${API_BASE_URL}/maps/${id}`)
     const data = await res.json()
@@ -3013,11 +3137,11 @@ export default function App() {
     }
 
     const meta = eventMetaMap[id] || {}
-    return {
+    return normalizeEventRecordShape({
       ...data,
       name: meta.name || data.name,
       isArchived: Boolean(meta.isArchived ?? data.isArchived ?? data.archived ?? data.settings?.archived ?? false),
-    }
+    })
   }, [eventMetaMap])
 
   const persistEventPatch = useCallback(async (id, patch = {}) => {
@@ -3032,8 +3156,8 @@ export default function App() {
     const requestBody = {
       name: patch.name ?? currentData.name ?? 'Untitled Event',
       eventType: patch.eventType ?? currentData.eventType ?? currentData.event_type ?? 'festival',
-      center_lat: patch.center_lat ?? currentData.center_lat ?? 51.505,
-      center_lng: patch.center_lng ?? currentData.center_lng ?? -0.09,
+      center_lat: patch.center_lat ?? currentData.center_lat ?? currentData.center?.lat ?? 51.505,
+      center_lng: patch.center_lng ?? currentData.center_lng ?? currentData.center?.lng ?? -0.09,
       zoom: normalizePersistedZoom(patch.zoom ?? currentData.zoom ?? 13),
       measurementUnit: patch.measurementUnit ?? currentData.measurementUnit ?? 'meters',
       layers: patch.layers ?? currentData.layers ?? DEFAULT_LAYERS,
@@ -3043,6 +3167,8 @@ export default function App() {
       lines: patch.lines ?? currentData.lines ?? [],
       annotations: patch.annotations ?? currentData.annotations ?? [],
       floorPlans: patch.floorPlans ?? currentData.floorPlans ?? [],
+      eventDate: patch.eventDate ?? currentData.eventDate ?? currentData.event_date ?? currentData.date ?? '',
+      eventLocation: patch.eventLocation ?? currentData.eventLocation ?? currentData.event_location ?? currentData.locationQuery ?? '',
       archived: nextArchived,
     }
 
@@ -3077,6 +3203,10 @@ export default function App() {
         ...prev,
         name: requestBody.name,
         eventType: requestBody.eventType,
+        eventDate: requestBody.eventDate,
+        date: requestBody.eventDate,
+        eventLocation: requestBody.eventLocation,
+        locationQuery: requestBody.eventLocation || prev.locationQuery,
         isArchived: nextArchived,
       }))
     }
@@ -3084,37 +3214,65 @@ export default function App() {
     return requestBody
   }, [eventId, loadEventRecord, updateEventMeta])
 
-  const handleCreateEvent = async (name, eventType) => {
+  const handleCreateEvent = useCallback(async (name, eventType, eventDate = '', eventLocation = '') => {
+    const nextName = normalizeEventText(name, 'New Event') || 'New Event'
+    const nextEventType = eventType || 'festival'
+    const nextEventDate = normalizeEventText(eventDate)
+    const nextEventLocation = normalizeEventText(eventLocation)
+    const resolvedLocation = await resolveEventLocation(nextEventLocation)
+    const nextCenter = resolvedLocation?.center || DEFAULT_MAP_VIEWPORT.center
+    const nextZoom = resolvedLocation ? 15 : 13
+
     try {
       const res = await fetch(`${API_BASE_URL}/maps`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name || 'New Event',
-          eventType: eventType || 'festival',
-          center_lat: 51.505,
-          center_lng: -0.09,
-          zoom: 13,
+          name: nextName,
+          eventType: nextEventType,
+          center_lat: nextCenter.lat,
+          center_lng: nextCenter.lng,
+          zoom: nextZoom,
+          measurementUnit,
+          grid_enabled: Boolean(layers.grid?.visible),
+          grid_size: Number(layers.grid?.size || 3),
+          layers,
+          settings: {
+            lineStyle,
+            textStyle,
+            archived: false,
+          },
+          zones: [],
+          assets: [],
+          lines: [],
+          annotations: [],
+          floorPlans: [],
+          eventDate: nextEventDate,
+          eventLocation: nextEventLocation,
           archived: false,
         })
       })
       const data = await res.json()
       if (data.success && data.id) {
         updateEventMeta(data.id, {
-          name: name || 'New Event',
+          name: nextName,
           isArchived: false,
         })
         writeRouteState('editor', data.id, { replace: false })
         setEventId(data.id)
-        setEventDetails(prev => ({
-          ...prev,
-          name: name || 'New Event',
-          eventType: eventType || 'festival',
+        setEventDetails({
+          name: nextName,
+          eventType: nextEventType,
+          eventDate: nextEventDate,
+          date: nextEventDate,
+          eventLocation: nextEventLocation,
           isArchived: false,
-        }))
+          locationQuery: nextEventLocation,
+          resolvedLocation,
+        })
         setMapViewport({
-          center: { lat: 51.505, lng: -0.09 },
-          zoom: 13,
+          center: nextCenter,
+          zoom: nextZoom,
         })
         setCurrentView('editor')
       }
@@ -3122,7 +3280,7 @@ export default function App() {
       console.error('Error creating event:', err)
       alert('Failed to create event. Is the backend running?')
     }
-  }
+  }, [layers, lineStyle, measurementUnit, resolveEventLocation, textStyle, updateEventMeta])
 
   const handleResumeEvent = (id) => {
     if (!id) return
@@ -3141,13 +3299,15 @@ export default function App() {
           ...prev,
           name: data.name,
           eventType: data.eventType || data.event_type || 'festival',
+          eventDate: data.eventDate || '',
+          date: data.eventDate || '',
+          eventLocation: data.eventLocation || '',
+          locationQuery: data.eventLocation || data.event_location || data.locationQuery || '',
+          resolvedLocation: data.resolvedLocation || null,
           isArchived: Boolean(data.isArchived),
         }))
         setMapViewport({
-          center: {
-            lat: Number.isFinite(Number(data.center_lat)) ? Number(data.center_lat) : DEFAULT_MAP_VIEWPORT.center.lat,
-            lng: Number.isFinite(Number(data.center_lng)) ? Number(data.center_lng) : DEFAULT_MAP_VIEWPORT.center.lng,
-          },
+          center: normalizeCenterFromSource(data),
           zoom: Number.isFinite(Number(data.zoom)) ? Number(data.zoom) : DEFAULT_MAP_VIEWPORT.zoom,
         })
         setZones(data.zones || [])
@@ -3242,9 +3402,11 @@ export default function App() {
         body: JSON.stringify({
           name: copyName,
           eventType: sourceEvent.eventType || sourceEvent.event_type || 'festival',
-          center_lat: sourceEvent.center_lat ?? 51.505,
-          center_lng: sourceEvent.center_lng ?? -0.09,
+          center_lat: sourceEvent.center_lat ?? sourceEvent.center?.lat ?? 51.505,
+          center_lng: sourceEvent.center_lng ?? sourceEvent.center?.lng ?? -0.09,
           zoom: sourceEvent.zoom ?? 13,
+          eventDate: sourceEvent.eventDate ?? '',
+          eventLocation: sourceEvent.eventLocation ?? '',
           archived: false,
         })
       })
@@ -3256,8 +3418,8 @@ export default function App() {
       await persistEventPatch(createData.id, {
         name: copyName,
         eventType: sourceEvent.eventType || sourceEvent.event_type || 'festival',
-        center_lat: sourceEvent.center_lat ?? 51.505,
-        center_lng: sourceEvent.center_lng ?? -0.09,
+        center_lat: sourceEvent.center_lat ?? sourceEvent.center?.lat ?? 51.505,
+        center_lng: sourceEvent.center_lng ?? sourceEvent.center?.lng ?? -0.09,
         zoom: sourceEvent.zoom ?? 13,
         measurementUnit: sourceEvent.measurementUnit ?? 'meters',
         layers: sourceEvent.layers ?? DEFAULT_LAYERS,
@@ -3265,6 +3427,8 @@ export default function App() {
         assets: sourceEvent.assets ?? [],
         lines: sourceEvent.lines ?? [],
         annotations: sourceEvent.annotations ?? [],
+        eventDate: sourceEvent.eventDate ?? '',
+        eventLocation: sourceEvent.eventLocation ?? '',
         settings: {
           ...(sourceEvent.settings || {}),
           archived: false,
@@ -3316,6 +3480,8 @@ export default function App() {
           assets,
           lines,
           annotations,
+          eventDate: eventDetails.eventDate || eventDetails.date || '',
+          eventLocation: eventDetails.eventLocation || eventDetails.locationQuery || '',
           archived: !!eventDetails.isArchived,
         })
       })

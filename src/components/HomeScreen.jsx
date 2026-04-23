@@ -37,13 +37,14 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
     const [showArchived, setShowArchived] = useState(false);
     const [newName, setNewName] = useState('');
     const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
+    const [newLocation, setNewLocation] = useState('');
     const [newType, setNewType] = useState('festival');
     const [editingEventId, setEditingEventId] = useState(null);
     const [renameDraft, setRenameDraft] = useState('');
 
     const handleCreate = () => {
         if (!newName.trim()) { alert('Please enter an event name'); return; }
-        onCreateEvent(newName, newType);
+        onCreateEvent(newName, newType, newDate, newLocation);
     };
 
     const startRename = (event) => { setEditingEventId(event.id); setRenameDraft(event.name || ''); };
@@ -180,6 +181,17 @@ const HomeScreen = ({ onCreateEvent, onResumeEvent, onRenameEvent, onDeleteEvent
                                             type="date"
                                             value={newDate}
                                             onChange={e => setNewDate(e.target.value)}
+                                            style={inputStyle}
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label style={{ fontSize: 12, color: '#64748b', fontWeight: 600, display: 'block', marginBottom: 6 }}>Event Location</label>
+                                        <input
+                                            type="text"
+                                            value={newLocation}
+                                            onChange={e => setNewLocation(e.target.value)}
+                                            placeholder="Enter city, area, or address..."
                                             style={inputStyle}
                                         />
                                     </div>
