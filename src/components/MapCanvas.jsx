@@ -2296,18 +2296,6 @@ export default function MapCanvas({
         /* zoom updates are handled via bounds_changed RAF listener in onLoad */
         options={mapOptions}
       >
-        {eventDetails?.resolvedLocation?.center && (
-          <MarkerF
-            position={eventDetails.resolvedLocation.center}
-            title={eventDetails.resolvedLocation.formattedAddress || eventDetails.locationQuery || 'Selected location'}
-            zIndex={450}
-            options={{
-              clickable: false,
-              optimized: true,
-            }}
-          />
-        )}
-
         {layers.floor?.visible && floorPlans.map(plan => {
           if (!plan.bounds) return null
           return (
