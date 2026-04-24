@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
-import { toCanvas } from 'html-to-image'
+import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import Toolbar from './components/Toolbar'
 import Sidebar from './components/Sidebar'
@@ -2148,7 +2148,6 @@ export default function App() {
     const mapDiv = map.getDiv()
     if (!mapDiv) throw new Error('Map container not found')
 
-    const googleMapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
     const rect = mapDiv.getBoundingClientRect()
     const width = Math.max(1, Math.round(rect.width))
     const height = Math.max(1, Math.round(rect.height))
@@ -2213,16 +2212,14 @@ export default function App() {
         Array.from(mapDiv.querySelectorAll('.gm-style-cc, .gm-fullscreen-control, .gm-svpc, .gm-style-mtc, .gm-bundled-control, .gmnoprint')).forEach((node) => {
           hideNode(node, 'display')
         })
-        Array.from(mapDiv.querySelectorAll('button, textarea')).forEach((node) => {
-          hideNode(node, 'visibility')
-        })
 
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
-        return await toCanvas(mapDiv, {
-          cacheBust: true,
-          pixelRatio,
-          skipFonts: true,
+        return await html2canvas(mapDiv, {
+          useCORS: true,
+          allowTaint: false,
           backgroundColor: '#ffffff',
+          scale: pixelRatio,
+          logging: false,
         })
       } finally {
         hiddenNodes.reverse().forEach(({ node, visibility, display }) => {
@@ -2240,33 +2237,13 @@ export default function App() {
         console.warn('Live map DOM export unavailable; falling back to canvas renderer.', error)
       }
 
-      const center = map.getCenter?.()
-      const mapTypeId = map.getMapTypeId?.() || mapViewMode || 'roadmap'
       const liveZoom = Number(map.getZoom?.() || 14)
-      const roundedZoom = Math.max(1, Math.round(liveZoom))
-      const exportZoom = roundedZoom
-      let baseMapDrawn = false
-
-      // Keep export on a single, consistent zoom model so the static basemap
-      // and the rendered overlays stay aligned in the final image.
-      if (center && googleMapsKey) {
-        const sizeScale = Math.min(1, 640 / Math.max(width, height))
-        const requestWidth = Math.max(1, Math.round(width * sizeScale))
-        const requestHeight = Math.max(1, Math.round(height * sizeScale))
-        const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${center.lat()},${center.lng()}&zoom=${roundedZoom}&size=${requestWidth}x${requestHeight}&scale=2&maptype=${encodeURIComponent(mapTypeId)}&format=png&key=${encodeURIComponent(googleMapsKey)}`
-
-        try {
-          const baseMapImage = await loadImage(staticMapUrl)
-          ctx.drawImage(baseMapImage, 0, 0, width, height)
-          baseMapDrawn = true
-        } catch (error) {
-          console.warn('Static Maps export unavailable; falling back to DOM capture.', error)
-        }
-      }
-
-      if (!baseMapDrawn) {
+      const exportZoom = Math.max(1, liveZoom)
+      try {
         const baseCanvas = await captureLiveMapDom()
         ctx.drawImage(baseCanvas, 0, 0, width, height)
+      } catch (error) {
+        console.warn('Fallback DOM base capture unavailable; drawing overlays on white canvas.', error)
       }
 
       if (layers.floor?.visible !== false && floorPlans.length > 0) {
