@@ -200,11 +200,12 @@ const ZoneRectangle = React.memo(function ZoneRectangle({
         fillColor,
         fillOpacity,
         strokeColor: color,
-        strokeWeight: isSelected ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
+        strokeWeight: isSelected ? (zone.strokeWeight || 2.5) + 2 : (zone.strokeWeight || 2.5),
+        strokeOpacity: 1,
         editable: isSelected && !layersLocked,
         draggable: isSelected && !layersLocked,
         clickable: drawMode === 'select' || drawMode === 'erase',
-        zIndex: isSelected ? 1 : 0,
+        zIndex: isSelected ? 100 : 1,
       }}
       onClick={onZoneClick}
       onMouseOver={onZoneMouseOver}
@@ -498,6 +499,7 @@ export default function MapCanvas({
   viewOnlyMinZoom,
   viewOnlyMaxZoom,
   measurementUnit = 'meters',
+  saveTick = 0,
 }) {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
   const what3wordsKey = import.meta.env.VITE_WHAT3WORDS_API_KEY || ''
@@ -531,7 +533,48 @@ export default function MapCanvas({
   const [hoveredItem, setHoveredItem] = useState(null) // Track any hovered item with tooltips
   const [measurePoints, setMeasurePoints] = useState([])
   const [measureHover, setMeasureHover] = useState(null)
+  const [overlayRenderVersion, setOverlayRenderVersion] = useState(0)
+  const lastZoneCountRef = useRef(0)
+  const lastAssetCountRef = useRef(0)
+  const lastAnnotationCountRef = useRef(0)
   const measurePointsRef = useRef([])
+
+  // Force a clean remount of all overlays when saveTick changes
+  useEffect(() => {
+    setOverlayRenderVersion(prev => prev + 1)
+  }, [saveTick])
+
+  // Auto-refresh: Force a remount 1 second after the map loads
+  // and whenever the first batch of zones arrives.
+  useEffect(() => {
+    if (isLoaded) {
+      const timer = setTimeout(() => {
+        setOverlayRenderVersion(prev => prev + 1)
+      }, 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [isLoaded])
+
+  useEffect(() => {
+    if (zones.length > 0 && lastZoneCountRef.current === 0) {
+      setOverlayRenderVersion(prev => prev + 1)
+    }
+    lastZoneCountRef.current = zones.length
+  }, [zones.length])
+
+  useEffect(() => {
+    if (assets.length > 0 && lastAssetCountRef.current === 0) {
+      setOverlayRenderVersion(prev => prev + 1)
+    }
+    lastAssetCountRef.current = assets.length
+  }, [assets.length])
+
+  useEffect(() => {
+    if (annotations.length > 0 && lastAnnotationCountRef.current === 0) {
+      setOverlayRenderVersion(prev => prev + 1)
+    }
+    lastAnnotationCountRef.current = annotations.length
+  }, [annotations.length])
 
   useEffect(() => {
     lineDraftRef.current = lineDraft
@@ -2300,7 +2343,7 @@ export default function MapCanvas({
           if (!plan.bounds) return null
           return (
             <FloorPlanOverlay
-              key={plan.id}
+              key={`floor-${overlayRenderVersion}-${plan.id}`}
               floorPlan={plan}
               selected={selectedId === plan.id}
               interactive={drawMode === 'select'}
@@ -2365,12 +2408,12 @@ export default function MapCanvas({
           const zoneLabelMaxWidthPx = Math.min(180, Math.max(64, zoneLabelWidthPx - 14))
           const canShowZoneLabel = !!zoneCenter
             && !!zoneDisplayName
-            && zoneLabelWidthPx >= 36
-            && zoneLabelHeightPx >= 14
-            && (currentLiveZoom >= 15 || selectedId === zone.id)
+            && zoneLabelWidthPx >= 30
+            && zoneLabelHeightPx >= 12
+            && (currentLiveZoom >= 12 || selectedId === zone.id)
 
           return (
-            <React.Fragment key={zone.id}>
+            <React.Fragment key={`zone-${overlayRenderVersion}-${zone.id}`}>
               {zone.shapeType === 'circle' && derivedCircleCenter && derivedCircleRadius ? (
                 <Circle
                   center={derivedCircleCenter}
@@ -2381,7 +2424,8 @@ export default function MapCanvas({
                       ? Math.min((zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2) + 0.08, 1)
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
-                    strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
+                    strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2.5) + 2 : (zone.strokeWeight || 2.5),
+                    strokeOpacity: 1,
                     editable: selectedId === zone.id && !layers.zones?.locked,
                     draggable: selectedId === zone.id && !layers.zones?.locked,
                     clickable: drawMode === 'select' || drawMode === 'erase',
@@ -2449,11 +2493,12 @@ export default function MapCanvas({
                       ? Math.min((zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2) + 0.08, 1)
                       : (zone.fillOpacity ?? zone.zoneType?.fillOpacity ?? 0.2),
                     strokeColor: zone.strokeColor || zone.zoneType?.color || '#3d8ef8',
-                    strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2) + 1 : (zone.strokeWeight || 2),
+                    strokeWeight: selectedId === zone.id ? (zone.strokeWeight || 2.5) + 2 : (zone.strokeWeight || 2.5),
+                    strokeOpacity: 1,
                     editable: selectedId === zone.id && !layers.zones?.locked && !isRectangleZone(zone),
                     draggable: selectedId === zone.id && !layers.zones?.locked && !isRectangleZone(zone),
                     clickable: drawMode === 'select' || drawMode === 'erase',
-                    zIndex: selectedId === zone.id ? 1 : 0,
+                    zIndex: selectedId === zone.id ? 100 : 1,
                   }}
                   onClick={(event) => {
                     if (placePendingZoneTemplateAtLatLng(event?.latLng)) return
@@ -2493,6 +2538,10 @@ export default function MapCanvas({
                     handleZonePathChange(zone)
                   }}
                   onLoad={(polygon) => {
+                    const previousPoly = zoneOverlayRefs.current[zone.id]
+                    if (previousPoly && previousPoly !== polygon) {
+                      previousPoly.setMap(null)
+                    }
                     zoneOverlayRefs.current[zone.id] = polygon
                     if (selectedId === zone.id && !layers.zones?.locked && !isRectangleZone(zone)) {
                       const path = polygon.getPath()
@@ -2502,6 +2551,8 @@ export default function MapCanvas({
                     }
                   }}
                   onUnmount={() => {
+                    const poly = zoneOverlayRefs.current[zone.id]
+                    if (poly) poly.setMap(null)
                     delete zoneOverlayRefs.current[zone.id]
                   }}
                 />
@@ -2699,7 +2750,7 @@ export default function MapCanvas({
           if (parentZone && isZoneOrParentHidden(parentZone)) return null
 
           return (
-            <React.Fragment key={line.id}>
+            <React.Fragment key={`line-${overlayRenderVersion}-${line.id}`}>
               <Polyline
                 path={line.path}
                 options={{
@@ -3026,7 +3077,7 @@ export default function MapCanvas({
 
           return (
             <AssetOverlay
-              key={`${asset.id}-${asset.fillColor}-${asset.strokeColor}-${asset.strokeWeight}`}
+              key={`asset-${overlayRenderVersion}-${asset.id}-${asset.fillColor}-${asset.strokeColor}`}
               asset={asset}
               zoom={mapZoom}
               selected={selectedId === asset.id}
@@ -3050,7 +3101,7 @@ export default function MapCanvas({
 
         {visibleAnnotations.map(annotation => (
           <AnnotationOverlay
-            key={annotation.id}
+            key={`ann-${overlayRenderVersion}-${annotation.id}`}
             annotation={annotation}
             selected={false}
             locked={!!layers.annotations?.locked}

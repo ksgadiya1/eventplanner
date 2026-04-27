@@ -22,7 +22,7 @@ import { formatArea, formatDistance } from './utils/units'
 
 const API_BASE_URL = 'http://localhost:5000/api'
 
-const PROJECT_STORAGE_KEY = 'eventwiz-project-v1'
+const PROJECT_STORAGE_KEY_PREFIX = 'eventwiz-project-v2'
 const CUSTOM_ASSET_LIBRARY_STORAGE_KEY = 'eventwiz-custom-asset-library-v1'
 const ZONE_TEMPLATE_STORAGE_KEY = 'eventwiz-zone-templates-v1'
 const EVENT_META_STORAGE_KEY = 'eventwiz-event-meta-v1'
@@ -134,6 +134,13 @@ function normalizeEventRecordShape(source) {
     ),
     resolvedLocation,
   }
+}
+
+function getProjectStorageKey(eventId) {
+  const normalizedEventId = normalizeEventText(eventId)
+  return normalizedEventId
+    ? `${PROJECT_STORAGE_KEY_PREFIX}:${encodeURIComponent(normalizedEventId)}`
+    : PROJECT_STORAGE_KEY_PREFIX
 }
 
 function readRouteState() {
@@ -699,7 +706,9 @@ export default function App() {
   const [annotationDraftText, setAnnotationDraftText] = useState('New annotation')
   const [selectedId, setSelectedId] = useState(null)
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false)
-  const [layers, setLayers] = useState(DEFAULT_LAYERS)
+  const [layers, setLayers] = useState(() => ({ ...DEFAULT_LAYERS }))
+  const [saveTick, setSaveTick] = useState(0)
+  const [isEventLoading, setIsEventLoading] = useState(false)
   const [undoStack, setUndoStack] = useState([])
   const [redoStack, setRedoStack] = useState([])
   const [eventDetails, setEventDetails] = useState({
@@ -836,66 +845,64 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    hasHydratedRef.current = false
+
+    if (currentView !== 'editor' || !eventId) {
+      hasHydratedRef.current = true
+      return
+    }
+
     try {
-      const raw = window.localStorage.getItem(PROJECT_STORAGE_KEY)
-      if (!raw) {
-        hasHydratedRef.current = true
-        return
-      }
+      const storageKey = getProjectStorageKey(eventId)
+      const raw = window.localStorage.getItem(storageKey)
+      const parsed = JSON.parse(raw || 'null')
 
-      const parsed = JSON.parse(raw)
       if (!parsed || typeof parsed !== 'object') {
-        hasHydratedRef.current = true
         return
       }
 
-      // Load and clean zones - remove any with empty/missing labels
-      let loadedZones = Array.isArray(parsed.zones) ? parsed.zones : []
-      loadedZones = loadedZones.filter(z => z && z.label && z.label.trim())
+      if (parsed.eventId && String(parsed.eventId) !== String(eventId)) {
+        return
+      }
 
+      // Load and clean zones
+      let loadedZones = Array.isArray(parsed.zones) ? parsed.zones : []
       setZones(loadedZones)
       setAssets(Array.isArray(parsed.assets) ? parsed.assets : [])
       setLines(Array.isArray(parsed.lines) ? parsed.lines : [])
       setAnnotations(Array.isArray(parsed.annotations) ? parsed.annotations : [])
+      
       const loadedFloorPlans = Array.isArray(parsed.floorPlans) ? parsed.floorPlans : []
       if (parsed.floorPlan && !loadedFloorPlans.length) {
          loadedFloorPlans.push(parsed.floorPlan)
       }
       setFloorPlans(loadedFloorPlans)
+      
       setLayers({ ...DEFAULT_LAYERS, ...(parsed.layers || {}) })
       setLineStyle(prev => ({ ...prev, ...(parsed.lineStyle || {}) }))
       setTextStyle(prev => ({ ...prev, ...(parsed.textStyle || {}) }))
       setEventDetails(prev => ({ ...prev, ...(parsed.eventDetails || {}) }))
+      
       if (typeof parsed.annotationDraftText === 'string') setAnnotationDraftText(parsed.annotationDraftText)
       if (typeof parsed.leftSidebarCollapsed === 'boolean') setLeftSidebarCollapsed(parsed.leftSidebarCollapsed)
       if (typeof parsed.mapViewMode === 'string') {
-        const normalizedMapViewMode = parsed.mapViewMode === '2d'
-          ? 'roadmap'
-          : parsed.mapViewMode === '3d'
-            ? 'hybrid'
-            : parsed.mapViewMode
-
-        if (['roadmap', 'terrain', 'hybrid', 'satellite'].includes(normalizedMapViewMode)) {
-          setMapViewMode(normalizedMapViewMode)
-        }
+        setMapViewMode(parsed.mapViewMode)
       }
-
-      const storedZoneTypeId = parsed.selectedZoneType?.id
-      const matchedZoneType = assetData.zoneTypes.find(zone => zone.id === storedZoneTypeId)
-      if (matchedZoneType) setSelectedZoneType(matchedZoneType)
-    } catch {
-      // ignore invalid storage and start fresh
+    } catch (err) {
+      console.error('Failed to hydrate map state:', err)
     } finally {
       hasHydratedRef.current = true
     }
-  }, [])
+  }, [currentView, eventId])
 
   useEffect(() => {
-    if (!hasHydratedRef.current) return
+    if (!hasHydratedRef.current || isEventLoading || currentView !== 'editor' || !eventId) return
+
     // Filter out invalid zones before saving
-    const cleanZones = zones.filter(z => z && z.label && z.label.trim() && z.label.trim() !== '0')
+    const cleanZones = zones.filter(z => z && z.label && z.label.trim())
     const payload = {
-      version: 1,
+      version: 2,
+      eventId,
       savedAt: new Date().toISOString(),
       zones: cleanZones,
       assets,
@@ -905,19 +912,18 @@ export default function App() {
       layers,
       lineStyle,
       textStyle,
+      eventDetails,
       annotationDraftText,
       leftSidebarCollapsed,
-      selectedZoneType,
-      eventDetails,
       mapViewMode,
     }
 
     try {
-      window.localStorage.setItem(PROJECT_STORAGE_KEY, JSON.stringify(payload))
+      window.localStorage.setItem(getProjectStorageKey(eventId), JSON.stringify(payload))
     } catch {
       // ignore storage quota failures
     }
-  }, [annotationDraftText, annotations, assets, eventDetails, floorPlans, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
+  }, [annotationDraftText, annotations, assets, currentView, eventDetails, eventId, floorPlans, isEventLoading, layers, leftSidebarCollapsed, lineStyle, lines, mapViewMode, selectedZoneType, textStyle, zones])
 
   useEffect(() => {
     if (drawMode !== 'select' && pendingAssetDef) {
@@ -1622,15 +1628,6 @@ export default function App() {
         }
       }
 
-
-
-
-
-
-
-
-
-
       if (updated.showGrid && !previousZone?.showGrid) {
         setLayers(prev => ({
           ...prev,
@@ -1698,8 +1695,8 @@ export default function App() {
         } else {
           setZones(nextZones)
           setAssets(assets.map(asset => normalizeAssetParent(asset, nextZones, floorPlans)))
-          setAnnotations(annotations.map(annotation => normalizeAnnotationParent(annotation, nextZones, floorPlans)))
-          setLines(lines.map(line => normalizeLineParent(line, nextZones, floorPlans)))
+          setAnnotations(prev => prev.map(annotation => normalizeAnnotationParent(annotation, nextZones, floorPlans)))
+          setLines(prev => prev.map(line => normalizeLineParent(line, nextZones, floorPlans)))
         }
       } else {
         const normalizedZone = normalizeZoneParent(nextZoneRecord, zones, floorPlans)
@@ -2088,45 +2085,6 @@ export default function App() {
     if (selectedId === id) setSelectedId(null)
   }, [annotations, assets, buildCascadeDeleteState, lines, pushHistory, selectedId, zones])
 
-  useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (isViewOnly) return
-
-      const target = event.target
-      const tagName = target?.tagName?.toLowerCase?.()
-      const isTypingField = tagName === 'input' || tagName === 'textarea' || target?.isContentEditable
-      if (isTypingField) return
-
-      const isMac = navigator.platform.toUpperCase().includes('MAC')
-      const ctrl = isMac ? event.metaKey : event.ctrlKey
-
-      if (ctrl && event.key === 'z' && !event.shiftKey) {
-        event.preventDefault()
-        handleUndo()
-        return
-      }
-      if (ctrl && (event.key === 'y' || (event.key === 'z' && event.shiftKey))) {
-        event.preventDefault()
-        handleRedo()
-        return
-      }
-
-      if (!selectedId) return
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setSelectedId(null)
-        return
-      }
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        event.preventDefault()
-        handleDelete()
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleDelete, handleRedo, handleUndo, isViewOnly, selectedId])
-
   const handleToggleVisibility = useCallback((layerId) => {
     setLayers(prev => ({
       ...prev,
@@ -2461,239 +2419,6 @@ export default function App() {
           unit: 'px',
           format: 'a4',
         })
-
-        //       const pageW = pdf.internal.pageSize.getWidth()
-        //       const pageH = pdf.internal.pageSize.getHeight()
-        //       const margin = 28
-        //       const contentW = pageW - margin * 2
-        //       let cursorY = margin
-
-        //       const getZoneName = (zone) => {
-        //         const customLabel = typeof zone?.label === 'string' ? zone.label.trim() : ''
-        //         return customLabel || zone?.zoneType?.name || 'Zone'
-        //       }
-        //       const getAssetLabel = (asset) => asset?.label?.trim() || asset?.assetDef?.label || asset?.assetDef?.name || 'Asset'
-        //       const toText = (value, fallback = '—') => {
-        //         if (value === null || value === undefined) return fallback
-        //         const text = String(value).trim()
-        //         return text || fallback
-        //       }
-        //       const zoneLookup = new Map(zones.map(zone => [zone.id, getZoneName(zone)]))
-        //       const addPageIfNeeded = (needed = 24) => {
-        //         if (cursorY + needed <= pageH - margin) return
-        //         pdf.addPage()
-        //         cursorY = margin
-        //       }
-        //       const addSectionTitle = (title) => {
-        //         addPageIfNeeded(42)
-        //         if (cursorY > margin) cursorY += 4
-        //         pdf.setFont('helvetica', 'bold')
-        //         pdf.setFontSize(16)
-        //         pdf.setTextColor(17, 24, 39)
-        //         pdf.text(title, margin, cursorY)
-        //         pdf.setDrawColor(226, 232, 240)
-        //         pdf.setLineWidth(1)
-        //         pdf.line(margin, cursorY + 8, pageW - margin, cursorY + 8)
-        //         cursorY += 24
-        //       }
-        //       const addCard = (title, lines = []) => {
-        //         const wrapped = lines.flatMap(line => pdf.splitTextToSize(line, contentW - 28))
-        //         const lineHeight = 15
-        //         const headerHeight = 22
-        //         const bodyTop = 38
-        //         const bottomPadding = 12
-        //         const cardHeight = Math.max(62, bodyTop + wrapped.length * lineHeight + bottomPadding)
-
-        //         addPageIfNeeded(cardHeight + 14)
-        //         pdf.setDrawColor(218, 223, 232)
-        //         pdf.setFillColor(250, 251, 253)
-        //         pdf.roundedRect(margin, cursorY, contentW, cardHeight, 8, 8, 'FD')
-
-        //         pdf.setFont('helvetica', 'bold')
-        //         pdf.setFontSize(12)
-        //         pdf.setTextColor(15, 23, 42)
-        //         pdf.text(title, margin + 14, cursorY + headerHeight)
-
-        //         pdf.setFont('helvetica', 'normal')
-        //         pdf.setFontSize(10)
-        //         pdf.setTextColor(71, 85, 105)
-
-        //         let lineY = cursorY + bodyTop
-        //         wrapped.forEach(line => {
-        //           pdf.text(line, margin + 14, lineY)
-        //           lineY += lineHeight
-        //         })
-
-        //         cursorY += cardHeight + 14
-        //       }
-
-        //       pdf.setFont('helvetica', 'bold')
-        //       pdf.setFontSize(22)
-        //       pdf.setTextColor(15, 23, 42)
-        //       pdf.text(eventDetails?.name || 'EventWiz Detailed Report', margin, cursorY)
-        //       cursorY += 18
-
-        //       pdf.setFont('helvetica', 'normal')
-        //       pdf.setFontSize(11)
-        //       pdf.setTextColor(71, 85, 105)
-        //       pdf.text(`Generated ${new Date().toLocaleString()} | View ${mapViewMode || 'roadmap'} | Unit ${measurementUnit}`, margin, cursorY)
-        //       cursorY += 16
-
-        //       const mapMaxHeight = 220
-        //       const imageScale = Math.min(contentW / img.naturalWidth, mapMaxHeight / img.naturalHeight)
-        //       const renderW = img.naturalWidth * imageScale
-        //       const renderH = img.naturalHeight * imageScale
-        //       pdf.addImage(dataUrl, 'PNG', margin, cursorY, renderW, renderH)
-        //       cursorY += renderH + 16
-
-        //       const uniqueZoneTypes = []
-        //       const seenIds = new Set()
-        //       for (const zone of zones) {
-        //         const zoneType = zone.zoneType
-        //         if (zoneType?.id && !seenIds.has(zoneType.id)) {
-        //           seenIds.add(zoneType.id)
-        //           uniqueZoneTypes.push(zoneType)
-        //         }
-        //       }
-
-        //       pdf.setFont('helvetica', 'bold')
-        //       pdf.setFontSize(13)
-        //       pdf.setTextColor(30, 41, 59)
-        //       pdf.text('Snapshot Overview', margin, cursorY)
-        //       cursorY += 14
-        //       pdf.setFont('helvetica', 'normal')
-        //       pdf.setFontSize(10)
-        //       pdf.text(`Zones: ${zones.length}   Assets: ${assets.length}   Routes: ${lines.length}   Notes: ${annotations.length}`, margin, cursorY)
-        //       cursorY += 12
-
-        //       if (uniqueZoneTypes.length) {
-        //         let legendX = margin
-        //         let legendY = cursorY
-        //         uniqueZoneTypes.forEach((zoneType, index) => {
-        //           const hex = zoneType.color || '#3d8ef8'
-        //           const normalizedHex = /^#([0-9a-f]{6})$/i.test(hex) ? hex : '#3d8ef8'
-        //           const r = parseInt(normalizedHex.slice(1, 3), 16)
-        //           const g = parseInt(normalizedHex.slice(3, 5), 16)
-        //           const b = parseInt(normalizedHex.slice(5, 7), 16)
-        //           if (index > 0 && legendX > pageW - 150) {
-        //             legendX = margin
-        //             legendY += 16
-        //           }
-        //           pdf.setFillColor(r, g, b)
-        //           pdf.rect(legendX, legendY - 8, 10, 10, 'F')
-        //           pdf.setTextColor(55, 65, 81)
-        //           pdf.text(zoneType.name || zoneType.id, legendX + 16, legendY)
-        //           legendX += 120
-        //         })
-        //         cursorY = legendY + 18
-        //       } else {
-        //         cursorY += 6
-        //       }
-
-        //       pdf.addPage()
-        //       cursorY = margin
-
-        //       addSectionTitle('Event Summary')
-        //       addCard('Event Details', [
-        //         `Name: ${toText(eventDetails?.name, 'Untitled Event')}`,
-        //         `Type: ${toText(eventDetails?.eventType, 'general')}`,
-        //         `Location Query: ${toText(eventDetails?.locationQuery)}`,
-        //         `Resolved Address: ${toText(eventDetails?.resolvedLocation?.formattedAddress)}`,
-        //         `Coordinates: ${eventDetails?.resolvedLocation?.lat != null && eventDetails?.resolvedLocation?.lng != null
-        //           ? `${Number(eventDetails.resolvedLocation.lat).toFixed(5)}, ${Number(eventDetails.resolvedLocation.lng).toFixed(5)}`
-        //           : '—'}`,
-        //       ])
-        //       addCard('Plan Totals', [
-        //         `Zones: ${zones.length}`,
-        //         `Assets: ${assets.length}`,
-        //         `Routes / Lines: ${lines.length}`,
-        //         `Annotations: ${annotations.length}`,
-        //         `Floor Plan Added: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
-        //       ])
-
-        //       addSectionTitle('Zone Details')
-        //       if (zones.length) {
-        //         zones.forEach((zone, index) => {
-        //           const centroid = zone.path?.length
-        //             ? zone.path.reduce((acc, point) => ({ lat: acc.lat + point.lat, lng: acc.lng + point.lng }), { lat: 0, lng: 0 })
-        //             : null
-        //           const zoneCenter = centroid
-        //             ? `${(centroid.lat / zone.path.length).toFixed(5)}, ${(centroid.lng / zone.path.length).toFixed(5)}`
-        //             : '—'
-
-        //           addCard(`${index + 1}. ${getZoneName(zone)}`, [
-        //             `Type: ${toText(zone.zoneType?.name, zone.zoneType?.id || 'Zone')}`,
-        //             `Status: ${toText(zone.status, 'planned')}`,
-        //             `Layout: ${toText(zone.layoutType, 'free')}`,
-        //             `Parent: ${toText(zoneLookup.get(zone.parentId))}`,
-        //             `Area: ${formatArea(zone.areaM2, measurementUnit)}`,
-        //             `Perimeter: ${formatDistance(zone.perimeterM, measurementUnit)}`,
-        //             `Capacity: ${zone.capacity != null ? Number(zone.capacity).toLocaleString() : '—'}`,
-        //             `Center: ${zoneCenter}`,
-        //           ])
-        //         })
-        //       } else {
-        //         addCard('No Zones', ['No zones have been created in this plan yet.'])
-        //       }
-
-        //       addSectionTitle('Asset Placement Details')
-        //       if (assets.length) {
-        //         assets.forEach((asset, index) => {
-        //           addCard(`${index + 1}. ${getAssetLabel(asset)}`, [
-        //             `Type: ${toText(asset.assetDef?.category, asset.assetDef?.id || 'asset')}`,
-        //             `Parent Zone: ${toText(zoneLookup.get(asset.parentId))}`,
-        //             `Position: ${Number(asset.lat || 0).toFixed(5)}, ${Number(asset.lng || 0).toFixed(5)}`,
-        //             `Size: ${formatDistance(asset.widthM || asset.assetDef?.defaultWidth || 0, measurementUnit)} × ${formatDistance(asset.lengthM || asset.assetDef?.defaultLength || 0, measurementUnit)}`,
-        //             `Rotation: ${Number(asset.rotationDeg || 0).toFixed(0)}°`,
-        //           ])
-        //         })
-        //       } else {
-        //         addCard('No Assets', ['No assets have been placed on the map yet.'])
-        //       }
-
-        //       addSectionTitle('Routes and Line Details')
-        //       if (lines.length) {
-        //         lines.forEach((line, index) => {
-        //           addCard(`${index + 1}. ${toText(line.label, 'Route')}`, [
-        //             `Route Type: ${toText(line.routeType, 'custom')}`,
-        //             `Parent Zone: ${toText(zoneLookup.get(line.parentId))}`,
-        //             `Length: ${formatDistance(line.lengthM, measurementUnit)}`,
-        //             `Segments: ${Math.max(0, (line.path?.length || 1) - 1)}`,
-        //             `Style: ${toText(line.pattern, 'solid')}`,
-        //             `Weight: ${toText(line.strokeWeight, 4)}`,
-        //             `Color: ${toText(line.color, '#f59e0b')}`,
-        //           ])
-        //         })
-        //       } else {
-        //         addCard('No Routes', ['No route or line data has been added yet.'])
-        //       }
-
-        //       addSectionTitle('Notes and Overlays')
-        //       if (annotations.length) {
-        //         annotations.forEach((annotation, index) => {
-        //           addCard(`${index + 1}. Annotation`, [
-        //             `Text: ${toText(annotation.text, '—')}`,
-        //             `Position: ${Number(annotation.lat || 0).toFixed(5)}, ${Number(annotation.lng || 0).toFixed(5)}`,
-        //           ])
-        //         })
-        //       } else {
-        //         addCard('Annotations', ['No annotation notes have been added.'])
-        //       }
-
-        //       addCard('Floor Plan', [
-        //         `Attached: ${floorPlan?.bounds ? 'Yes' : 'No'}`,
-        //         `Opacity: ${floorPlan?.opacity != null ? `${Math.round(floorPlan.opacity * 100)}%` : '—'}`,
-        //         `Rotation: ${floorPlan?.rotation != null ? `${floorPlan.rotation}°` : '—'}`,
-        //       ])
-
-        //       pdf.save(`eventwiz-detailed-report-${Date.now()}.pdf`)
-        //       return
-        //     }
-        //   } catch (err) {
-        //     console.error('Export failed:', err)
-        //     window.alert(`Could not export ${format.toUpperCase()}. ${err.message || 'Unknown error.'}`)
-        //   }
-        // }, [annotations, assets, captureMapImage, eventDetails, floorPlan, layers, lineStyle, lines, mapViewMode, measurementUnit, selectedZoneType, textStyle, zones])
         const pageW = pdf.internal.pageSize.getWidth()
         const pageH = pdf.internal.pageSize.getHeight()
         const margin = 24
@@ -3262,24 +2987,30 @@ export default function App() {
   const handleResumeEvent = (id) => {
     if (!id) return
     writeRouteState('editor', id, { replace: false })
+    setIsEventLoading(true)
     setEventId(id)
     setCurrentView('editor')
   }
 
   useEffect(() => {
-    if (currentView !== 'editor' || !eventId) return
+    if (currentView !== 'editor' || !eventId) {
+      setIsEventLoading(false)
+      return
+    }
+
+    let isActive = true
+    setIsEventLoading(true)
 
     loadEventRecord(eventId)
       .then(data => {
+        if (!isActive) return
         setSelectedId(null)
         setEventDetails(prev => ({
           ...prev,
-          name: data.name,
-          eventType: data.eventType || data.event_type || 'festival',
-          eventDate: data.eventDate || '',
-          date: data.eventDate || '',
-          eventLocation: data.eventLocation || '',
-          locationQuery: data.eventLocation || data.event_location || data.locationQuery || '',
+          name: data.name || '',
+          eventType: data.eventType || 'festival',
+          eventDate: data.eventDate || data.date || '',
+          eventLocation: data.eventLocation || data.location || '',
           resolvedLocation: data.resolvedLocation || null,
           isArchived: Boolean(data.isArchived),
         }))
@@ -3291,17 +3022,24 @@ export default function App() {
         setAssets(data.assets || [])
         setLines(data.lines || [])
         setAnnotations(data.annotations || [])
-        setLayers(prev => ({ ...prev, ...(data.layers || {}) }))
+        setLayers({ ...DEFAULT_LAYERS, ...(data.layers || {}) })
         setLineStyle(data.settings?.lineStyle || getRouteStylePreset('custom'))
         setTextStyle(prev => ({ ...prev, ...(data.settings?.textStyle || {}) }))
         setFloorPlans(data.floorPlans || (data.settings?.floorPlan ? [normalizeFloorPlanState(data.settings.floorPlan)] : []))
+        setIsEventLoading(false)
       })
       .catch(err => {
+        if (!isActive) return
         console.error('Error resuming event:', err)
+        setIsEventLoading(false)
         setEventId(null)
         setCurrentView('home')
         alert('Failed to load event: ' + err.message)
       })
+
+    return () => {
+      isActive = false
+    }
   }, [currentView, eventId, loadEventRecord])
 
   const handleRenameEvent = async (id, nextNameInput) => {
@@ -3470,6 +3208,8 @@ export default function App() {
           isArchived: !!eventDetails.isArchived,
         })
         refreshEventList().catch(() => { })
+        setLayers(prev => ({ ...DEFAULT_LAYERS, ...prev }))
+        setSaveTick(prev => prev + 1)
         alert('Map saved successfully!')
       } else {
         throw new Error(data.error || data.message || 'Failed to save map')
@@ -3581,46 +3321,61 @@ export default function App() {
           />
         )}
 
-        <MapCanvas
-          drawMode={drawMode}
-          onDrawMode={setDrawMode}
-          selectedZoneType={selectedZoneType}
-          layers={effectiveLayers}
-          zones={zones}
-          assets={assets}
-          lines={lines}
-          annotations={annotations}
-          floorPlans={floorPlans}
-          pendingFloorImageUrl={pendingFloorImageUrl}
-          selectedId={selectedId}
-          onSelect={handleSelect}
-          onClearSelection={() => setSelectedId(null)}
-          onEraseAsset={handleEraseAsset}
-          onZoneCreate={handleZoneCreate}
-          onLineCreate={handleLineCreate}
-          onAnnotationCreate={handleAnnotationCreate}
-          onAssetDrop={handleAssetDrop}
-          onAssetUpdate={handleUpdate}
-          pendingAssetDef={pendingAssetDef}
-          onPendingAssetClear={() => setPendingAssetDef(null)}
-          pendingZoneTemplate={pendingZoneTemplate}
-          onPendingZoneTemplateClear={() => setPendingZoneTemplate(null)}
-          onFloorPlanCreate={(newPlan) => setFloorPlans(prev => [...prev, newPlan])}
-          onPendingFloorImageClear={() => setPendingFloorImageUrl(null)}
-          eventDetails={eventDetails}
-          onEventDetailsChange={setEventDetails}
-          mapViewMode={mapViewMode}
-          lineStyle={lineStyle}
-          textStyle={textStyle}
-          annotationDraftText={annotationDraftText}
-          onMapRef={(ref) => { mapRef.current = ref }}
-          onViewportChange={handleViewportChange}
-          initialView={mapViewport}
-          isViewOnly={isViewOnly}
-          viewOnlyMinZoom={viewOnlyMinZoom}
-          viewOnlyMaxZoom={viewOnlyMaxZoom}
-          measurementUnit={measurementUnit}
-        />
+        {isEventLoading ? (
+          <div style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-dim)',
+            background: 'var(--bg-primary)',
+          }}>
+            Loading saved map...
+          </div>
+        ) : (
+          <MapCanvas
+            key={`${eventId || 'editor'}:${saveTick}:ready`}
+            drawMode={drawMode}
+            onDrawMode={setDrawMode}
+            selectedZoneType={selectedZoneType}
+            layers={effectiveLayers}
+            zones={zones}
+            assets={assets}
+            lines={lines}
+            annotations={annotations}
+            floorPlans={floorPlans}
+            pendingFloorImageUrl={pendingFloorImageUrl}
+            selectedId={selectedId}
+            onSelect={handleSelect}
+            onClearSelection={() => setSelectedId(null)}
+            onEraseAsset={handleEraseAsset}
+            onZoneCreate={handleZoneCreate}
+            onLineCreate={handleLineCreate}
+            onAnnotationCreate={handleAnnotationCreate}
+            onAssetDrop={handleAssetDrop}
+            onAssetUpdate={handleUpdate}
+            pendingAssetDef={pendingAssetDef}
+            onPendingAssetClear={() => setPendingAssetDef(null)}
+            pendingZoneTemplate={pendingZoneTemplate}
+            onPendingZoneTemplateClear={() => setPendingZoneTemplate(null)}
+            onFloorPlanCreate={(newPlan) => setFloorPlans(prev => [...prev, newPlan])}
+            onPendingFloorImageClear={() => setPendingFloorImageUrl(null)}
+            eventDetails={eventDetails}
+            onEventDetailsChange={setEventDetails}
+            mapViewMode={mapViewMode}
+            lineStyle={lineStyle}
+            textStyle={textStyle}
+            annotationDraftText={annotationDraftText}
+            onMapRef={(ref) => { mapRef.current = ref }}
+            onViewportChange={handleViewportChange}
+            initialView={mapViewport}
+            isViewOnly={isViewOnly}
+            viewOnlyMinZoom={viewOnlyMinZoom}
+            viewOnlyMaxZoom={viewOnlyMaxZoom}
+            measurementUnit={measurementUnit}
+            saveTick={saveTick}
+          />
+        )}
 
         {!isViewOnly && (
           <PropertiesPanel
